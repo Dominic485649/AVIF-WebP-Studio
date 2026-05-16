@@ -7,6 +7,7 @@ param(
     [switch]$SharedSlint,
     [ValidateSet("Static", "Dynamic")]
     [string]$MagickLinkage = "Static",
+    [string]$ImageMagickRef = "6ad8928f61d4abf3fe17646d7083bb6866eae92e",
     [switch]$FullMagickBuild,
     [switch]$InstallMfc,
     [switch]$NoVcpkgInstall,
@@ -75,6 +76,7 @@ if (-not $MagickRoot) {
             Configuration = "Debug"
             Arch = "x64"
             Linkage = $MagickLinkage
+            ImageMagickRef = $ImageMagickRef
         }
         if ($FullMagickBuild) {
             $MagickBuildArgs.FullBuild = $true

@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AVIFWebPStudio
-    VERSION 0.3.0
+    VERSION 0.2
     DESCRIPTION "AVIF-WebP-Studio batch converter with MagickWand and Slint"
     LANGUAGES CXX)
+
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,12 +77,17 @@ if(AVIF_STATIC_MSVC_RUNTIME)
 else()
     set(AVIF_DEFAULT_VCPKG_TRIPLET "x64-windows")
 endif()
-set(VCPKG_TRIPLET "${AVIF_DEFAULT_VCPKG_TRIPLET}" CACHE STRING "vcpkg target triplet")
+if(DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TRIPLET)
+    set(VCPKG_TRIPLET "${VCPKG_TARGET_TRIPLET}" CACHE STRING "vcpkg target triplet")
+else()
+    set(VCPKG_TRIPLET "${AVIF_DEFAULT_VCPKG_TRIPLET}" CACHE STRING "vcpkg target triplet")
+endif()
 if(AVIF_MAGICK_STATIC_RUNTIME AND NOT VCPKG_TRIPLET MATCHES "-static$")
     message(STATUS "Detected static ImageMagick runtime; forcing VCPKG_TRIPLET=x64-windows-static.")
     set(VCPKG_TRIPLET "x64-windows-static" CACHE STRING "vcpkg target triplet" FORCE)
 endif()
-if(VCPKG_ROOT)
+set(VCPKG_TARGET_TRIPLET "${VCPKG_TRIPLET}" CACHE STRING "vcpkg target triplet" FORCE)
+if(VCPKG_ROOT AND NOT CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg[.]cmake")
     list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}")
 endif()
 
@@ -319,10 +326,10 @@ set(SLINT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SLINT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_INTERPRETER OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
-set(SLINT_FEATURE_RENDERER_FEMTOVG OFF CACHE BOOL "" FORCE)
+set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
 FetchContent_Declare(Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG v1.16.1
+    GIT_TAG e9c1ca295f9356af71f1e251c287de18406b46f6
     SOURCE_SUBDIR api/cpp)
 FetchContent_MakeAvailable(Slint)
 
@@ -368,6 +375,28 @@ avif_enable_common_options(AVIF-WebP-Cli)
 target_link_libraries(AVIF-WebP-Cli PRIVATE avif_core)
 avif_copy_magick_runtime(AVIF-WebP-Cli)
 
+if(BUILD_TESTING)
+    add_test(NAME cli_help COMMAND AVIF-WebP-Cli --help)
+    set_tests_properties(cli_help PROPERTIES
+        PASS_REGULAR_EXPRESSION "AVIF-WebP-Studio C[+][+]23")
+
+    add_test(NAME cli_unknown_argument
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:AVIF-WebP-Cli>' '--definitely-unknown-option' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('未知参数')) { exit 1 }")
+
+    add_test(NAME cli_rejects_nan_quality
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:AVIF-WebP-Cli>' '--quality' 'nan' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('质量参数必须是有限数字')) { exit 1 }")
+
+    add_test(NAME cli_rejects_infinite_xpsnr
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:AVIF-WebP-Cli>' '--target-xpsnr' 'inf' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('target-xpsnr 必须是有限数字')) { exit 1 }")
+
+    add_test(NAME cli_rejects_empty_define_key
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:AVIF-WebP-Cli>' '--define' '=x' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('--define 的 key 不能为空')) { exit 1 }")
+endif()
+
 add_executable(AVIF-WebP-Studio WIN32
     src/ui/main.cpp
     src/ui/AVIF-WebP-Studio.manifest)
@@ -378,7 +407,8 @@ target_link_libraries(AVIF-WebP-Studio PRIVATE
     ole32
     shell32
     uxtheme
-    imm32)
+    imm32
+    opengl32)
 avif_add_slint_sources(AVIF-WebP-Studio ui/avif_studio.slint)
 avif_copy_slint_runtime(AVIF-WebP-Studio)
 avif_copy_magick_runtime(AVIF-WebP-Studio)

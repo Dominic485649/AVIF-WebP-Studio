@@ -271,6 +271,8 @@ class FileLogger {
       fs::create_directories(log_dir_, ec);
       if (ec) {
         enabled_ = false;
+        last_error_ = std::format("无法创建日志目录 {}: {}",
+                                  path_to_utf8(log_dir_), ec.message());
       } else {
         info("===== NEW SESSION START =====");
       }
@@ -281,15 +283,26 @@ class FileLogger {
   void warn(std::string_view message) { append("WARN", message); }
   void error(std::string_view message) { append("ERROR", message); }
 
+  [[nodiscard]] bool enabled() const {
+    std::scoped_lock lock{mutex_};
+    return enabled_;
+  }
+
+  [[nodiscard]] std::string last_error() const {
+    std::scoped_lock lock{mutex_};
+    return last_error_;
+  }
+
  private:
   void append(std::string_view level, std::string_view message) {
+    std::scoped_lock lock{mutex_};
     if (!enabled_) {
       return;
     }
-    std::scoped_lock lock{mutex_};
     std::ofstream stream{log_file_, std::ios::app | std::ios::binary};
     if (!stream) {
       enabled_ = false;
+      last_error_ = std::format("无法写入日志文件 {}", path_to_utf8(log_file_));
       return;
     }
     const auto now = std::chrono::floor<std::chrono::seconds>(
@@ -300,7 +313,8 @@ class FileLogger {
   bool enabled_{true};
   fs::path log_dir_;
   fs::path log_file_;
-  std::mutex mutex_;
+  std::string last_error_{};
+  mutable std::mutex mutex_;
 };
 
 bool is_supported_image_extension(const fs::path& path) {

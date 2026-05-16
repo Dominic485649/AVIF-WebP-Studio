@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cctype>
 #include <filesystem>
 #include <format>
@@ -36,6 +38,7 @@ struct UiState {
   std::jthread worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   slint::Timer theme_timer{};
+  std::uint64_t run_id{};
   std::mutex mutex{};
 };
 
@@ -91,6 +94,9 @@ std::expected<double, std::string> parse_double_field(std::string text,
   if (ec != std::errc{} || ptr != end) {
     return std::unexpected{std::format("{} 必须是数字。", name)};
   }
+  if (!std::isfinite(value)) {
+    return std::unexpected{std::format("{} 必须是有限数字。", name)};
+  }
   if (value < minimum || value > maximum) {
     return std::unexpected{
         std::format("{} 范围必须在 {:.3f} 到 {:.3f} 之间。", name, minimum, maximum)};
@@ -116,7 +122,7 @@ std::expected<std::optional<int>, std::string> parse_optional_int_field(
 
 std::expected<int, std::string> parse_jobs_field(std::string text) {
   text = trim_copy(std::move(text));
-  if (text.empty() || text == "自动" || text == "auto" || text == "jthread") {
+  if (text.empty()) {
     return avif::default_max_jobs();
   }
   return parse_int_field(std::move(text), "线程", 1, 128);
@@ -142,19 +148,25 @@ std::expected<std::optional<int>, std::string> parse_bit_depth_field(std::string
   return std::optional<int>{*value};
 }
 
-void append_token_defines(avif::AppConfig& cfg, std::string text) {
+std::expected<void, std::string> append_token_defines(avif::AppConfig& cfg,
+                                                        std::string text) {
   std::size_t start = 0;
   while (start < text.size()) {
     const auto end = text.find_first_of(",;", start);
     auto token = trim_copy(text.substr(start, end - start));
     if (!token.empty()) {
-      cfg.magick_defines.push_back(avif::wide_from_utf8(token));
+      auto wide = avif::wide_from_utf8(token);
+      if (auto valid = avif::validate_magick_define(wide); !valid) {
+        return std::unexpected{valid.error()};
+      }
+      cfg.magick_defines.push_back(std::move(wide));
     }
     if (end == std::string::npos) {
       break;
     }
     start = end + 1;
   }
+  return {};
 }
 
 slint::SharedString to_shared(std::string_view text) {
@@ -365,7 +377,10 @@ std::expected<avif::AppConfig, std::string> config_from_ui(const AvifStudio& app
   cfg.strip_metadata = app.get_strip_metadata();
   cfg.write_summary = app.get_write_summary();
   cfg.write_log = app.get_write_log();
-  append_token_defines(cfg, shared_to_string(app.get_defines_text()));
+  if (auto defines = append_token_defines(cfg, shared_to_string(app.get_defines_text()));
+      !defines) {
+    return std::unexpected{defines.error()};
+  }
 
   if (auto valid = avif::validate_config(cfg); !valid) {
     return std::unexpected{valid.error()};
@@ -478,18 +493,13 @@ void open_path(std::filesystem::path path, bool create_if_missing) {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   try {
-    if (GetEnvironmentVariableW(L"SLINT_BACKEND", nullptr, 0) == 0 &&
-        GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
-      SetEnvironmentVariableW(L"SLINT_BACKEND", L"winit-software");
-    }
-
     auto app = AvifStudio::create();
     auto state = std::make_shared<UiState>();
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
     auto weak = slint::ComponentWeakHandle(app);
 
     app->set_task_rows(state->task_rows);
-    app->set_threads_text(to_shared("自动"));
+    app->set_threads_text({});
     app->set_system_dark_mode(windows_prefers_dark_mode());
     sync_template_flags(*app);
 
@@ -572,21 +582,40 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       (*app)->set_running(true);
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared("准备中"));
-      state->task_rows->set_vector({});
 
-      std::scoped_lock lock{state->mutex};
-      if (state->worker.joinable()) {
-        state->worker.request_stop();
-        state->worker.join();
+      std::jthread old_worker;
+      {
+        std::scoped_lock lock{state->mutex};
+        old_worker = std::move(state->worker);
+      }
+      if (old_worker.joinable()) {
+        old_worker.request_stop();
+        old_worker.join();
       }
 
-      state->worker = std::jthread(
-          [weak, rows = state->task_rows, cfg = std::move(*cfg)](
+      std::uint64_t run_id{};
+      std::shared_ptr<slint::VectorModel<TaskRow>> rows;
+      {
+        std::scoped_lock lock{state->mutex};
+        run_id = ++state->run_id;
+        state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+        rows = state->task_rows;
+      }
+      (*app)->set_task_rows(rows);
+
+      std::jthread worker{
+          [weak, state, rows, run_id, cfg = std::move(*cfg)](
               std::stop_token token) {
             const auto summary = avif::run_batch(
                 cfg,
-                [weak, rows](const avif::BatchProgress& event) {
-                  post_to_ui(weak, [event, rows](AvifStudio& app) {
+                [weak, state, rows, run_id](const avif::BatchProgress& event) {
+                  post_to_ui(weak, [event, state, rows, run_id](AvifStudio& app) {
+                    {
+                      std::scoped_lock lock{state->mutex};
+                      if (state->run_id != run_id) {
+                        return;
+                      }
+                    }
                     if (event.total > 0) {
                       const auto progress =
                           static_cast<float>(event.completed) /
@@ -606,7 +635,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 token);
 
             trim_process_working_set();
-            post_to_ui(weak, [summary](AvifStudio& app) {
+            post_to_ui(weak, [summary, state, run_id](AvifStudio& app) {
+              {
+                std::scoped_lock lock{state->mutex};
+                if (state->run_id != run_id) {
+                  return;
+                }
+              }
               if (!summary) {
                 app.set_status_text(to_shared(std::format("失败：{}", summary.error())));
               } else if (summary->canceled) {
@@ -617,17 +652,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
               }
               app.set_running(false);
             });
-          });
+          }};
+      {
+        std::scoped_lock lock{state->mutex};
+        state->worker = std::move(worker);
+      }
     });
 
     app->show();
     app->run();
+    std::jthread worker;
     {
       std::scoped_lock lock{state->mutex};
-      if (state->worker.joinable()) {
-        state->worker.request_stop();
-        state->worker.join();
-      }
+      worker = std::move(state->worker);
+    }
+    if (worker.joinable()) {
+      worker.request_stop();
+      worker.join();
     }
     return 0;
   } catch (const std::exception& ex) {

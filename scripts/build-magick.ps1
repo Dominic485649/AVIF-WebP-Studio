@@ -11,6 +11,7 @@ param(
     [string]$SourceRoot = "",
     [string]$RuntimeRoot = "",
     [string]$RepositoryUrl = "https://github.com/ImageMagick/Windows.git",
+    [string]$ImageMagickRef = "6ad8928f61d4abf3fe17646d7083bb6866eae92e",
     [switch]$FullBuild,
     [switch]$InstallMfc,
     [switch]$SkipBuild
@@ -24,6 +25,47 @@ if (-not $SourceRoot) {
 }
 if (-not $RuntimeRoot) {
     $RuntimeRoot = Join-Path $Repo "third_party\imagemagick-runtime\$Arch\$Configuration"
+}
+$GeneratedMarkerName = ".avif-webp-studio-generated"
+
+function Resolve-FullPath([string]$Path) {
+    return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Test-IsPathInside([string]$Path, [string]$Parent) {
+    $FullPath = Resolve-FullPath $Path
+    $FullParent = Resolve-FullPath $Parent
+    if (-not $FullParent.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $FullParent += [System.IO.Path]::DirectorySeparatorChar
+    }
+    return $FullPath.StartsWith($FullParent, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-SafeGeneratedPath([string]$Path, [string]$ExpectedParent, [string]$Purpose) {
+    $FullPath = Resolve-FullPath $Path
+    $FullRepo = Resolve-FullPath $Repo
+    $FullExpectedParent = Resolve-FullPath $ExpectedParent
+    $UserProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    $Root = [System.IO.Path]::GetPathRoot($FullPath)
+
+    if ($FullPath -eq $Root -or $FullPath -eq $FullRepo -or ($UserProfile -and $FullPath -eq (Resolve-FullPath $UserProfile))) {
+        throw "$Purpose 路径过于宽泛，拒绝操作: $FullPath"
+    }
+    if (-not (Test-IsPathInside $FullPath $FullExpectedParent)) {
+        throw "$Purpose 路径必须位于 $FullExpectedParent 之下: $FullPath"
+    }
+}
+
+function Remove-GeneratedDirectory([string]$Path, [string]$ExpectedParent, [string]$Purpose) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    Assert-SafeGeneratedPath $Path $ExpectedParent $Purpose
+    $Marker = Join-Path $Path $GeneratedMarkerName
+    if (-not (Test-Path -LiteralPath $Marker -PathType Leaf)) {
+        throw "$Purpose 路径缺少生成标记 $GeneratedMarkerName，拒绝递归删除: $Path"
+    }
+    Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
 function Add-GitProcessConfig([string]$Key, [string]$Value) {
@@ -48,6 +90,7 @@ function Initialize-GitEnvironment {
 function Remove-IncompleteGitClone([string]$Path) {
     if ((Test-Path -LiteralPath $Path) -and
         -not (Test-Path -LiteralPath (Join-Path $Path ".git"))) {
+        Assert-SafeGeneratedPath $Path (Join-Path $Repo "third_party") "ImageMagick 源码子目录"
         Remove-Item -LiteralPath $Path -Recurse -Force
     }
 }
@@ -237,6 +280,9 @@ function Repair-GeneratedProjectToolCommands([string]$ProjectRoot) {
     }
 }
 
+Assert-SafeGeneratedPath $SourceRoot (Join-Path $Repo "third_party") "ImageMagick 源码目录"
+Assert-SafeGeneratedPath $RuntimeRoot (Join-Path $Repo "third_party\imagemagick-runtime") "ImageMagick runtime 目录"
+
 Write-Host "ImageMagick Windows 源码: $SourceRoot"
 
 $MSBuild = $null
@@ -249,12 +295,14 @@ if (-not $SkipBuild) {
 
 if (-not (Test-Path (Join-Path $SourceRoot ".git"))) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $SourceRoot) | Out-Null
-    git clone $RepositoryUrl $SourceRoot
+    git clone -- $RepositoryUrl $SourceRoot
 } else {
-    git -C $SourceRoot fetch --prune
+    git -C $SourceRoot fetch --tags --prune
 }
-git -C $SourceRoot checkout main
-git -C $SourceRoot pull --ff-only
+git -C $SourceRoot checkout --detach $ImageMagickRef
+$ImageMagickCommit = git -C $SourceRoot rev-parse HEAD
+Write-Host "ImageMagick Windows ref: $ImageMagickRef"
+Write-Host "ImageMagick Windows commit: $ImageMagickCommit"
 
 $CloneScript = Join-Path $SourceRoot "clone-repositories-im7.cmd"
 if (Test-Path $CloneScript) {
@@ -354,10 +402,9 @@ if (-not $SkipBuild) {
 }
 
 Write-Host "提取运行时/开发文件: $RuntimeRoot"
-if (Test-Path $RuntimeRoot) {
-    Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force
-}
+Remove-GeneratedDirectory $RuntimeRoot (Join-Path $Repo "third_party\imagemagick-runtime") "ImageMagick runtime 目录"
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+New-Item -ItemType File -Force -Path (Join-Path $RuntimeRoot $GeneratedMarkerName) | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $RuntimeRoot "include") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $RuntimeRoot "lib") | Out-Null
 

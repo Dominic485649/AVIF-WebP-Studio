@@ -1,0 +1,7 @@
+{
+  "name": "avif-webp-studio",
+  "version-string": "0.2",
+  "dependencies": [
+    "scnlib"
+  ]
+}

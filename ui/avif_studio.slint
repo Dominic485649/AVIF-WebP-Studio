@@ -26,7 +26,7 @@ export component AvifStudio inherits Window {
     property <bool> bit-depth-follows-format: true;
     in-out property <int> chroma-index: 0;
     in-out property <string> max-resolution-text: "";
-    in-out property <string> threads-text: "4";
+    in-out property <string> threads-text: "";
     in-out property <string> speed-text: "";
     in-out property <bool> optimize-output: false;
     in-out property <string> target-xpsnr-text: "42.0";
@@ -110,6 +110,7 @@ export component AvifStudio inherits Window {
 
     Rectangle {
         background: root.page-bg;
+        animate background { duration: 180ms; easing: ease-out; }
 
         VerticalLayout {
             padding: 12px;
@@ -121,6 +122,7 @@ export component AvifStudio inherits Window {
                 background: root.chrome-bg;
                 border-color: root.panel-border;
                 border-width: 1px;
+                animate background, border-color { duration: 180ms; easing: ease-out; }
 
                 HorizontalLayout {
                     padding-left: 24px;
@@ -150,6 +152,7 @@ export component AvifStudio inherits Window {
                         height: 36px;
                         border-radius: 8px;
                         background: root.running ? root.accent-soft : root.success-soft;
+                        animate background { duration: 160ms; easing: ease-out; }
                         HorizontalLayout {
                             padding-left: 12px;
                             padding-right: 12px;
@@ -157,6 +160,7 @@ export component AvifStudio inherits Window {
                             Text {
                                 text: root.status-text;
                                 color: root.running ? root.accent : root.success;
+                                animate color { duration: 160ms; easing: ease-out; }
                                 font-size: 13px;
                                 font-weight: 700;
                                 horizontal-alignment: center;
@@ -184,6 +188,7 @@ export component AvifStudio inherits Window {
                     background: root.panel-bg;
                     border-color: root.panel-border;
                     border-width: 1px;
+                    animate background, border-color { duration: 180ms; easing: ease-out; }
 
                     VerticalLayout {
                         padding: 22px;
@@ -222,6 +227,8 @@ export component AvifStudio inherits Window {
 
                                 HorizontalLayout {
                                     spacing: 12px;
+                                    opacity: root.format-index == 0 ? 1.0 : 0.56;
+                                    animate opacity { duration: 140ms; easing: ease-out; }
                                     Text { text: "色度采样"; width: 86px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                     ComboBox { model: ["auto", "444", "422", "420"]; current-index <=> root.chroma-index; enabled: !root.running && root.format-index == 0; horizontal-stretch: 1; }
                                 }
@@ -240,7 +247,7 @@ export component AvifStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 12px;
                                     Text { text: "线程"; width: 76px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.threads-text; placeholder-text: "自动"; enabled: !root.running; horizontal-stretch: 1; }
+                                    LineEdit { text <=> root.threads-text; placeholder-text: "自动"; input-type: number; enabled: !root.running; horizontal-stretch: 1; }
                                 }
 
                                 HorizontalLayout {
@@ -251,6 +258,8 @@ export component AvifStudio inherits Window {
 
                                 HorizontalLayout {
                                     spacing: 12px;
+                                    opacity: root.format-index == 0 ? 1.0 : 0.56;
+                                    animate opacity { duration: 140ms; easing: ease-out; }
                                     Text { text: "位深"; width: 76px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                     LineEdit { text <=> root.bit-depth-text; placeholder-text: root.format-index == 1 ? "8 bit" : "保持原片"; enabled: !root.running && root.format-index == 0; horizontal-stretch: 1; }
                                 }
@@ -263,8 +272,8 @@ export component AvifStudio inherits Window {
                             CheckBox { text: "生成 summary.csv"; checked <=> root.write-summary; enabled: !root.running; }
                             CheckBox { text: "生成日志"; checked <=> root.write-log; enabled: !root.running; }
                             CheckBox { text: "自动搜索"; checked <=> root.optimize-output; enabled: !root.running; }
-                            LineEdit { text <=> root.target-xpsnr-text; placeholder-text: "42.0"; enabled: !root.running && root.optimize-output; width: 66px; }
-                            Text { text: "XPSNR"; color: root.text-soft; font-size: 12px; vertical-alignment: center; }
+                            LineEdit { text <=> root.target-xpsnr-text; placeholder-text: "42.0"; enabled: !root.running && root.optimize-output; width: 66px; opacity: root.optimize-output ? 1.0 : 0.56; animate opacity { duration: 140ms; easing: ease-out; } }
+                            Text { text: "XPSNR"; color: root.text-soft; font-size: 12px; vertical-alignment: center; opacity: root.optimize-output ? 1.0 : 0.56; animate opacity { duration: 140ms; easing: ease-out; } }
                         }
 
                         HorizontalLayout {
@@ -283,6 +292,7 @@ export component AvifStudio inherits Window {
                     background: root.panel-bg;
                     border-color: root.panel-border;
                     border-width: 1px;
+                    animate background, border-color { duration: 180ms; easing: ease-out; }
 
                     VerticalLayout {
                         padding: 22px;
@@ -377,6 +387,7 @@ export component AvifStudio inherits Window {
                         background: root.field-bg;
                         border-color: root.field-border;
                         border-width: 1px;
+                        animate background, border-color { duration: 180ms; easing: ease-out; }
                         HorizontalLayout {
                             padding-left: 10px;
                             padding-right: 10px;
@@ -395,6 +406,7 @@ export component AvifStudio inherits Window {
                         border-color: root.panel-border;
                         border-width: 1px;
                         clip: true;
+                        animate background, border-color { duration: 180ms; easing: ease-out; }
 
                         if root.task-rows.length == 0: Text {
                             text: "暂无任务";
@@ -424,12 +436,14 @@ export component AvifStudio inherits Window {
                         border-radius: 5px;
                         background: root.progress-track;
                         clip: true;
+                        animate background { duration: 180ms; easing: ease-out; }
                         Rectangle {
                             x: 0px;
                             width: parent.width * root.progress;
                             height: parent.height;
                             border-radius: 5px;
                             background: root.progress-fill;
+                            animate width, background { duration: 160ms; easing: ease-out; }
                         }
                     }
 

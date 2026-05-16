@@ -151,6 +151,12 @@ std::expected<BatchSummary, std::string> run_batch(
 
     FileLogger logger{output_dir, cfg.write_log};
     logger.info(std::format("imagemagick runtime: {}", path_to_utf8(runtime->root)));
+    if (cfg.write_log && !logger.enabled()) {
+      const auto text = std::format("[WARN] 日志写入失败: {}",
+                                    logger.last_error());
+      emit_progress(progress, BatchProgress{.kind = BatchEventKind::warning,
+                                            .text = text});
+    }
 
     std::vector<ImageFile> files;
     if (auto scanned = scan_images(cfg, files); !scanned) {
@@ -200,53 +206,75 @@ std::expected<BatchSummary, std::string> run_batch(
 
     std::atomic<std::size_t> next{0};
     std::atomic<std::size_t> completed{0};
+    std::atomic<int> worker_failures{0};
 
     // 工作线程使用 std::jthread：异常路径或提前返回时也会自动 join，停止请求由 stop_token 传播。
     std::vector<std::jthread> workers;
     workers.reserve(static_cast<std::size_t>(jobs));
     for (int i = 0; i < jobs; ++i) {
       workers.emplace_back([&] {
-        set_current_thread_low_priority();
-        MagickBackend backend{cfg, *runtime, logger};
-        while (true) {
-          if (stop_token.stop_requested()) {
-            break;
-          }
-
-          const auto work_index = next.fetch_add(1);
-          if (work_index >= work.size()) {
-            break;
-          }
-          const auto& group = work[work_index];
-          if (group.files.size() > 1 &&
-              cfg.collision_mode == CollisionMode::overwrite) {
-            emit_progress(progress, BatchProgress{
-                                        .kind = BatchEventKind::warning,
-                                        .completed = completed.load(),
-                                        .total = files.size(),
-                                        .text = std::format(
-                                            "[WARN] 输出重名: {} 个输入将依次覆盖 {}",
-                                            group.files.size(),
-                                            path_to_utf8(
-                                                output_path_for(
-                                                    cfg, group.files.back())))});
-          }
-          for (const auto& image : group.files) {
+        try {
+          set_current_thread_low_priority();
+          MagickBackend backend{cfg, *runtime, logger};
+          while (true) {
             if (stop_token.stop_requested()) {
               break;
             }
-            auto result = backend.encode(image, stop_token);
-            const auto event_result = result;
-            results[result.index] = std::move(result);
-            const auto done = completed.fetch_add(1) + 1;
-            emit_progress(progress, BatchProgress{
-                                        .kind = BatchEventKind::item_finished,
-                                        .completed = done,
-                                        .total = files.size(),
-                                        .result = event_result,
-                                        .text = pipeline_detail::format_result_line(
-                                            event_result)});
+
+            const auto work_index = next.fetch_add(1);
+            if (work_index >= work.size()) {
+              break;
+            }
+            const auto& group = work[work_index];
+            if (group.files.size() > 1 &&
+                cfg.collision_mode == CollisionMode::overwrite) {
+              emit_progress(progress, BatchProgress{
+                                          .kind = BatchEventKind::warning,
+                                          .completed = completed.load(),
+                                          .total = files.size(),
+                                          .text = std::format(
+                                              "[WARN] 输出重名: {} 个输入将依次覆盖 {}",
+                                              group.files.size(),
+                                              path_to_utf8(
+                                                  output_path_for(
+                                                      cfg, group.files.back())))});
+            }
+            for (const auto& image : group.files) {
+              if (stop_token.stop_requested()) {
+                break;
+              }
+              auto result = backend.encode(image, stop_token);
+              const auto event_result = result;
+              results[result.index] = std::move(result);
+              const auto done = completed.fetch_add(1) + 1;
+              emit_progress(progress, BatchProgress{
+                                          .kind = BatchEventKind::item_finished,
+                                          .completed = done,
+                                          .total = files.size(),
+                                          .result = event_result,
+                                          .text = pipeline_detail::format_result_line(
+                                              event_result)});
+            }
           }
+        } catch (const std::exception& ex) {
+          worker_failures.fetch_add(1);
+          logger.error(std::format("worker failed: {}", ex.what()));
+          emit_progress(progress, BatchProgress{
+                                      .kind = BatchEventKind::warning,
+                                      .completed = completed.load(),
+                                      .total = files.size(),
+                                      .text = std::format(
+                                          "[WARN] 工作线程异常，已停止该线程: {}",
+                                          ex.what())});
+        } catch (...) {
+          worker_failures.fetch_add(1);
+          logger.error("worker failed: unknown exception");
+          emit_progress(progress, BatchProgress{
+                                      .kind = BatchEventKind::warning,
+                                      .completed = completed.load(),
+                                      .total = files.size(),
+                                      .text =
+                                          "[WARN] 工作线程异常，已停止该线程: 未知异常"});
         }
       });
     }
@@ -299,13 +327,18 @@ std::expected<BatchSummary, std::string> run_batch(
       }
     }
 
+    const int worker_failure_count = worker_failures.load();
+    const bool summary_failed = !summary_warning.empty();
+    const bool has_failures =
+        failed_count > 0 || worker_failure_count > 0 || summary_failed;
+
     BatchSummary summary{.ok_count = ok_count,
                          .failed_count = failed_count,
                          .canceled_count = canceled_count,
                          .original_total = original_total,
                          .output_total = output_total,
                          .canceled = canceled,
-                         .exit_code = canceled ? 130 : (failed_count == 0 ? 0 : 2)};
+                         .exit_code = canceled ? 130 : (has_failures ? 2 : 0)};
     emit_progress(progress, BatchProgress{
                                 .kind = BatchEventKind::summary,
                                 .completed = completed.load(),

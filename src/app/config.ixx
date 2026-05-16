@@ -114,6 +114,10 @@ std::expected<int, std::string> parse_quality(std::wstring_view text) {
     return std::unexpected{"质量参数必须是数字，例如 90 或 q90。"};
   }
 
+  if (!std::isfinite(*value)) {
+    return std::unexpected{"质量参数必须是有限数字。"};
+  }
+
   const double normalized =
       (*value > 0.0 && *value <= 1.0) ? (*value * 100.0) : *value;
   const int quality = static_cast<int>(std::lround(normalized));
@@ -155,12 +159,36 @@ std::expected<double, std::string> parse_double_range(std::wstring_view text,
   if (!value) {
     return std::unexpected{std::format("{} 必须是数字。", name)};
   }
+  if (!std::isfinite(*value)) {
+    return std::unexpected{std::format("{} 必须是有限数字。", name)};
+  }
   if (*value < min_value || *value > max_value) {
     return std::unexpected{
         std::format("{} 范围必须在 {:.3f} 到 {:.3f} 之间。",
                     name, min_value, max_value)};
   }
   return *value;
+}
+
+std::expected<void, std::string> validate_define(std::wstring_view define) {
+  constexpr std::size_t max_define_length = 512;
+  if (define.empty()) {
+    return std::unexpected{"--define 不能为空。"};
+  }
+  if (define.size() > max_define_length) {
+    return std::unexpected{"--define 长度不能超过 512 个字符。"};
+  }
+  const auto pos = define.find(L'=');
+  const auto key = pos == std::wstring_view::npos ? define : define.substr(0, pos);
+  if (key.empty()) {
+    return std::unexpected{"--define 的 key 不能为空。"};
+  }
+  for (const wchar_t ch : define) {
+    if (ch < 0x20 || ch == 0x7f) {
+      return std::unexpected{"--define 不能包含控制字符。"};
+    }
+  }
+  return {};
 }
 
 std::optional<Preset> parse_preset(std::wstring_view value) {
@@ -275,6 +303,10 @@ std::string chroma_mode_name(ChromaMode mode) {
   return config_detail::chroma_name(mode);
 }
 
+std::expected<void, std::string> validate_magick_define(std::wstring_view define) {
+  return config_detail::validate_define(define);
+}
+
 std::expected<void, std::string> validate_config(const AppConfig& cfg) {
   // 路径存在性在 scan_images 中校验；这里专注于格式自身不能违反的编码约束。
   if (cfg.output_format == OutputFormat::webp) {
@@ -296,7 +328,7 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
 }
 
 void print_help() {
-  constexpr std::string_view help = R"(AVIF-WebP-Studio C++23
+  static constexpr char help[] = R"(AVIF-WebP-Studio C++23
 =======================
 
 默认后端：ImageMagick MagickWand
@@ -318,7 +350,7 @@ void print_help() {
   -m, --template <模板>       输出命名，默认 {name}
   --max-resolution <像素>     限制最长边；0 表示不缩放，默认 0
   --speed <0-10>             可选：传给 ImageMagick heic:speed；默认使用 Magick 自身默认值
-  --define <key=value>        额外传给 MagickWand 的 define，可重复
+  --define <key=value>        高级选项：额外传给 MagickWand 的 define，可重复；key 不能为空
   --collision <策略>          overwrite / skip / time / random，默认 overwrite
   --backend magick            后端占位参数；当前仅支持 magick
   --magick <路径>             指定 ImageMagick 运行时目录
@@ -353,7 +385,7 @@ void print_help() {
   AVIF-WebP-Cli.exe -i input --format webp --template "{name}-{date}"
   AVIF-WebP-Cli.exe -i input --chroma 444 --bit-depth 10 --optimize
 )";
-  std::fwrite(help.data(), 1, help.size(), stdout);
+  std::fwrite(help, 1, sizeof(help) - 1, stdout);
   std::fputc('\n', stdout);
 }
 
@@ -627,6 +659,9 @@ std::expected<ParseResult, std::string> parse_arguments(
       const auto value = require_value(i, args[i]);
       if (!value) {
         return std::unexpected{value.error()};
+      }
+      if (auto valid = config_detail::validate_define(*value); !valid) {
+        return std::unexpected{valid.error()};
       }
       cfg.magick_defines.push_back(*value);
       continue;

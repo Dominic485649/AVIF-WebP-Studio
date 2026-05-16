@@ -71,11 +71,10 @@ bool looks_like_magick_runtime(const fs::path& root) {
   const bool has_wand_lib =
       (fs::exists(root / L"lib" / L"CORE_RL_MagickWand_.lib", ec) && !ec) ||
       (fs::exists(root / L"lib" / L"CORE_DB_MagickWand_.lib", ec) && !ec);
-  const bool has_config = fs::exists(root / L"configure.xml", ec) && !ec;
   const bool has_include =
       fs::exists(root / L"include" / L"MagickWand" / L"MagickWand.h", ec) &&
       !ec;
-  return has_wand_dll || has_wand_lib || has_config || has_include;
+  return has_wand_dll || has_wand_lib || has_include;
 }
 
 std::optional<fs::path> existing_runtime_root(fs::path path) {
@@ -119,7 +118,6 @@ std::optional<fs::path> environment_runtime() {
 std::vector<fs::path> bundled_candidates() {
   std::vector<fs::path> candidates;
   collect_ancestor_runtime_candidates(candidates, executable_directory());
-  collect_ancestor_runtime_candidates(candidates, fs::current_path());
   return candidates;
 }
 
@@ -265,6 +263,27 @@ std::string define_value(std::string_view define) {
     return "true";
   }
   return std::string{define.substr(pos + 1)};
+}
+
+bool is_sensitive_define_key(std::string key) {
+  std::ranges::transform(key, key.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return key.find("token") != std::string::npos ||
+         key.find("secret") != std::string::npos ||
+         key.find("password") != std::string::npos ||
+         key.find("credential") != std::string::npos ||
+         key.find("api-key") != std::string::npos ||
+         key.find("apikey") != std::string::npos;
+}
+
+std::string describe_define(std::string_view define) {
+  const auto key = define_key(define);
+  const auto pos = define.find('=');
+  if (pos == std::string_view::npos || !is_sensitive_define_key(key)) {
+    return std::string{define};
+  }
+  return std::format("{}=<redacted>", key);
 }
 
 }  // namespace magick_detail
@@ -555,6 +574,25 @@ class MagickBackend {
     double xpsnr{};
   };
 
+  class CandidateFileCleanup {
+   public:
+    void track(const fs::path& path) { paths_.push_back(path); }
+
+    void release(const fs::path& path) {
+      std::erase(paths_, path);
+    }
+
+    ~CandidateFileCleanup() {
+      std::error_code ec;
+      for (const auto& path : paths_) {
+        fs::remove(path, ec);
+      }
+    }
+
+   private:
+    std::vector<fs::path> paths_;
+  };
+
   struct MagickStringDeleter {
     void operator()(char* value) const noexcept {
       if (value != nullptr) {
@@ -793,8 +831,8 @@ class MagickBackend {
       const auto define_utf8 = utf8_from_wide(define);
       const auto key = magick_detail::define_key(define_utf8);
       const auto value = magick_detail::define_value(define_utf8);
-      if (key.empty()) {
-        return std::unexpected{"--define 不能为空。"};
+      if (auto valid = validate_magick_define(define); !valid) {
+        return std::unexpected{valid.error()};
       }
       if (auto ok = magick_detail::check(&wand,
                                          MagickSetOption(&wand, key.c_str(),
@@ -1105,12 +1143,7 @@ class MagickBackend {
         std::clamp(requested_target + metric_margin_db, 0.0, 120.0);
 
     std::vector<CandidateResult> candidates;
-    auto cleanup = [&] {
-      std::error_code ec;
-      for (const auto& candidate : candidates) {
-        fs::remove(candidate.path, ec);
-      }
-    };
+    CandidateFileCleanup candidate_cleanup;
 
     auto try_quality =
         [&](int quality) -> std::expected<CandidateResult, std::string> {
@@ -1122,15 +1155,12 @@ class MagickBackend {
       }
       auto path = candidate_path(output, quality, image.index);
       if (!path) {
-        cleanup();
         return std::unexpected{path.error()};
       }
+      candidate_cleanup.track(*path);
       auto candidate = encode_candidate(wand, *path, quality,
                                         monitor, image.index);
       if (!candidate) {
-        std::error_code ec;
-        fs::remove(*path, ec);
-        cleanup();
         return std::unexpected{candidate.error()};
       }
       logger_.info(std::format(
@@ -1193,11 +1223,10 @@ class MagickBackend {
     }
 
     if (auto ok = replace_with_candidate(selected.path, output); !ok) {
-      cleanup();
       return std::unexpected{ok.error()};
     }
+    candidate_cleanup.release(selected.path);
 
-    cleanup();
     if (!found_target) {
       logger_.info(std::format(
           "optimize target not reached: {} best q{} XPSNR {:.2f} dB, target {:.2f} dB",
@@ -1256,7 +1285,8 @@ class MagickBackend {
                           cfg_.optimize_target_xpsnr);
     }
     for (const auto& define : cfg_.magick_defines) {
-      text += std::format(" -define {}", utf8_from_wide(define));
+      text += std::format(" -define {}",
+                          magick_detail::describe_define(utf8_from_wide(define)));
     }
     if (cfg_.max_resolution > 0) {
       text += std::format(" -resize {}x{}>", cfg_.max_resolution,

@@ -5,7 +5,7 @@
 - `AVIF-WebP-Studio.exe`: Slint 桌面 UI
 - `AVIF-WebP-Cli.exe`: 保留原命令行批处理能力
 
-默认后端已经从调用 `magick.exe` 进程改为直接链接 ImageMagick `MagickWand` API。仓库不再提交 ImageMagick 二进制；需要可分发运行时时，使用 `scripts\build-magick.ps1` 拉取并构建 ImageMagick Windows 源码。程序运行时不会自动查找 Scoop ImageMagick；只有 `--magick` / `AVIF_MAGICK` 会显式使用外部 runtime。
+默认后端已经从调用 `magick.exe` 进程改为直接链接 ImageMagick `MagickWand` API。仓库不再提交 ImageMagick 二进制；需要可分发运行时时，使用 `scripts\build-magick.ps1` 拉取并构建 ImageMagick Windows 源码。程序运行时不会自动查找 Scoop ImageMagick，也不会从当前工作目录隐式加载外部 runtime；只有 `--magick` / `AVIF_MAGICK` 会显式使用外部 runtime。
 
 ## 环境
 
@@ -14,9 +14,9 @@
 - CMake 3.30+
 - Rust/Cargo，用于 Slint C++ 后端构建
 - Git，用于拉取 Slint 和 ImageMagick 源码
-- vcpkg 已安装 `scnlib:x64-windows`；静态 ImageMagick/CRT 构建会自动使用并补齐 `scnlib:x64-windows-static`
+- vcpkg 已安装并设置 `VCPKG_ROOT`；仓库通过 `vcpkg.json` 和 `vcpkg-configuration.json` 固定 `scnlib` 依赖与 baseline
 
-默认 vcpkg 路径按 `VCPKG_ROOT` 或 `D:\Scoop\apps\vcpkg\current` 查找；路径不同可传 `-VcpkgRoot`。如需手动指定 triplet，可传 `-VcpkgTriplet`；如不希望脚本自动安装缺失的 `scnlib` triplet，可传 `-NoVcpkgInstall`。
+默认 vcpkg 路径按 `VCPKG_ROOT` 或 `D:\Scoop\apps\vcpkg\current` 查找；路径不同可传 `-VcpkgRoot`。如需手动指定 triplet，可传 `-VcpkgTriplet`；如不希望脚本自动安装缺失的 `scnlib` triplet，可传 `-NoVcpkgInstall`。标准 CMake 入口可使用 `CMakePresets.json` 中的 `windows-msvc-x64-debug` / `windows-msvc-x64-release`。
 
 ## 自编译 ImageMagick
 
@@ -26,7 +26,7 @@
 .\scripts\build-magick.ps1 -Configuration Release -Arch x64
 ```
 
-脚本会拉取 `https://github.com/ImageMagick/Windows`，先构建官方 `Configure.exe`，再生成并编译 IM7 方案。源码默认放在仓库内的 `third_party\imagemagick-src`，运行时产物提取到 `third_party\imagemagick-runtime`。脚本会为当前进程的 git 子进程启用 `core.longpaths=true`，并强制 GitHub 依赖拉取走 HTTPS，避免 ImageMagick 依赖仓库的超长文件名和本机 SSH URL rewrite 干扰构建。默认 `-Linkage Static`，只构建 MagickCore/MagickWand 与 AVIF/WebP coder，尽量减少分发 DLL；如果需要完整格式支持可加 `-FullBuild`，如果静态 delegate 链接不顺可改用 `-Linkage Dynamic`。
+脚本会拉取 `https://github.com/ImageMagick/Windows` 并固定到默认 ref `6ad8928f61d4abf3fe17646d7083bb6866eae92e`，先构建官方 `Configure.exe`，再生成并编译 IM7 方案。源码默认放在仓库内的 `third_party\imagemagick-src`，运行时产物提取到 `third_party\imagemagick-runtime`。脚本会为当前进程的 git 子进程启用 `core.longpaths=true`，并强制 GitHub 依赖拉取走 HTTPS，避免 ImageMagick 依赖仓库的超长文件名和本机 SSH URL rewrite 干扰构建。默认 `-Linkage Static`，只构建 MagickCore/MagickWand 与 AVIF/WebP coder，尽量减少分发 DLL；如果需要完整格式支持可加 `-FullBuild`，如果静态 delegate 链接不顺可改用 `-Linkage Dynamic`。需要升级 ImageMagick 时先传 `-ImageMagickRef <commit-or-tag>` 验证，再更新默认 ref 和发布记录。
 
 如果本机缺少 MFC，脚本会在拉取和编译前给出明确错误。确认允许 Visual Studio Installer 修改本机安装时，可以显式加 `-InstallMfc` 自动安装该组件。
 
@@ -54,6 +54,13 @@ Release:
 .\release.ps1
 ```
 
+也可以直接使用 CMake presets：
+
+```powershell
+cmake --preset windows-msvc-x64-release
+cmake --build --preset windows-msvc-x64-release
+```
+
 `release.ps1` 会优先使用 `third_party\imagemagick-runtime\x64\Release`。如果该目录不存在，会自动调用 `scripts\build-magick.ps1 -Configuration Release -Arch x64 -Linkage Static` 构建自编译 ImageMagick。需要完整 ImageMagick 输入格式支持时可加 `-FullMagickBuild`；只是本机快速调试、允许临时使用 Scoop 时才传 `-UseScoopFallback`。
 
 默认静态链接 Slint，因此 `AVIF-WebP-Studio.exe` 不再需要单独的 `slint_cpp.dll`。自编译静态 ImageMagick 会自动切到 `/MT` 和 `x64-windows-static`，以避免 CRT 混链；如需调试 Slint 共享库，可传 `-SharedSlint`，如确实要强制动态 CRT 可传 `-DynamicRuntime`。
@@ -70,6 +77,14 @@ Release:
 - `bin\x64\Debug\AVIF-WebP-Studio.exe`
 - `bin\x64\Release\AVIF-WebP-Cli.exe`
 - `bin\x64\Release\AVIF-WebP-Studio.exe`
+
+## 测试
+
+项目已接入 CTest。当前最小测试门槛覆盖 CLI 帮助输出和未知参数错误路径，不依赖图片样本或 ImageMagick runtime：
+
+```powershell
+ctest --test-dir build\x64\Debug -C Debug --output-on-failure
+```
 
 ## 使用
 
@@ -93,7 +108,7 @@ CLI 示例：
 默认质量是 AVIF `q90`、WebP `q95`。默认不设置 `heic:speed`，让 ImageMagick 使用自身默认速度参数；只有显式传入 `--speed 0..10` 时才会设置 `heic:speed`。
 质量 `q` 可选 `1..100`，`q100` 在 ImageMagick 的 AVIF/WebP coder 中走无损路径。AVIF 质量会同时写入 MagickWand 的 wand 级 `image_info->quality` 和当前图片的 `image->quality`，因此行为等价于 ImageMagick CLI 的 `-quality`。
 
-`--optimize` 是独立的自动搜索模式，不等同于手动固定一组 `--define`。它会在 `--min-quality` 到 `--quality` 之间生成候选文件，用 MagickWand 解码候选并计算亮度 XPSNR 风格评分，再选出达到目标 XPSNR 的最小体积版本；内部会加 `0.05 dB` 安全边距，避免刚好踩线的候选图被选中。AVIF 候选在未显式设置 `--speed` / `heic:speed` 时会使用 `heic:speed=0`；WebP 候选在未显式设置 `webp:method` 时会使用 `webp:method=6`。用户传入的 `--define` 仍会作为约束应用到每个候选图。
+`--optimize` 是独立的自动搜索模式，不等同于手动固定一组 `--define`。它会在 `--min-quality` 到 `--quality` 之间生成候选文件，用 MagickWand 解码候选并计算亮度 XPSNR 风格评分，再选出达到目标 XPSNR 的最小体积版本；内部会加 `0.05 dB` 安全边距，避免刚好踩线的候选图被选中。AVIF 候选在未显式设置 `--speed` / `heic:speed` 时会使用 `heic:speed=0`；WebP 候选在未显式设置 `webp:method` 时会使用 `webp:method=6`。用户传入的 `--define` 仍会作为约束应用到每个候选图。`--define` 会直接影响 ImageMagick coder 行为，可能影响性能、安全和兼容性；不要在其中放入不希望写入日志或 summary 的敏感信息。
 
 如果输出文件重名，默认覆盖。也可以用 `--collision skip|time|random` 跳过或追加后缀；覆盖模式下批处理会按扫描顺序处理同名输出，最后写入的文件保留。如果同一目录里出现 `1.jpg`、`1.bmp` 这类同名不同扩展输入，默认模板会自动保留源扩展名，输出为 `1.jpg.avif`、`1.bmp.avif` 或对应 WebP，并在 UI/CLI 给出警告。`summary.csv` 和日志默认不生成，只有传 `--summary` / `--log` 或在 UI 中勾选时才写入；未启用日志时不会创建 `log` 目录或日志文件。取消任务时，未开始的文件会记为取消/待处理，不会被误算成失败。
 输入是文件夹时会保留原始子文件夹结构，例如 `input\2026\a.png` 会输出到 `out\2026\a.avif`；输入是单个文件时仍直接输出到目标目录。
@@ -114,7 +129,7 @@ CLI 示例：
 - `--optimize`: 自动搜索达到目标 XPSNR 的最小体积版本，速度会明显慢于直接编码
 - `--target-xpsnr <dB>`: 自动搜索的最低 XPSNR，默认 `42.0`
 - `--min-quality <1-100>`: 自动搜索的最低质量，默认 `50`
-- `--define <key=value>`: 额外映射到 `MagickSetOption(key, value)`，可重复
+- `--define <key=value>`: 高级选项，额外映射到 `MagickSetOption(key, value)`，可重复；key 不能为空，不能包含控制字符，日志/summary 会隐藏 token、secret、password、credential、api-key 等疑似敏感值
 - `--magick <path>`: 指定 ImageMagick 运行时目录，或其目录中的文件路径；不传时优先使用 exe 旁边的 bundled runtime/config
 - `--strip`: 去除 EXIF/ICC 等元数据
 - `--skip-existing`: 已有输出时跳过
@@ -149,7 +164,7 @@ CLI 示例：
 
 ## 实现要点
 
-- 输出统一使用 C++23 `<print>` 的 `std::print` / `std::println`
+- CLI 输出统一使用 UTF-8 字节写入 `stdout` / `stderr`，避免 Windows 控制台代码页造成中文乱码
 - 输入解析使用 vcpkg 中的 `scnlib`
 - 批处理线程使用 `std::jthread`
 - 错误路径使用 `std::expected<T, std::string>` 和异常兜底，单文件失败不会终止整批
@@ -167,8 +182,8 @@ CLI 示例：
 项目依赖的第三方组件遵循各自许可证：
 
 - ImageMagick / MagickWand：Apache-2.0；本仓库不提交其源码或二进制，`scripts\build-magick.ps1` 会在本地构建并把 ImageMagick 的 `License.txt` / `NOTICE.txt` 复制到发布目录。
-- Slint：通过 CMake `FetchContent` 拉取；发布时需遵守所选 Slint 许可证/商业许可要求，并保留其许可声明。
-- scnlib 与其依赖：通过 vcpkg 获取；发布时保留 vcpkg 安装包随附的许可证信息。
+- Slint：通过 CMake `FetchContent` 拉取，当前固定到 `v1.16.1` 对应 ref `e9c1ca295f9356af71f1e251c287de18406b46f6`；发布时需遵守所选 Slint 许可证/商业许可要求，并保留其许可声明。
+- scnlib 与其依赖：通过 vcpkg manifest 获取，当前 baseline 由 `vcpkg-configuration.json` 固定为 `56bb2411609227288b70117ead2c47585ba07713`；发布时保留 vcpkg 安装包随附的许可证信息。
 - 嵌入字体位于 [ui/fonts/](ui/fonts/)；重新分发时需确认字体许可证允许随应用分发，并保留对应声明。
 
 不要把 [third_party/](third_party/) 下本机构建得到的源码、库或运行时产物直接提交到仓库；发布包应随附实际打包进去的第三方许可文件。

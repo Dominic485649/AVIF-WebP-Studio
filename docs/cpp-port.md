@@ -25,9 +25,9 @@
 
 1. `--magick` 指定的 ImageMagick 运行时目录
 2. `AVIF_MAGICK` 环境变量
-3. 程序输出目录
-4. 仓库中的 `third_party\imagemagick-runtime\x64\Release`
-5. 外部运行时只通过 `--magick` 或 `AVIF_MAGICK` 显式指定
+3. 程序输出目录及其祖先目录中的 `third_party\imagemagick-runtime\x64\Release`
+4. 静态构建 fallback 到程序输出目录
+5. 外部运行时只通过 `--magick` 或 `AVIF_MAGICK` 显式指定；不会从当前工作目录或其祖先隐式加载 runtime
 
 正式分发应使用 `scripts\build-magick.ps1` 生成自编译运行时，fallback 只用于本地开发。
 
@@ -79,7 +79,7 @@
 
 ## 进阶改动
 
-- 输出路径统一使用 `<print>` 的 `std::print` / `std::println`。
+- CLI 输出路径统一写入 UTF-8 字节到 `stdout` / `stderr`，避免 Windows 控制台代码页造成中文乱码。
 - 批处理线程使用 `std::jthread`，UI 取消会停止调度新的任务。
 - 参数解析和 MagickWand 调用使用 `std::expected<T, std::string>` 表达错误。
 - 单文件处理内部有异常兜底，某张图片失败不会终止整个批处理。
