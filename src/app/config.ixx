@@ -19,7 +19,7 @@ export module avif.config;
 export namespace avif {
 
 enum class Preset { fast, balanced, best, extreme };
-enum class OutputFormat { avif, webp };
+enum class OutputFormat { avif, webp, jxl };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random };
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
 
@@ -39,7 +39,14 @@ int default_max_jobs() noexcept {
 }
 
 constexpr int default_quality_for(OutputFormat format) noexcept {
-  return format == OutputFormat::webp ? 95 : 90;
+  switch (format) {
+    case OutputFormat::webp:
+    case OutputFormat::jxl:
+      return 95;
+    case OutputFormat::avif:
+    default:
+      return 90;
+  }
 }
 
 // 命令行只负责生成这个配置对象；后面的流水线不会再回头解析 argv。
@@ -219,6 +226,9 @@ std::optional<OutputFormat> parse_output_format(std::wstring_view value) {
   if (lower == L"webp") {
     return OutputFormat::webp;
   }
+  if (lower == L"jxl") {
+    return OutputFormat::jxl;
+  }
   return std::nullopt;
 }
 
@@ -309,20 +319,31 @@ std::expected<void, std::string> validate_magick_define(std::wstring_view define
 
 std::expected<void, std::string> validate_config(const AppConfig& cfg) {
   // 路径存在性在 scan_images 中校验；这里专注于格式自身不能违反的编码约束。
-  if (cfg.output_format == OutputFormat::webp) {
-    if (cfg.bit_depth && *cfg.bit_depth != 8) {
-      return std::unexpected{
-          "WebP bitstream 只支持 8-bit；请把位深设为 8，或留空保持原片。"};
-    }
-    if (cfg.chroma_mode != ChromaMode::auto_keep) {
-      return std::unexpected{
-          "WebP 不支持手动选择 444/422/420；有损 WebP 为 8-bit 4:2:0，"
-          "无损 WebP 为 8-bit ARGB。"};
-    }
-  } else if (cfg.bit_depth &&
-             !config_detail::avif_bit_depth_supported(*cfg.bit_depth)) {
-    return std::unexpected{
-        "当前 ImageMagick/libheif AVIF 输出仅支持 8、10、12-bit 位深；留空表示保持原片。"};
+  switch (cfg.output_format) {
+    case OutputFormat::avif:
+      if (cfg.bit_depth &&
+          !config_detail::avif_bit_depth_supported(*cfg.bit_depth)) {
+        return std::unexpected{
+            "当前 ImageMagick/libheif AVIF 输出仅支持 8、10、12-bit 位深；留空表示保持原片。"};
+      }
+      break;
+    case OutputFormat::webp:
+      if (cfg.bit_depth && *cfg.bit_depth != 8) {
+        return std::unexpected{
+            "WebP bitstream 只支持 8-bit；请把位深设为 8，或留空保持原片。"};
+      }
+      if (cfg.chroma_mode != ChromaMode::auto_keep) {
+        return std::unexpected{
+            "WebP 不支持手动选择 444/422/420；有损 WebP 为 8-bit 4:2:0，"
+            "无损 WebP 为 8-bit ARGB。"};
+      }
+      break;
+    case OutputFormat::jxl:
+      if (cfg.chroma_mode != ChromaMode::auto_keep) {
+        return std::unexpected{
+            "JXL 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
+      }
+      break;
   }
   return {};
 }
@@ -332,7 +353,7 @@ void print_help() {
 =======================
 
 默认后端：ImageMagick MagickWand
-默认质量：AVIF q90，WebP q95
+默认质量：AVIF q90，WebP q95，JXL q95
 质量范围：q1..q100，q100 为无损
 
 用法:
@@ -341,15 +362,15 @@ void print_help() {
 常用选项:
   -i, --input <路径>          输入文件或目录，默认 input
   -o, --output <目录>         输出目录；默认与输入同目录
-  -f, --format <avif|webp>    输出格式，默认 avif
-  -q, --quality <1-100>       ImageMagick 质量，AVIF 默认 90，WebP 默认 95；100 为无损。也接受 q90 或 0.9
-  -d, --bit-depth <位深>      AVIF 支持 8/10/12；不填保持原片，WebP 固定 8
-  --chroma <auto|444|422|420> AVIF 色度采样，默认 auto 会尽量保持源采样；也可用 --444 / --422 / --420
+  -f, --format <avif|webp|jxl> 输出格式，默认 avif
+  -q, --quality <1-100>       ImageMagick 质量，AVIF 默认 90，WebP/JXL 默认 95；100 为无损。也接受 q90 或 0.9
+  -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片，WebP 固定 8
+  --chroma <auto|444|422|420> AVIF 色度采样，JXL/WebP 不支持手动采样；也可用 --444 / --422 / --420
   -p, --preset <名称>         fast / balanced / best / extreme，默认 best
   -t, --threads <数量>        并发数量，默认 CPU 线程数
   -m, --template <模板>       输出命名，默认 {name}
   --max-resolution <像素>     限制最长边；0 表示不缩放，默认 0
-  --speed <0-10>             可选：传给 ImageMagick heic:speed；默认使用 Magick 自身默认值
+  --speed <0-10>             可选：AVIF 传给 heic:speed，JXL 映射为 jxl:effort；默认使用 Magick 自身默认值
   --define <key=value>        高级选项：额外传给 MagickWand 的 define，可重复；key 不能为空
   --collision <策略>          overwrite / skip / time / random，默认 overwrite
   --backend magick            后端占位参数；当前仅支持 magick
@@ -383,9 +404,10 @@ void print_help() {
 示例:
   AVIF-WebP-Cli.exe -i "D:\图片" -o Avifoutput -q q90
   AVIF-WebP-Cli.exe -i input --format webp --template "{name}-{date}"
+  AVIF-WebP-Cli.exe -i input.png -o output.jxl --format jxl -q 90
   AVIF-WebP-Cli.exe -i input --chroma 444 --bit-depth 10 --optimize
 )";
-  std::fwrite(help, 1, sizeof(help) - 1, stdout);
+  std::fputs(help, stdout);
   std::fputc('\n', stdout);
 }
 
@@ -442,7 +464,7 @@ std::expected<ParseResult, std::string> parse_arguments(
       const auto format = config_detail::parse_output_format(*value);
       if (!format) {
         return std::unexpected{std::format(
-            "输出格式不支持: {}。可选值：avif、webp。",
+            "输出格式不支持: {}。可选值：avif、webp、jxl。",
             config_detail::narrow_ascii(*value))};
       }
       cfg.output_format = *format;

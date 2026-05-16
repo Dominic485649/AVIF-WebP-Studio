@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cctype>
+#include <cwctype>
 #include <filesystem>
 #include <format>
 #include <exception>
@@ -259,8 +260,18 @@ std::string result_status_text(const avif::EncodeResult& result) {
 
 void add_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
                   const avif::EncodeResult& result) {
+  auto output_format = avif::OutputFormat::avif;
+  auto ext = result.output_path.extension().wstring();
+  std::ranges::transform(ext, ext.begin(),
+                         [](wchar_t ch) { return std::towlower(ch); });
+  if (ext == L".webp") {
+    output_format = avif::OutputFormat::webp;
+  } else if (ext == L".jxl") {
+    output_format = avif::OutputFormat::jxl;
+  }
+
   rows->push_back(TaskRow{.filename = to_shared(avif::path_to_utf8(result.input_path.filename())),
-                          .format = to_shared(avif::output_format_name(result.output_path.extension() == L".webp" ? avif::OutputFormat::webp : avif::OutputFormat::avif)),
+                          .format = to_shared(avif::output_format_name(output_format)),
                           .status = to_shared(result_status_text(result)),
                           .log = {}});
   constexpr std::size_t max_rows = 5000;
@@ -300,6 +311,18 @@ avif::CollisionMode collision_from_index(int index) {
   }
 }
 
+avif::OutputFormat output_format_from_index(int index) {
+  switch (index) {
+    case 1:
+      return avif::OutputFormat::webp;
+    case 2:
+      return avif::OutputFormat::jxl;
+    case 0:
+    default:
+      return avif::OutputFormat::avif;
+  }
+}
+
 avif::ChromaMode chroma_from_index(int index) {
   switch (index) {
     case 1:
@@ -324,9 +347,7 @@ std::expected<avif::AppConfig, std::string> config_from_ui(const AvifStudio& app
     cfg.output_template = L"{name}";
   }
 
-  cfg.output_format =
-      app.get_format_index() == 1 ? avif::OutputFormat::webp
-                                  : avif::OutputFormat::avif;
+  cfg.output_format = output_format_from_index(app.get_format_index());
   cfg.collision_mode = collision_from_index(app.get_collision_index());
 
   const auto quality =
@@ -344,7 +365,9 @@ std::expected<avif::AppConfig, std::string> config_from_ui(const AvifStudio& app
   }
   cfg.bit_depth = *bit_depth;
 
-  cfg.chroma_mode = chroma_from_index(app.get_chroma_index());
+  cfg.chroma_mode = cfg.output_format == avif::OutputFormat::avif
+                        ? chroma_from_index(app.get_chroma_index())
+                        : avif::ChromaMode::auto_keep;
 
   const auto max_resolution = parse_resolution_field(
       shared_to_string(app.get_max_resolution_text()));

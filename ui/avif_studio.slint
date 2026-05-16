@@ -86,20 +86,26 @@ export component AvifStudio inherits Window {
 
     changed format-index => {
         if (root.quality-follows-format) {
-            root.quality-text = root.format-index == 1 ? "95" : "90";
+            root.quality-text = root.format-index == 0 ? "90" : "95";
         }
         if (root.format-index == 1) {
             root.bit-depth-text = "8";
             root.chroma-index = 0;
-        } else if (root.bit-depth-follows-format) {
-            root.bit-depth-text = "";
+        } else {
+            if (root.bit-depth-follows-format) {
+                root.bit-depth-text = "";
+            }
+            if (root.format-index != 0) {
+                root.chroma-index = 0;
+            }
         }
     }
 
     changed quality-text => {
         root.quality-follows-format =
             (root.format-index == 0 && root.quality-text == "90")
-            || (root.format-index == 1 && root.quality-text == "95");
+            || (root.format-index == 1 && root.quality-text == "95")
+            || (root.format-index == 2 && root.quality-text == "95");
     }
 
     changed bit-depth-text => {
@@ -210,7 +216,7 @@ export component AvifStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 12px;
                                     Text { text: "格式"; width: 86px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    ComboBox { model: ["AVIF", "WebP"]; current-index <=> root.format-index; enabled: !root.running; horizontal-stretch: 1; }
+                                    ComboBox { model: ["AVIF", "WebP", "JXL"]; current-index <=> root.format-index; enabled: !root.running; horizontal-stretch: 1; }
                                 }
 
                                 HorizontalLayout {
@@ -258,10 +264,10 @@ export component AvifStudio inherits Window {
 
                                 HorizontalLayout {
                                     spacing: 12px;
-                                    opacity: root.format-index == 0 ? 1.0 : 0.56;
+                                    opacity: root.format-index == 1 ? 0.56 : 1.0;
                                     animate opacity { duration: 140ms; easing: ease-out; }
                                     Text { text: "位深"; width: 76px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.bit-depth-text; placeholder-text: root.format-index == 1 ? "8 bit" : "保持原片"; enabled: !root.running && root.format-index == 0; horizontal-stretch: 1; }
+                                    LineEdit { text <=> root.bit-depth-text; placeholder-text: root.format-index == 1 ? "8 bit" : "保持原片"; enabled: !root.running && root.format-index != 1; horizontal-stretch: 1; }
                                 }
                             }
                         }
@@ -279,7 +285,7 @@ export component AvifStudio inherits Window {
                         HorizontalLayout {
                             spacing: 12px;
                             Text { text: "额外添加参数"; width: 92px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                            LineEdit { text <=> root.defines-text; placeholder-text: "例：webp:method=6"; enabled: !root.running; horizontal-stretch: 1; }
+                            LineEdit { text <=> root.defines-text; placeholder-text: "例：webp:method=6 或 jxl:effort=5"; enabled: !root.running; horizontal-stretch: 1; }
                         }
                     }
                 }

@@ -8,7 +8,7 @@
 .\scripts\build-magick.ps1 -Configuration Release -Arch x64
 ```
 
-脚本默认使用 `-Linkage Static`，并把 ImageMagick Windows 源码固定到默认 ref `6ad8928f61d4abf3fe17646d7083bb6866eae92e`。构建流程会先构建 ImageMagick 官方 `Configure.exe`，生成 `IM7.Static.x64.sln`，再优先只编译 MagickCore/MagickWand 与 AVIF(WebP/HEIC)、WebP coder。需要完整输入格式支持时加 `-FullBuild`；如果静态 delegate 链接不顺，可改用：
+脚本默认使用 `-Linkage Static`，并把 ImageMagick Windows 源码固定到默认 ref `6ad8928f61d4abf3fe17646d7083bb6866eae92e`。构建流程会先构建 ImageMagick 官方 `Configure.exe`，生成 `IM7.Static.x64.sln`，再优先只编译 MagickCore/MagickWand 与 AVIF/HEIC、WebP、JXL coder。JXL 依赖 ImageMagick 的 JPEG XL delegate；需要完整输入格式支持时加 `-FullBuild`；如果静态 delegate 链接不顺，可改用：
 
 ```powershell
 .\scripts\build-magick.ps1 -Configuration Release -Arch x64 -Linkage Dynamic -FullBuild
@@ -34,7 +34,7 @@ third_party\imagemagick-runtime\x64\Release
 - Release: `lib\CORE_RL_MagickWand_.lib` / `lib\CORE_RL_MagickCore_.lib`
 - Debug: `lib\CORE_DB_MagickWand_.lib` / `lib\CORE_DB_MagickCore_.lib`
 - 静态构建时同一 flavor 的 `CORE_RL_*.lib` 或 `CORE_DB_*.lib` coder/delegate libs
-- 动态构建时的 `CORE_RL_*.dll`、`modules\coders\IM_MOD_RL_heic_.dll`、`IM_MOD_RL_webp_.dll`
+- 动态构建时的 `CORE_RL_*.dll`、`modules\coders\IM_MOD_RL_heic_.dll`、`IM_MOD_RL_webp_.dll`、`IM_MOD_RL_jxl_.dll`
 - `configure.xml`、`delegates.xml`、`policy.xml` 等配置
 - `License` / `NOTICE`
 
@@ -73,7 +73,7 @@ cmake --build --preset windows-msvc-x64-release
 
 脚本会在每次配置时清理 `scn_DIR` / `FastFloat_DIR` 这类 CMake 包路径缓存，避免之前用 `x64-windows` 配置过的构建目录继续链接动态 CRT 版本的 `scn.lib`。
 同时也会清理 `MAGICKWAND_LIBRARY` / `MAGICKCORE_LIBRARY`，避免构建目录曾经使用过 Scoop ImageMagick 时继续链接 DLL import library，导致在无 ImageMagick 的机器上启动时报缺少 `CORE_RL_MagickWand_.dll`。
-当 `MAGICK_ROOT` 中没有 DLL 时，CMake 会把 AVIF/WebP 相关的静态 delegate libs 追加到链接末尾，避免链接器先看到 `aom` / `brotli` 等叶子库后又从 `heif` 等库产生新引用，最终留下 `aom.dll`、`libde265.dll`、`brotli*.dll` 等运行时依赖。
+当 `MAGICK_ROOT` 中没有 DLL 时，CMake 会把 ImageMagick 静态 coder/delegate libs 一并链接，并把已验证需要重复解析的 AVIF/WebP 叶子库追加到链接末尾，避免链接器先看到 `aom` / `brotli` 等叶子库后又从 `heif` 等库产生新引用，最终留下 `aom.dll`、`libde265.dll`、`brotli*.dll` 等运行时依赖。JXL 仍依赖 runtime 中实际构建出的 JPEG XL coder/delegate；只有后续实际静态构建确认需要时，才应把 `jxl` leaf libs 加入重复追加列表。
 
 如果用 VS Code CMake Tools 直接配置 `build` 目录，CMake 也会检查 `MAGICK_ROOT` 是否为静态 runtime。检测到静态 ImageMagick 时会自动把旧缓存从 `/MD + x64-windows` 修正为 `/MT + x64-windows-static`，避免 MagickWand 头文件生成 `__declspec(dllimport)` 后在链接阶段出现 `__imp_Magick...` 未解析符号。使用 Ninja 生成器时仍需要选择 Visual Studio x64 Kit，或先进入 Visual Studio Developer PowerShell，否则 MSVC 标准库路径不会进入环境，可能连 `<algorithm>` / `stdio.h` 都找不到。
 
@@ -109,16 +109,17 @@ Scoop fallback 只用于快速开发；发布前应以 `release.ps1` 自动生�
 .\bin\x64\Release\AVIF-WebP-Cli.exe -i input -o Avifoutput -q q90
 ```
 
-动态构建时，如果想确认 AVIF/WebP coder 是否随 runtime 一起复制，可以检查：
+动态构建时，如果想确认 AVIF/WebP/JXL coder 是否随 runtime 一起复制，可以检查：
 
 ```powershell
 Get-ChildItem .\bin\x64\Release\modules\coders\IM_MOD_RL_*heic*.dll
 Get-ChildItem .\bin\x64\Release\modules\coders\IM_MOD_RL_*webp*.dll
+Get-ChildItem .\bin\x64\Release\modules\coders\IM_MOD_RL_*jxl*.dll
 ```
 
 ## 单文件分发
 
-CMake 默认静态链接 Slint，因此 UI 不再需要 `slint_cpp.dll`。真正单 exe 还要求 ImageMagick、AVIF/WebP delegate、scnlib 和 CRT 都能静态链接；推荐顺序是：
+CMake 默认静态链接 Slint，因此 UI 不再需要 `slint_cpp.dll`。真正单 exe 还要求 ImageMagick、AVIF/WebP/JXL delegate、scnlib 和 CRT 都能静态链接；推荐顺序是：
 
 ```powershell
 .\scripts\build-magick.ps1 -Configuration Release -Arch x64 -Linkage Static

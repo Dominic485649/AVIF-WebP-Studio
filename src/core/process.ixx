@@ -346,22 +346,26 @@ fs::path output_dir_for(const AppConfig& cfg) {
 
 std::wstring output_extension_for(OutputFormat format) {
   switch (format) {
+    case OutputFormat::avif:
+      return L".avif";
     case OutputFormat::webp:
       return L".webp";
-    case OutputFormat::avif:
-    default:
-      return L".avif";
+    case OutputFormat::jxl:
+      return L".jxl";
   }
+  return L".avif";
 }
 
 std::string output_format_name(OutputFormat format) {
   switch (format) {
+    case OutputFormat::avif:
+      return "AVIF";
     case OutputFormat::webp:
       return "WEBP";
-    case OutputFormat::avif:
-    default:
-      return "AVIF";
+    case OutputFormat::jxl:
+      return "JXL";
   }
+  return "AVIF";
 }
 
 ImageFile make_image_file(std::size_t index,
@@ -461,7 +465,7 @@ fs::path planned_output_path_for(const AppConfig& cfg, const ImageFile& image) {
 
 void apply_source_extension_disambiguation(const AppConfig& cfg,
                                            std::vector<ImageFile>& files) {
-  // 例如 1.jpg 和 1.bmp 都套用 {name}.avif 时会同名；保留源扩展避免互相覆盖。
+  // 例如 1.jpg 和 1.bmp 都套用 {name}<输出扩展名> 时会同名；保留源扩展避免互相覆盖。
   std::unordered_map<std::wstring, std::vector<std::size_t>> by_output;
   for (std::size_t i = 0; i < files.size(); ++i) {
     by_output[normalized_lower_path_key(planned_output_path_for(cfg, files[i]))]

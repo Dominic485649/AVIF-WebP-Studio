@@ -12,11 +12,11 @@
 2. `MagickAutoOrientImage`
 3. 可选最长边缩放
 4. 可选 `MagickStripImage`
-5. 同时设置 `MagickSetCompressionQuality` 和 `MagickSetImageCompressionQuality`，未显式指定时 AVIF 用 q90，WebP 用 q95；q100 走无损路径
-6. 显式指定目标位深时调用 `MagickSetImageDepth`；AVIF 支持 8/10/12，留空保持原片，WebP 固定 8
-7. AVIF 输出时可选 `MagickSetOption("heic:speed", value)` 和 `MagickSetOption("heic:chroma", value)`
-8. `--define key=value` 映射到 `MagickSetOption(key, value)`
-9. `MagickSetImageFormat("AVIF" / "WEBP")`
+5. 同时设置 `MagickSetCompressionQuality` 和 `MagickSetImageCompressionQuality`，未显式指定时 AVIF 用 q90，WebP/JXL 用 q95；q100 走 coder 对应的无损或最高质量路径
+6. 显式指定目标位深时调用 `MagickSetImageDepth`；AVIF 支持 8/10/12，JXL 留空保持原片，WebP 固定 8
+7. AVIF 输出时可选 `MagickSetOption("heic:speed", value)` 和 `MagickSetOption("heic:chroma", value)`；JXL 输出时可把 `--speed` 映射为 `jxl:effort`
+8. `--define key=value` 映射到 `MagickSetOption(key, value)`，可透传 `jxl:*` 等 ImageMagick coder define
+9. `MagickSetImageFormat("AVIF" / "WEBP" / "JXL")`
 10. `MagickWriteImage`
 
 如果启用 `--optimize`，第 5 到第 10 步会变成候选搜索：在 `--min-quality` 到 `--quality` 间编码多个候选文件，用 MagickWand 解码候选并计算亮度 XPSNR 风格评分，最后保留达到目标 XPSNR 的最小体积版本。搜索沿用原 C# 的“边界验证 + 二分 + 邻域复查”思路，对目标值加 `0.05 dB` 安全边距，再寻找最低合格质量附近的最小体积候选。这个模式独立于手动固定 `--define`；手动 `--define` 会作为约束应用到每个候选图。
@@ -36,11 +36,12 @@
 - 批量扫描文件或目录，支持 `jpg/jpeg/png/webp/bmp/tif/tiff/gif/jxl/jp2/heic/heif/avif`
 - 输出名模板 `{name}` / `{index}` / `{ext}` / `{date}` / `{time}` / `{datetime}` / `{unix}` / `{rand}` / `{hash}` / `{hash8}` / `{params}`，CLI 默认 `{name}`
 - 输入为文件夹时保留原始子文件夹结构
-- 输出格式可选 AVIF 或 WebP
+- 输出格式可选 AVIF、WebP 或 JXL
 - `fast / balanced / best / extreme` 预设
-- AVIF 默认 q90、WebP 默认 q95，仍支持 `q90` 风格质量参数
-- 质量范围为 q1..q100，q100 为无损
+- AVIF 默认 q90、WebP/JXL 默认 q95，仍支持 `q90` 风格质量参数
+- 质量范围为 q1..q100，q100 为 coder 对应的无损或最高质量路径
 - AVIF 采样支持 `auto/444/422/420`，位深留空时保持原片，显式填写时支持 `8/10/12`；`auto` 会尽量从 AVIF/HEIC 或 JPEG 元数据保持源采样
+- JXL 不支持手动 chroma sampling，位深留空保持原片，可通过 `--define jxl:*` 控制 ImageMagick JPEG XL delegate
 - WebP 固定 8-bit；有损 WebP 为 Y'CbCr 4:2:0，无损 WebP 为 ARGB
 - 并行处理，处理时优先调度大文件
 - 重名输出支持覆盖、跳过、追加时间后缀、追加随机后缀
@@ -71,7 +72,7 @@
 
 - `avif.config`: 参数结构、预设、帮助文本、命令行解析。数值解析使用 vcpkg 的 `scnlib`。
 - `avif.core`: UTF-8/宽字符转换、图片扫描、日志、CSV 和少量 Win32 工具。
-- `avif.magick_backend`: MagickWand 运行时解析、环境变量配置、AVIF/WebP 编码。
+- `avif.magick_backend`: MagickWand 运行时解析、环境变量配置、AVIF/WebP/JXL 编码。
 - `avif.pipeline`: 多线程调度、进度事件和汇总。
 - `src\cli\main.cpp`: CLI 入口。
 - `src\ui\main.cpp`: Slint UI 入口和 Win32 文件/文件夹选择。

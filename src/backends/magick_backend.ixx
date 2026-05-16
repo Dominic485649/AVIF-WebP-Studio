@@ -156,6 +156,14 @@ struct WandDeleter {
   }
 };
 
+struct StringListDeleter {
+  void operator()(char** values) const noexcept {
+    if (values != nullptr) {
+      (void) MagickRelinquishMemory(values);
+    }
+  }
+};
+
 using WandPtr = std::unique_ptr<MagickWand, WandDeleter>;
 
 struct OperationMonitor {
@@ -224,6 +232,22 @@ void ensure_magick_initialized() {
   });
 }
 
+bool format_supported(std::string_view name) {
+  ensure_magick_initialized();
+  std::size_t count = 0;
+  std::unique_ptr<char*, StringListDeleter> formats{
+      MagickQueryFormats(std::string{name}.c_str(), &count)};
+  if (!formats || count == 0) {
+    return false;
+  }
+  for (std::size_t i = 0; i < count; ++i) {
+    if (formats.get()[i] != nullptr && name == formats.get()[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::expected<void, std::string> check(MagickWand* wand,
                                        MagickBooleanType status,
                                        std::string_view action,
@@ -263,6 +287,28 @@ std::string define_value(std::string_view define) {
     return "true";
   }
   return std::string{define.substr(pos + 1)};
+}
+
+int jxl_effort_from_speed(int speed) noexcept {
+  if (speed <= 1) {
+    return 9;
+  }
+  if (speed <= 3) {
+    return 8;
+  }
+  if (speed <= 5) {
+    return 7;
+  }
+  if (speed == 6) {
+    return 6;
+  }
+  if (speed == 7) {
+    return 5;
+  }
+  if (speed == 8) {
+    return 4;
+  }
+  return 3;
 }
 
 bool is_sensitive_define_key(std::string key) {
@@ -793,38 +839,52 @@ class MagickBackend {
       }
     }
 
-    if (cfg_.output_format == OutputFormat::avif) {
-      if (cfg_.magick_speed) {
-        const auto value = std::to_string(*cfg_.magick_speed);
-        if (auto ok = set_option(wand, "heic:speed", value,
-                                 "设置 heic:speed 失败", monitor);
-            !ok) {
-          return ok;
+    switch (cfg_.output_format) {
+      case OutputFormat::avif:
+        if (cfg_.magick_speed) {
+          const auto value = std::to_string(*cfg_.magick_speed);
+          if (auto ok = set_option(wand, "heic:speed", value,
+                                   "设置 heic:speed 失败", monitor);
+              !ok) {
+            return ok;
+          }
+        } else if (optimizer_candidate && !has_define("heic:speed")) {
+          // 自动搜索模式优先体积，AVIF 候选使用 libheif/aom 的最慢压缩档。
+          if (auto ok = set_option(wand, "heic:speed", "0",
+                                   "设置 heic:speed 失败", monitor);
+              !ok) {
+            return ok;
+          }
         }
-      } else if (optimizer_candidate && !has_define("heic:speed")) {
-        // 自动搜索模式优先体积，AVIF 候选使用 libheif/aom 的最慢压缩档。
-        if (auto ok = set_option(wand, "heic:speed", "0",
-                                 "设置 heic:speed 失败", monitor);
-            !ok) {
-          return ok;
+        if (cfg_.chroma_mode != ChromaMode::auto_keep &&
+            !has_define("heic:chroma")) {
+          if (auto ok = set_option(wand, "heic:chroma",
+                                   chroma_mode_name(cfg_.chroma_mode),
+                                   "设置 heic:chroma 失败", monitor);
+              !ok) {
+            return ok;
+          }
         }
-      }
-      if (cfg_.chroma_mode != ChromaMode::auto_keep &&
-          !has_define("heic:chroma")) {
-        if (auto ok = set_option(wand, "heic:chroma",
-                                 chroma_mode_name(cfg_.chroma_mode),
-                                 "设置 heic:chroma 失败", monitor);
-            !ok) {
-          return ok;
+        break;
+      case OutputFormat::webp:
+        if (optimizer_candidate && !has_define("webp:method")) {
+          if (auto ok = set_option(wand, "webp:method", "6",
+                                   "设置 webp:method 失败", monitor);
+              !ok) {
+            return ok;
+          }
         }
-      }
-    } else if (cfg_.output_format == OutputFormat::webp &&
-               optimizer_candidate && !has_define("webp:method")) {
-      if (auto ok = set_option(wand, "webp:method", "6",
-                               "设置 webp:method 失败", monitor);
-          !ok) {
-        return ok;
-      }
+        break;
+      case OutputFormat::jxl:
+        if (cfg_.magick_speed && !has_define("jxl:effort")) {
+          const auto effort = magick_detail::jxl_effort_from_speed(*cfg_.magick_speed);
+          if (auto ok = set_option(wand, "jxl:effort", std::to_string(effort),
+                                   "设置 jxl:effort 失败", monitor);
+              !ok) {
+            return ok;
+          }
+        }
+        break;
     }
 
     for (const auto& define : cfg_.magick_defines) {
@@ -845,6 +905,11 @@ class MagickBackend {
     }
 
     const auto format = output_format_name(cfg_.output_format);
+    if (cfg_.output_format == OutputFormat::jxl &&
+        !magick_detail::format_supported(format)) {
+      return std::unexpected{
+          "当前 ImageMagick runtime 不支持 JXL，请重新构建带 JPEG XL delegate 的 ImageMagick。"};
+    }
     if (auto ok = magick_detail::check(
             &wand, MagickSetImageFormat(&wand, format.c_str()),
             std::format("设置 {} 格式失败", format), &monitor,
@@ -1271,6 +1336,11 @@ class MagickBackend {
                     selected_quality);
     if (cfg_.output_format == OutputFormat::avif && cfg_.magick_speed) {
       text += std::format(" -define heic:speed={}", *cfg_.magick_speed);
+    }
+    if (cfg_.output_format == OutputFormat::jxl && cfg_.magick_speed &&
+        !has_define("jxl:effort")) {
+      text += std::format(" -define jxl:effort={}",
+                          magick_detail::jxl_effort_from_speed(*cfg_.magick_speed));
     }
     if (cfg_.bit_depth) {
       text += std::format(" -depth {}", *cfg_.bit_depth);

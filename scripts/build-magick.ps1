@@ -389,13 +389,14 @@ if (-not $SkipBuild) {
             "CORE_${Flavor}_MagickCore_",
             "CORE_${Flavor}_MagickWand_",
             "${CoderPrefix}_heic_",
-            "${CoderPrefix}_webp_"
+            "${CoderPrefix}_webp_",
+            "${CoderPrefix}_jxl_"
         ) -join ";"
 
         try {
             Invoke-MSBuild -MSBuild $MSBuild -Solution $Solution -ExtraArgs ($BuildArgs + "/t:$Targets")
         } catch {
-            Write-Warning "AVIF/WebP 最小目标构建失败，改为构建完整 ImageMagick 方案。原因: $($_.Exception.Message)"
+            Write-Warning "AVIF/WebP/JXL 最小目标构建失败，改为构建完整 ImageMagick 方案。原因: $($_.Exception.Message)"
             Invoke-MSBuild -MSBuild $MSBuild -Solution $Solution -ExtraArgs $BuildArgs
         }
     }
@@ -480,4 +481,4 @@ Write-Host "  .\release.ps1 -MagickRoot `"$RuntimeRoot`""
 Write-Host ""
 Write-Host "说明:"
 Write-Host "  默认 Static 会尽量减少分发 DLL；如果静态 delegate 链接失败，可改用 -Linkage Dynamic。"
-Write-Host "  默认只构建 MagickCore/MagickWand 与 AVIF(WebP/HEIC) 和 WebP coder；需要完整输入格式支持时加 -FullBuild。"
+Write-Host "  默认只构建 MagickCore/MagickWand 与 AVIF/HEIC、WebP、JXL coder；JXL 需要 JPEG XL delegate。需要完整输入格式支持时加 -FullBuild。"

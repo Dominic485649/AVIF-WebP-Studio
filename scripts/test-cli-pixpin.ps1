@@ -48,9 +48,11 @@ foreach ($image in $images) {
 $cases = @(
     @{ Name = 'avif-default'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'avif-default'), '-f', 'avif', '--summary', '--log', '--overwrite') },
     @{ Name = 'webp-default'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'webp-default'), '-f', 'webp', '--summary', '--overwrite') },
+    @{ Name = 'jxl-default'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'jxl-default'), '-f', 'jxl', '--summary', '--overwrite') },
     @{ Name = 'avif-resize-strip'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'avif-resize-strip'), '-f', 'avif', '--max-resolution', '1600', '--strip', '--chroma', '420', '--bit-depth', '8', '--template', '{index}_{name}_{params}', '--suffix-random', '--summary') },
     @{ Name = 'webp-skip-existing'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'webp-default'), '-f', 'webp', '--skip-existing', '--summary') },
-    @{ Name = 'avif-optimized-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'avif-optimized-smoke'), '-f', 'avif', '--optimize', '--target-xpsnr', '38', '--min-quality', '40', '--summary') }
+    @{ Name = 'avif-optimized-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'avif-optimized-smoke'), '-f', 'avif', '--optimize', '--target-xpsnr', '38', '--min-quality', '40', '--summary') },
+    @{ Name = 'jxl-optimized-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'jxl-optimized-smoke'), '-f', 'jxl', '--optimize', '--target-xpsnr', '38', '--min-quality', '40', '--summary') }
 )
 
 $results = @()

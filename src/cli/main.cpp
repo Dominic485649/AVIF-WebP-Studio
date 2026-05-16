@@ -73,10 +73,12 @@ int run_cli(int argc, wchar_t* argv[]) {
 }
 
 int wmain(int argc, wchar_t* argv[]) {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  std::setvbuf(stderr, nullptr, _IONBF, 0);
   const int exit_code = run_cli(argc, argv);
   std::fflush(stdout);
   std::fflush(stderr);
-  // 静态 ImageMagick/AVIF/WebP delegate 组合偶尔会在进程静态析构阶段
+  // 静态 ImageMagick/delegate 组合偶尔会在进程静态析构阶段
   // 触发第三方清理代码崩溃。CLI 到这里时工作已完成，直接交还退出码。
   ExitProcess(static_cast<UINT>(exit_code));
 }

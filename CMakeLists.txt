@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AVIFWebPStudio
-    VERSION 0.2
+    VERSION 0.2.1
     DESCRIPTION "AVIF-WebP-Studio batch converter with MagickWand and Slint"
     LANGUAGES CXX)
 
