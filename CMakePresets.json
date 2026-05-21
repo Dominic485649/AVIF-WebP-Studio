@@ -15,9 +15,9 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "MAGICK_ROOT": "${sourceDir}/third_party/imagemagick-runtime/x64/Debug",
         "AVIF_STATIC_MSVC_RUNTIME": "ON",
-        "AVIF_STATIC_SLINT": "ON"
+        "AVIF_STATIC_SLINT": "ON",
+        "AWJ_ENABLE_ZENRAVIF": "ON"
       }
     },
     {
@@ -29,9 +29,9 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
-        "MAGICK_ROOT": "${sourceDir}/third_party/imagemagick-runtime/x64/Release",
         "AVIF_STATIC_MSVC_RUNTIME": "ON",
         "AVIF_STATIC_SLINT": "ON",
+        "AWJ_ENABLE_ZENRAVIF": "ON",
         "AVIF_ENABLE_RELEASE_IPO": "OFF"
       }
     }

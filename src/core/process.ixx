@@ -15,6 +15,7 @@ module;
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -28,11 +29,12 @@ module;
 #include <vector>
 #include <windows.h>
 
-export module avif.core;
+export module awj.core;
 
-import avif.config;
+import awj.config;
+import awj.visual_quality;
 
-export namespace avif {
+export namespace awj {
 
 namespace fs = std::filesystem;
 
@@ -58,8 +60,35 @@ struct EncodeResult {
   std::uintmax_t original_bytes{};
   std::uintmax_t output_bytes{};
   int quality{};
+  std::optional<int> requested_visual_quality{};
+  double visual_score{};
+  double raw_gmsd{};
+  double raw_ms_ssim{};
+  double gmsd_quality_score{};
+  double msssim_quality_score{};
+  double gmsd_weight{};
+  double msssim_weight{};
+  int final_encoder_quality{};
+  int search_attempt_count{};
   int speed{};
+  std::string decoder_id{};
+  std::string encoder_id{};
+  std::string requested_encoder_id{};
+  std::string requested_chroma{};
+  std::string applied_chroma{};
+  std::optional<int> requested_bit_depth{};
+  std::optional<int> applied_bit_depth{};
+  std::string bit_depth_reason{};
+  std::string fallback_reason{};
+  bool encoder_experimental{};
+  std::string encoder_license{};
+  std::string speed_parameter_kind{};
+  int applied_speed{};
+  int encoder_threads{};
+  std::uint64_t memory_budget_bytes{};
   double seconds{};
+  bool quality_overridden_by_visual_quality{false};
+  bool lossless{false};
   bool processed{false};
   bool ok{false};
   bool skipped{false};
@@ -81,6 +110,14 @@ void set_current_thread_low_priority() noexcept {
 }
 
 namespace core_detail {
+
+struct LocalFreeDeleter {
+  void operator()(void* value) const noexcept {
+    if (value != nullptr) {
+      LocalFree(value);
+    }
+  }
+};
 
 std::string narrow_ascii(std::wstring_view text) {
   std::string out;
@@ -232,18 +269,19 @@ std::wstring normalized_lower_path_key(const fs::path& path) {
 }
 
 std::string win32_error_message(DWORD error) {
-  wchar_t* buffer = nullptr;
+  wchar_t* raw_buffer = nullptr;
   const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER |
                       FORMAT_MESSAGE_FROM_SYSTEM |
                       FORMAT_MESSAGE_IGNORE_INSERTS;
   const DWORD length = FormatMessageW(flags, nullptr, error, 0,
-                                      reinterpret_cast<wchar_t*>(&buffer), 0,
+                                      reinterpret_cast<wchar_t*>(&raw_buffer), 0,
                                       nullptr);
+  std::unique_ptr<wchar_t, core_detail::LocalFreeDeleter> buffer{raw_buffer};
   if (length == 0 || buffer == nullptr) {
     return std::format("Win32 error {}", error);
   }
-  std::wstring message{buffer, buffer + length};
-  LocalFree(buffer);
+  // FormatMessageW 用 LocalAlloc 返回系统缓冲区，交给 unique_ptr 确保所有早退路径都调用 LocalFree。
+  std::wstring message{buffer.get(), buffer.get() + length};
   return core_detail::trim_copy(utf8_from_wide(message));
 }
 
@@ -265,7 +303,7 @@ class FileLogger {
   explicit FileLogger(fs::path output_dir, bool enabled = true)
       : enabled_{enabled},
         log_dir_{std::move(output_dir) / L"log"},
-        log_file_{log_dir_ / L"avif-console.log"} {
+        log_file_{log_dir_ / L"awj-cli.log"} {
     if (enabled_) {
       std::error_code ec;
       fs::create_directories(log_dir_, ec);
@@ -614,9 +652,14 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
 }
 
 std::wstring encode_params_token_for(const AppConfig& cfg) {
-  std::wstring token = std::format(L"q{}", cfg.quality);
-  if (cfg.magick_speed) {
-    token += std::format(L"t{}", *cfg.magick_speed);
+  std::wstring token = cfg.visual_quality
+                           ? std::format(L"vq{}", *cfg.visual_quality)
+                           : std::format(L"q{}", cfg.quality);
+  if (cfg.visual_quality && *cfg.visual_quality == 100) {
+    token += L"_lossless";
+  }
+  if (cfg.speed) {
+    token += std::format(L"t{}", *cfg.speed);
   }
   if (cfg.chroma_mode != ChromaMode::auto_keep) {
     switch (cfg.chroma_mode) {
@@ -724,6 +767,13 @@ std::expected<void, std::string> write_csv(const fs::path& output_dir,
 
   csv << "\xEF\xBB\xBF";
   csv << "index,input,output,original_bytes,output_bytes,ratio,quality,speed,"
+         "requested_visual_quality,visual_score,raw_gmsd,raw_ms_ssim,"
+         "gmsd_quality_score,msssim_quality_score,gmsd_weight,msssim_weight,"
+         "final_encoder_quality,search_attempt_count,"
+         "decoder_id,encoder_selected,encoder_requested,encoder_experimental,encoder_license,"
+         "requested_chroma,applied_chroma,requested_bit_depth,applied_bit_depth,bit_depth_reason,"
+         "fallback_reason,speed_parameter_kind,applied_speed,encoder_threads,memory_budget_bytes,"
+         "quality_overridden_by_visual_quality,lossless,"
          "seconds,status,message,command\n";
 
   for (const auto& result : results) {
@@ -739,12 +789,45 @@ std::expected<void, std::string> write_csv(const fs::path& output_dir,
                                     : (result.processed ? "failed" : "pending"));
     const std::string speed =
         result.speed < 0 ? "default" : std::to_string(result.speed);
+    const std::string requested_visual_quality =
+        result.requested_visual_quality
+            ? std::to_string(*result.requested_visual_quality)
+            : std::string{};
+    const auto optional_int = [](std::optional<int> value) {
+      return value ? std::to_string(*value) : std::string{};
+    };
+    const auto metric = [](double value) {
+      return value > 0.0 ? std::format("{:.6f}", value) : std::string{};
+    };
     csv << (result.index + 1) << ','
         << core_detail::csv_escape(path_to_utf8(result.input_path)) << ','
         << core_detail::csv_escape(path_to_utf8(result.output_path)) << ','
         << result.original_bytes << ',' << result.output_bytes << ','
         << std::format("{:.4f}", ratio) << ',' << result.quality << ','
-        << speed << ',' << std::format("{:.3f}", result.seconds) << ','
+        << speed << ',' << requested_visual_quality << ','
+        << metric(result.visual_score) << ',' << metric(result.raw_gmsd) << ','
+        << metric(result.raw_ms_ssim) << ','
+        << metric(result.gmsd_quality_score) << ','
+        << metric(result.msssim_quality_score) << ','
+        << metric(result.gmsd_weight) << ',' << metric(result.msssim_weight) << ','
+        << result.final_encoder_quality << ',' << result.search_attempt_count << ','
+        << core_detail::csv_escape(result.decoder_id) << ','
+        << core_detail::csv_escape(result.encoder_id) << ','
+        << core_detail::csv_escape(result.requested_encoder_id) << ','
+        << (result.encoder_experimental ? "true" : "false") << ','
+        << core_detail::csv_escape(result.encoder_license) << ','
+        << core_detail::csv_escape(result.requested_chroma) << ','
+        << core_detail::csv_escape(result.applied_chroma) << ','
+        << optional_int(result.requested_bit_depth) << ','
+        << optional_int(result.applied_bit_depth) << ','
+        << core_detail::csv_escape(result.bit_depth_reason) << ','
+        << core_detail::csv_escape(result.fallback_reason) << ','
+        << core_detail::csv_escape(result.speed_parameter_kind) << ','
+        << result.applied_speed << ',' << result.encoder_threads << ','
+        << result.memory_budget_bytes << ','
+        << (result.quality_overridden_by_visual_quality ? "true" : "false") << ','
+        << (result.lossless ? "true" : "false") << ','
+        << std::format("{:.3f}", result.seconds) << ','
         << status << ',' << core_detail::csv_escape(result.message) << ','
         << core_detail::csv_escape(result.command) << '\n';
   }
@@ -756,4 +839,4 @@ std::expected<void, std::string> write_csv(const fs::path& output_dir,
   return {};
 }
 
-}  // namespace avif
+}  // namespace awj

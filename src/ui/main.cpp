@@ -2,7 +2,7 @@
 #define NOMINMAX
 #endif
 
-#include "avif_studio.h"
+#include "awj_studio.h"
 
 #include <algorithm>
 #include <charconv>
@@ -29,9 +29,10 @@
 #include <shellapi.h>
 #include <shobjidl.h>
 
-import avif.config;
-import avif.core;
-import avif.pipeline;
+import awj.config;
+import awj.core;
+import awj.encoding_defaults;
+import awj.pipeline;
 
 namespace {
 
@@ -41,6 +42,44 @@ struct UiState {
   slint::Timer theme_timer{};
   std::uint64_t run_id{};
   std::mutex mutex{};
+};
+
+struct ComApartment {
+  ComApartment() : init{CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED |
+                                                COINIT_DISABLE_OLE1DDE)} {}
+
+  ~ComApartment() {
+    if (should_uninitialize()) {
+      CoUninitialize();
+    }
+  }
+
+  [[nodiscard]] bool usable() const noexcept {
+    return SUCCEEDED(init) || init == RPC_E_CHANGED_MODE;
+  }
+
+  [[nodiscard]] bool should_uninitialize() const noexcept {
+    return SUCCEEDED(init);
+  }
+
+  HRESULT init{};
+};
+
+template <class Interface>
+struct ComReleaseDeleter {
+  void operator()(Interface* value) const noexcept {
+    if (value != nullptr) {
+      value->Release();
+    }
+  }
+};
+
+struct CoTaskMemDeleter {
+  void operator()(wchar_t* value) const noexcept {
+    if (value != nullptr) {
+      CoTaskMemFree(value);
+    }
+  }
 };
 
 std::string shared_to_string(const slint::SharedString& value) {
@@ -80,31 +119,6 @@ std::expected<int, std::string> parse_int_field(std::string text,
   return value;
 }
 
-std::expected<double, std::string> parse_double_field(std::string text,
-                                                      std::string_view name,
-                                                      double minimum,
-                                                      double maximum) {
-  text = trim_copy(std::move(text));
-  if (text.empty()) {
-    return std::unexpected{std::format("{} 不能为空。", name)};
-  }
-  double value{};
-  const auto* begin = text.data();
-  const auto* end = begin + text.size();
-  const auto [ptr, ec] = std::from_chars(begin, end, value);
-  if (ec != std::errc{} || ptr != end) {
-    return std::unexpected{std::format("{} 必须是数字。", name)};
-  }
-  if (!std::isfinite(value)) {
-    return std::unexpected{std::format("{} 必须是有限数字。", name)};
-  }
-  if (value < minimum || value > maximum) {
-    return std::unexpected{
-        std::format("{} 范围必须在 {:.3f} 到 {:.3f} 之间。", name, minimum, maximum)};
-  }
-  return value;
-}
-
 std::expected<std::optional<int>, std::string> parse_optional_int_field(
     std::string text,
     std::string_view name,
@@ -121,10 +135,15 @@ std::expected<std::optional<int>, std::string> parse_optional_int_field(
   return std::optional<int>{*value};
 }
 
+std::expected<std::optional<int>, std::string> parse_visual_quality_field(
+    std::string text) {
+  return parse_optional_int_field(std::move(text), "视觉质量", 1, 100);
+}
+
 std::expected<int, std::string> parse_jobs_field(std::string text) {
   text = trim_copy(std::move(text));
   if (text.empty()) {
-    return avif::default_max_jobs();
+    return awj::default_max_jobs();
   }
   return parse_int_field(std::move(text), "线程", 1, 128);
 }
@@ -149,18 +168,24 @@ std::expected<std::optional<int>, std::string> parse_bit_depth_field(std::string
   return std::optional<int>{*value};
 }
 
-std::expected<void, std::string> append_token_defines(avif::AppConfig& cfg,
-                                                        std::string text) {
+std::expected<std::uint64_t, std::string> parse_memory_limit_field(std::string text) {
+  text = trim_copy(std::move(text));
+  if (text.empty()) {
+    text = std::string{awj::encoding_defaults::default_memory_limit_text};
+  }
+  return awj::parse_memory_limit(awj::wide_from_utf8(text));
+}
+
+std::expected<void, std::string> validate_token_options(std::string text) {
   std::size_t start = 0;
   while (start < text.size()) {
     const auto end = text.find_first_of(",;", start);
     auto token = trim_copy(text.substr(start, end - start));
     if (!token.empty()) {
-      auto wide = avif::wide_from_utf8(token);
-      if (auto valid = avif::validate_magick_define(wide); !valid) {
+      auto wide = awj::wide_from_utf8(token);
+      if (auto valid = awj::validate_native_option(wide); !valid) {
         return std::unexpected{valid.error()};
       }
-      cfg.magick_defines.push_back(std::move(wide));
     }
     if (end == std::string::npos) {
       break;
@@ -174,11 +199,19 @@ slint::SharedString to_shared(std::string_view text) {
   return slint::SharedString{std::string{text}.c_str()};
 }
 
+std::string text_from_wide(std::wstring_view text) {
+  return awj::utf8_from_wide(text);
+}
+
+std::string text_from_int(int value) {
+  return std::format("{}", value);
+}
+
 bool template_contains_token(std::string_view text, std::string_view token) {
   return text.find(token) != std::string_view::npos;
 }
 
-void sync_template_flags(AvifStudio& app) {
+void sync_template_flags(AwjStudio& app) {
   const auto text = shared_to_string(app.get_template_text());
   app.set_template_params_selected(template_contains_token(text, "{params}"));
   app.set_template_date_selected(template_contains_token(text, "{date}"));
@@ -196,7 +229,7 @@ std::string token_with_separator(std::string_view text, std::string_view token) 
   return std::format("{}{}{}", text, needs_separator ? "_" : "", token);
 }
 
-void toggle_template_token(AvifStudio& app, std::string_view token) {
+void toggle_template_token(AwjStudio& app, std::string_view token) {
   auto text = shared_to_string(app.get_template_text());
   const auto pos = text.find(token);
   if (pos != std::string::npos) {
@@ -207,7 +240,7 @@ void toggle_template_token(AvifStudio& app, std::string_view token) {
       text.erase(pos, 1);
     }
     if (text.empty()) {
-      text = "{name}";
+      text = std::string{awj::encoding_defaults::default_output_template_text};
     }
   } else {
     text = token_with_separator(text, token);
@@ -232,7 +265,7 @@ bool windows_prefers_dark_mode() {
 }
 
 template <class Function>
-void post_to_ui(slint::ComponentWeakHandle<AvifStudio> weak, Function&& fn) {
+void post_to_ui(slint::ComponentWeakHandle<AwjStudio> weak, Function&& fn) {
   slint::invoke_from_event_loop([weak, fn = std::forward<Function>(fn)]() mutable {
     if (auto app = weak.lock()) {
       fn(**app);
@@ -240,7 +273,7 @@ void post_to_ui(slint::ComponentWeakHandle<AvifStudio> weak, Function&& fn) {
   });
 }
 
-std::string result_status_text(const avif::EncodeResult& result) {
+std::string result_status_text(const awj::EncodeResult& result) {
   if (result.ok) {
     if (result.skipped) {
       return "已跳过";
@@ -249,7 +282,13 @@ std::string result_status_text(const avif::EncodeResult& result) {
                              ? 0.0
                              : static_cast<double>(result.output_bytes) /
                                    static_cast<double>(result.original_bytes) * 100.0;
-    return std::format("完成 · {} · {:.1f}% · {:.2f}s", avif::format_size(result.output_bytes),
+    if (result.requested_visual_quality) {
+      return std::format("完成 · {} · {:.1f}% · VQ {:.2f} · q{} · {:.2f}s",
+                         awj::format_size(result.output_bytes), ratio,
+                         result.visual_score, result.final_encoder_quality,
+                         result.seconds);
+    }
+    return std::format("完成 · {} · {:.1f}% · {:.2f}s", awj::format_size(result.output_bytes),
                        ratio, result.seconds);
   }
   if (result.canceled) {
@@ -258,22 +297,40 @@ std::string result_status_text(const avif::EncodeResult& result) {
   return result.message.empty() ? "失败" : std::format("失败 · {}", result.message);
 }
 
+std::string result_log_text(const awj::EncodeResult& result) {
+  if (!result.requested_visual_quality || !result.ok || result.skipped) {
+    return {};
+  }
+  if (result.lossless) {
+    return std::format("requested={} · lossless=true · final q{} · {}",
+                       *result.requested_visual_quality,
+                       result.final_encoder_quality,
+                       awj::format_size(result.output_bytes));
+  }
+  return std::format(
+      "score {:.2f} · GMSD {:.6f} · MS-SSIM {:.6f} · Qg {:.2f} · Qm {:.2f} · q{} · {} 次 · {}",
+      result.visual_score, result.raw_gmsd, result.raw_ms_ssim,
+      result.gmsd_quality_score, result.msssim_quality_score,
+      result.final_encoder_quality, result.search_attempt_count,
+      awj::format_size(result.output_bytes));
+}
+
 void add_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
-                  const avif::EncodeResult& result) {
-  auto output_format = avif::OutputFormat::avif;
+                  const awj::EncodeResult& result) {
+  auto output_format = awj::OutputFormat::avif;
   auto ext = result.output_path.extension().wstring();
   std::ranges::transform(ext, ext.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
   if (ext == L".webp") {
-    output_format = avif::OutputFormat::webp;
+    output_format = awj::OutputFormat::webp;
   } else if (ext == L".jxl") {
-    output_format = avif::OutputFormat::jxl;
+    output_format = awj::OutputFormat::jxl;
   }
 
-  rows->push_back(TaskRow{.filename = to_shared(avif::path_to_utf8(result.input_path.filename())),
-                          .format = to_shared(avif::output_format_name(output_format)),
+  rows->push_back(TaskRow{.filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
+                          .format = to_shared(awj::output_format_name(output_format)),
                           .status = to_shared(result_status_text(result)),
-                          .log = {}});
+                          .log = to_shared(result_log_text(result))});
   constexpr std::size_t max_rows = 5000;
   if (rows->row_count() > max_rows) {
     rows->erase(0);
@@ -297,57 +354,112 @@ void trim_process_working_set() {
                            static_cast<SIZE_T>(-1));
 }
 
-avif::CollisionMode collision_from_index(int index) {
+awj::CollisionMode collision_from_index(int index) {
   switch (index) {
     case 1:
-      return avif::CollisionMode::skip;
+      return awj::CollisionMode::skip;
     case 2:
-      return avif::CollisionMode::suffix_time;
+      return awj::CollisionMode::suffix_time;
     case 3:
-      return avif::CollisionMode::suffix_random;
+      return awj::CollisionMode::suffix_random;
     case 0:
     default:
-      return avif::CollisionMode::overwrite;
+      return awj::CollisionMode::overwrite;
   }
 }
 
-avif::OutputFormat output_format_from_index(int index) {
+awj::OutputFormat output_format_from_index(int index) {
   switch (index) {
     case 1:
-      return avif::OutputFormat::webp;
+      return awj::OutputFormat::webp;
     case 2:
-      return avif::OutputFormat::jxl;
+      return awj::OutputFormat::jxl;
     case 0:
     default:
-      return avif::OutputFormat::avif;
+      return awj::OutputFormat::avif;
   }
 }
 
-avif::ChromaMode chroma_from_index(int index) {
+awj::ChromaMode chroma_from_index(int index) {
   switch (index) {
     case 1:
-      return avif::ChromaMode::yuv444;
+      return awj::ChromaMode::yuv444;
     case 2:
-      return avif::ChromaMode::yuv422;
+      return awj::ChromaMode::yuv422;
     case 3:
-      return avif::ChromaMode::yuv420;
+      return awj::ChromaMode::yuv420;
     case 0:
     default:
-      return avif::ChromaMode::auto_keep;
+      return awj::ChromaMode::auto_keep;
   }
 }
 
-std::expected<avif::AppConfig, std::string> config_from_ui(const AvifStudio& app) {
-  avif::AppConfig cfg;
-  cfg.input_path = avif::wide_from_utf8(shared_to_string(app.get_input_path()));
-  cfg.output_dir = avif::wide_from_utf8(shared_to_string(app.get_output_dir()));
+awj::AvifEncoderMode avif_encoder_from_index(int index) {
+  switch (index) {
+    case 1:
+      return awj::AvifEncoderMode::svt;
+    case 2:
+      return awj::AvifEncoderMode::aom;
+    case 3:
+      return awj::AvifEncoderMode::zenrav1e;
+    case 0:
+    default:
+      return awj::AvifEncoderMode::automatic;
+  }
+}
+
+void apply_format_defaults_to_ui(AwjStudio& app, int format_index) {
+  const auto format = output_format_from_index(format_index);
+  if (app.get_quality_follows_format()) {
+    app.set_quality_text(to_shared(text_from_int(awj::default_quality_for(format))));
+  }
+  if (format == awj::OutputFormat::webp) {
+    app.set_bit_depth_text(to_shared(text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
+    app.set_chroma_index(0);
+  } else {
+    if (app.get_bit_depth_follows_format()) {
+      app.set_bit_depth_text({});
+    }
+    if (format != awj::OutputFormat::avif) {
+      app.set_chroma_index(0);
+    }
+  }
+}
+
+void initialize_ui_defaults(AwjStudio& app) {
+  const auto defaults = awj::default_app_config();
+  app.set_input_path(to_shared(text_from_wide(defaults.input_path.native())));
+  app.set_template_text(to_shared(text_from_wide(defaults.output_template)));
+  app.set_quality_text(to_shared(text_from_int(defaults.quality)));
+  app.set_avif_quality_default(to_shared(text_from_int(awj::default_quality_for(awj::OutputFormat::avif))));
+  app.set_webp_quality_default(to_shared(text_from_int(awj::default_quality_for(awj::OutputFormat::webp))));
+  app.set_jxl_quality_default(to_shared(text_from_int(awj::default_quality_for(awj::OutputFormat::jxl))));
+  app.set_webp_bit_depth_default(to_shared(text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
+  app.set_memory_limit_text(to_shared(awj::encoding_defaults::default_memory_limit_text));
+  app.set_format_index(0);
+  app.set_backend_index(0);
+  app.set_avif_encoder_index(0);
+  app.set_collision_index(0);
+  app.set_chroma_index(0);
+  app.set_quality_follows_format(true);
+  app.set_bit_depth_follows_format(true);
+}
+
+std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) {
+  awj::AppConfig cfg = awj::default_app_config();
+  cfg.input_path = awj::wide_from_utf8(shared_to_string(app.get_input_path()));
+  cfg.output_dir = awj::wide_from_utf8(shared_to_string(app.get_output_dir()));
   cfg.output_template =
-      avif::wide_from_utf8(shared_to_string(app.get_template_text()));
+      awj::wide_from_utf8(shared_to_string(app.get_template_text()));
   if (cfg.output_template.empty()) {
-    cfg.output_template = L"{name}";
+    cfg.output_template = awj::encoding_defaults::default_output_template;
   }
 
   cfg.output_format = output_format_from_index(app.get_format_index());
+  cfg.avif_encoder = cfg.output_format == awj::OutputFormat::avif
+                         ? avif_encoder_from_index(app.get_avif_encoder_index())
+                         : awj::AvifEncoderMode::automatic;
+  cfg.enable_experimental_encoders = app.get_experimental_encoders();
   cfg.collision_mode = collision_from_index(app.get_collision_index());
 
   const auto quality =
@@ -356,18 +468,26 @@ std::expected<avif::AppConfig, std::string> config_from_ui(const AvifStudio& app
     return std::unexpected{quality.error()};
   }
   cfg.quality = *quality;
+  const auto visual_quality = parse_visual_quality_field(
+      shared_to_string(app.get_visual_quality_text()));
+  if (!visual_quality) {
+    return std::unexpected{visual_quality.error()};
+  }
+  cfg.visual_quality = *visual_quality;
 
   const auto bit_depth = app.get_format_index() == 1
-                             ? std::expected<std::optional<int>, std::string>{std::optional<int>{8}}
+                             ? std::expected<std::optional<int>, std::string>{std::optional<int>{awj::encoding_defaults::default_webp_bit_depth}}
                              : parse_bit_depth_field(shared_to_string(app.get_bit_depth_text()));
   if (!bit_depth) {
     return std::unexpected{bit_depth.error()};
   }
   cfg.bit_depth = *bit_depth;
 
-  cfg.chroma_mode = cfg.output_format == avif::OutputFormat::avif
-                        ? chroma_from_index(app.get_chroma_index())
-                        : avif::ChromaMode::auto_keep;
+  cfg.chroma_mode = cfg.output_format == awj::OutputFormat::avif
+                        ? (cfg.avif_encoder == awj::AvifEncoderMode::svt
+                               ? awj::ChromaMode::yuv420
+                               : chroma_from_index(app.get_chroma_index()))
+                        : awj::ChromaMode::auto_keep;
 
   const auto max_resolution = parse_resolution_field(
       shared_to_string(app.get_max_resolution_text()));
@@ -382,50 +502,46 @@ std::expected<avif::AppConfig, std::string> config_from_ui(const AvifStudio& app
   }
   cfg.max_jobs = *max_jobs;
 
+  const auto memory_limit =
+      parse_memory_limit_field(shared_to_string(app.get_memory_limit_text()));
+  if (!memory_limit) {
+    return std::unexpected{memory_limit.error()};
+  }
+  cfg.memory_limit_bytes = *memory_limit;
+
   const auto speed =
       parse_optional_int_field(shared_to_string(app.get_speed_text()), "speed", 0, 10);
   if (!speed) {
     return std::unexpected{speed.error()};
   }
-  cfg.magick_speed = *speed;
-
-  cfg.optimize_output = app.get_optimize_output();
-  const auto target_xpsnr = parse_double_field(
-      shared_to_string(app.get_target_xpsnr_text()), "XPSNR", 0.0, 120.0);
-  if (!target_xpsnr) {
-    return std::unexpected{target_xpsnr.error()};
-  }
-  cfg.optimize_target_xpsnr = *target_xpsnr;
+  cfg.speed = *speed;
 
   cfg.strip_metadata = app.get_strip_metadata();
   cfg.write_summary = app.get_write_summary();
   cfg.write_log = app.get_write_log();
-  if (auto defines = append_token_defines(cfg, shared_to_string(app.get_defines_text()));
-      !defines) {
-    return std::unexpected{defines.error()};
+  if (auto options = validate_token_options(shared_to_string(app.get_defines_text()));
+      !options) {
+    return std::unexpected{options.error()};
   }
 
-  if (auto valid = avif::validate_config(cfg); !valid) {
+  if (auto valid = awj::finalize_config_defaults(cfg, true, false); !valid) {
     return std::unexpected{valid.error()};
   }
   return cfg;
 }
 
 std::optional<std::filesystem::path> choose_path(bool pick_folder) {
-  const HRESULT init =
-      CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-  const bool uninitialize = SUCCEEDED(init);
-  if (FAILED(init) && init != RPC_E_CHANGED_MODE) {
+  ComApartment apartment;
+  if (!apartment.usable()) {
     return std::nullopt;
   }
 
-  IFileDialog* dialog = nullptr;
+  // 文件选择器是 COM 对象，unique_ptr 的 deleter 让后续任何早退路径都能配对 Release。
+  IFileDialog* raw_dialog = nullptr;
   HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dialog));
+                                IID_PPV_ARGS(&raw_dialog));
+  std::unique_ptr<IFileDialog, ComReleaseDeleter<IFileDialog>> dialog{raw_dialog};
   if (FAILED(hr) || dialog == nullptr) {
-    if (uninitialize) {
-      CoUninitialize();
-    }
     return std::nullopt;
   }
 
@@ -445,51 +561,37 @@ std::optional<std::filesystem::path> choose_path(bool pick_folder) {
 
   hr = dialog->Show(nullptr);
   if (FAILED(hr)) {
-    dialog->Release();
-    if (uninitialize) {
-      CoUninitialize();
-    }
     return std::nullopt;
   }
 
-  IShellItem* item = nullptr;
-  hr = dialog->GetResult(&item);
-  dialog->Release();
+  IShellItem* raw_item = nullptr;
+  hr = dialog->GetResult(&raw_item);
+  std::unique_ptr<IShellItem, ComReleaseDeleter<IShellItem>> item{raw_item};
   if (FAILED(hr) || item == nullptr) {
-    if (uninitialize) {
-      CoUninitialize();
-    }
     return std::nullopt;
   }
 
   PWSTR raw_path = nullptr;
   hr = item->GetDisplayName(SIGDN_FILESYSPATH, &raw_path);
-  item->Release();
-  if (FAILED(hr) || raw_path == nullptr) {
-    if (uninitialize) {
-      CoUninitialize();
-    }
+  std::unique_ptr<wchar_t, CoTaskMemDeleter> path{raw_path};
+  if (FAILED(hr) || path == nullptr) {
     return std::nullopt;
   }
 
-  std::filesystem::path result{raw_path};
-  CoTaskMemFree(raw_path);
-  if (uninitialize) {
-    CoUninitialize();
-  }
-  return result;
+  // SIGDN_FILESYSPATH 返回 CoTaskMemAlloc 缓冲区，复制进 filesystem::path 后立即交还给 COM 分配器。
+  return std::filesystem::path{path.get()};
 }
 
 
-std::filesystem::path effective_output_dir(const AvifStudio& app) {
+std::filesystem::path effective_output_dir(const AwjStudio& app) {
   auto output = std::filesystem::path{
-      avif::wide_from_utf8(shared_to_string(app.get_output_dir()))};
+      awj::wide_from_utf8(shared_to_string(app.get_output_dir()))};
   if (!output.empty()) {
     return output;
   }
   const auto input =
-      std::filesystem::path{avif::wide_from_utf8(shared_to_string(app.get_input_path()))};
-  return avif::default_output_dir_for(input);
+      std::filesystem::path{awj::wide_from_utf8(shared_to_string(app.get_input_path()))};
+  return awj::default_output_dir_for(input);
 }
 
 void open_path(std::filesystem::path path, bool create_if_missing) {
@@ -516,12 +618,13 @@ void open_path(std::filesystem::path path, bool create_if_missing) {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   try {
-    auto app = AvifStudio::create();
+    auto app = AwjStudio::create();
     auto state = std::make_shared<UiState>();
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
     auto weak = slint::ComponentWeakHandle(app);
 
     app->set_task_rows(state->task_rows);
+    initialize_ui_defaults(*app);
     app->set_threads_text({});
     app->set_system_dark_mode(windows_prefers_dark_mode());
     sync_template_flags(*app);
@@ -531,6 +634,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       if (auto app = weak.lock()) {
         (*app)->set_progress(0.0f);
         (*app)->set_status_text(to_shared("就绪"));
+      }
+    });
+
+    app->on_format_defaults_requested([weak](int index) {
+      if (auto app = weak.lock()) {
+        apply_format_defaults_to_ui(**app, index);
       }
     });
 
@@ -550,10 +659,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       if (auto app = weak.lock()) {
         const bool pick_folder = (*app)->get_input_mode_index() != 0;
         if (auto path = choose_path(pick_folder)) {
-          const auto output = avif::default_output_dir_for(*path);
-          post_to_ui(weak, [path = *path, output](AvifStudio& app) {
-            app.set_input_path(to_shared(avif::path_to_utf8(path)));
-            app.set_output_dir(to_shared(avif::path_to_utf8(output)));
+          const auto output = awj::default_output_dir_for(*path);
+          post_to_ui(weak, [path = *path, output](AwjStudio& app) {
+            app.set_input_path(to_shared(awj::path_to_utf8(path)));
+            app.set_output_dir(to_shared(awj::path_to_utf8(output)));
           });
         }
       }
@@ -562,15 +671,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     app->on_open_input([weak] {
       if (auto app = weak.lock()) {
         const auto input = std::filesystem::path{
-            avif::wide_from_utf8(shared_to_string((*app)->get_input_path()))};
+            awj::wide_from_utf8(shared_to_string((*app)->get_input_path()))};
         open_path(input, false);
       }
     });
 
     app->on_browse_output([weak] {
       if (auto folder = choose_path(true)) {
-        post_to_ui(weak, [folder = *folder](AvifStudio& app) {
-          app.set_output_dir(to_shared(avif::path_to_utf8(folder)));
+        post_to_ui(weak, [folder = *folder](AwjStudio& app) {
+          app.set_output_dir(to_shared(awj::path_to_utf8(folder)));
         });
       }
     });
@@ -629,10 +738,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       std::jthread worker{
           [weak, state, rows, run_id, cfg = std::move(*cfg)](
               std::stop_token token) {
-            const auto summary = avif::run_batch(
+            const auto summary = awj::run_batch(
                 cfg,
-                [weak, state, rows, run_id](const avif::BatchProgress& event) {
-                  post_to_ui(weak, [event, state, rows, run_id](AvifStudio& app) {
+                [weak, state, rows, run_id](const awj::BatchProgress& event) {
+                  // 后台线程只能投递 weak handle；run_id 用来丢弃上一轮转换迟到的 UI 更新。
+                  post_to_ui(weak, [event, state, rows, run_id](AwjStudio& app) {
                     {
                       std::scoped_lock lock{state->mutex};
                       if (state->run_id != run_id) {
@@ -647,10 +757,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                       app.set_status_text(to_shared(
                           std::format("{}/{}", event.completed, event.total)));
                     }
-                    if (event.kind == avif::BatchEventKind::item_finished) {
+                    if (event.kind == awj::BatchEventKind::item_finished) {
                       add_task_row(rows, event.result);
                     }
-                    if (event.kind == avif::BatchEventKind::warning) {
+                    if (event.kind == awj::BatchEventKind::warning) {
                       append_log_row(rows, event.text);
                     }
                   });
@@ -658,7 +768,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                 token);
 
             trim_process_working_set();
-            post_to_ui(weak, [summary, state, run_id](AvifStudio& app) {
+            // summary 回调同样可能晚于用户新开的一轮转换，必须在 event loop 内再次校验 run_id。
+            post_to_ui(weak, [summary, state, run_id](AwjStudio& app) {
               {
                 std::scoped_lock lock{state->mutex};
                 if (state->run_id != run_id) {
@@ -695,11 +806,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
     return 0;
   } catch (const std::exception& ex) {
-    const auto message = avif::wide_from_utf8(std::format("Studio 启动失败：{}", ex.what()));
-    MessageBoxW(nullptr, message.c_str(), L"AVIF-WebP-Studio", MB_OK | MB_ICONERROR);
+    const auto message = awj::wide_from_utf8(std::format("Studio 启动失败：{}", ex.what()));
+    MessageBoxW(nullptr, message.c_str(), L"AWJ-studio", MB_OK | MB_ICONERROR);
     return 1;
   } catch (...) {
-    MessageBoxW(nullptr, L"Studio 启动失败：未知异常。", L"AVIF-WebP-Studio", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, L"Studio 启动失败：未知异常。", L"AWJ-studio", MB_OK | MB_ICONERROR);
     return 1;
   }
 }

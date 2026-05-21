@@ -1,0 +1,828 @@
+import { Button, CheckBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+import "./fonts/HarmonyOS_SansSC_Regular.ttf";
+
+export struct TaskRow {
+    filename: string,
+    format: string,
+    status: string,
+    log: string,
+}
+
+component SoftComboBox inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current-index;
+    in property <bool> enabled: true;
+    out property <bool> has-hover <=> touch.has-hover;
+    in property <color> normal-background: #fbfdff;
+    in property <color> hover-background: #f3f8ff;
+    in property <color> disabled-background: #eef2f7;
+    in property <color> selected-background: #e7f1ff;
+    in property <color> normal-border: #dfe8f3;
+    in property <color> hover-border: #b9d6f7;
+    in property <color> normal-text: #334155;
+    in property <color> disabled-text: #94a3b8;
+    in property <color> muted-text: #64748b;
+    in property <color> selected-text: #0b5ed7;
+    property <bool> popup-open: false;
+
+    min-width: 128px;
+    min-height: 34px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.has-hover ? root.hover-border : root.normal-border;
+    background: root.enabled ? (root.has-hover ? root.hover-background : root.normal-background) : root.disabled-background;
+    clip: true;
+    animate background, border-color { duration: 150ms; easing: ease-out; }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
+        Text {
+            text: root.model[root.current-index];
+            color: root.enabled ? root.normal-text : root.disabled-text;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            animate color { duration: 150ms; easing: ease-out; }
+        }
+        Text {
+            text: root.popup-open ? "▲" : "▼";
+            color: root.muted-text;
+            font-size: 12px;
+            font-weight: 700;
+            vertical-alignment: center;
+            animate color { duration: 150ms; easing: ease-out; }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.popup-open = true;
+                popup.show();
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0px;
+        y: root.height + 4px;
+        width: root.width;
+        height: max(root.model.length, 1) * 34px + 8px;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: root.normal-border;
+            background: root.normal-background;
+            clip: true;
+
+            VerticalLayout {
+                padding: 4px;
+                for value[index] in root.model: Rectangle {
+                    height: 34px;
+                    border-radius: 6px;
+                    background: index == root.current-index ? root.selected-background : (item-touch.has-hover ? root.hover-background : transparent);
+                    animate background { duration: 120ms; easing: ease-out; }
+
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        text: value;
+                        color: index == root.current-index ? root.selected-text : root.normal-text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    item-touch := TouchArea {
+                        clicked => {
+                            root.current-index = index;
+                            root.popup-open = false;
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <color> normal-background: transparent;
+    in property <color> hover-background: #eef6ff;
+    in property <color> selected-background: #0f7c8c;
+    in property <color> normal-text: #334155;
+    in property <color> selected-text: #ffffff;
+    out property <bool> has-hover <=> touch.has-hover;
+    callback clicked();
+
+    height: 50px;
+    background: root.selected ? root.selected-background : (root.has-hover ? root.hover-background : root.normal-background);
+    animate background { duration: 150ms; easing: ease-out; }
+
+    Text {
+        text: root.label;
+        color: root.selected ? root.selected-text : root.normal-text;
+        font-size: 18px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        animate color { duration: 150ms; easing: ease-out; }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AwjStudio inherits Window {
+    title: "AWJ Studio";
+    default-font-family: "鸿蒙黑体";
+    preferred-width: 1220px;
+    preferred-height: 800px;
+    min-width: 820px;
+    min-height: 560px;
+
+    in-out property <string> input-path: "input";
+    in-out property <int> input-mode-index: 1;
+    in-out property <string> output-dir: "";
+    in-out property <int> format-index: 0;
+    in-out property <int> backend-index: 0;
+    in-out property <int> avif-encoder-index: 0;
+    in-out property <bool> experimental-encoders: false;
+    in-out property <string> avif-quality-default: "";
+    in-out property <string> webp-quality-default: "";
+    in-out property <string> jxl-quality-default: "";
+    in-out property <string> webp-bit-depth-default: "";
+    in-out property <string> quality-text: "";
+    in-out property <string> visual-quality-text: "";
+    in-out property <bool> quality-follows-format: true;
+    in-out property <string> bit-depth-text: "";
+    in-out property <bool> bit-depth-follows-format: true;
+    in-out property <int> chroma-index: 0;
+    in-out property <string> max-resolution-text: "";
+    in-out property <string> threads-text: "";
+    in-out property <string> memory-limit-text: "";
+    in-out property <string> speed-text: "";
+    in-out property <string> template-text: "";
+    in-out property <bool> template-params-selected: false;
+    in-out property <bool> template-date-selected: false;
+    in-out property <bool> template-time-selected: false;
+    in-out property <bool> template-rand-selected: false;
+    in-out property <bool> template-hash8-selected: false;
+    in-out property <int> collision-index: 0;
+    in-out property <string> defines-text: "";
+    in-out property <int> theme-index: 0;
+    in-out property <bool> system-dark-mode: false;
+    in-out property <bool> strip-metadata: false;
+    in-out property <bool> write-summary: false;
+    in-out property <bool> write-log: false;
+    in-out property <bool> running: false;
+    in-out property <float> progress: 0.0;
+    in-out property <string> status-text: "就绪";
+    in property <[TaskRow]> task-rows;
+
+    property <int> selected-page: 1;
+    property <bool> dark-mode: root.theme-index == 2 || (root.theme-index == 0 && root.system-dark-mode);
+    property <color> page-bg: root.dark-mode ? #10151e : #f3f7fd;
+    property <color> mica-tint: root.dark-mode ? #151c28 : #edf4ff;
+    property <color> nav-bg: root.dark-mode ? #141b25 : #f8fbff;
+    property <color> chrome-bg: root.dark-mode ? #18202c : #ffffff;
+    property <color> panel-bg: root.dark-mode ? #1b2330 : #ffffff;
+    property <color> panel-bg-soft: root.dark-mode ? #202a39 : #f8fbff;
+    property <color> panel-border: root.dark-mode ? #303b4c : #dde7f3;
+    property <color> field-bg: root.dark-mode ? #222c3b : #fbfdff;
+    property <color> field-border: root.dark-mode ? #3a4658 : #e2eaf4;
+    property <color> text-strong: root.dark-mode ? #f5f8fc : #111827;
+    property <color> text-body: root.dark-mode ? #dce5f1 : #334155;
+    property <color> text-muted: root.dark-mode ? #a0aec2 : #64748b;
+    property <color> text-soft: root.dark-mode ? #748299 : #94a3b8;
+    property <color> accent: #0d6efd;
+    property <color> accent-strong: root.dark-mode ? #5aa2ff : #0b5ed7;
+    property <color> accent-soft: root.dark-mode ? #14325b : #e7f1ff;
+    property <color> success: #22b84c;
+    property <color> success-soft: root.dark-mode ? #143522 : #eaf8ef;
+    property <color> warning: #d97706;
+    property <color> warning-soft: root.dark-mode ? #332816 : #fff7e8;
+    property <color> progress-track: root.dark-mode ? #293445 : #dbe7f5;
+    property <color> progress-fill: root.running ? #0d6efd : #22b84c;
+
+    property <color> combo-bg: root.dark-mode ? #222c3b : #fbfdff;
+    property <color> combo-bg-hover: root.dark-mode ? #293548 : #f3f8ff;
+    property <color> combo-bg-disabled: root.dark-mode ? #1d2532 : #eef2f7;
+    property <color> combo-selected-bg: root.dark-mode ? #14325b : #e7f1ff;
+    property <color> combo-border: root.dark-mode ? #3a4658 : #dfe8f3;
+    property <color> combo-border-hover: root.dark-mode ? #4d6684 : #b9d6f7;
+
+    callback browse-input();
+    callback open-input();
+    callback browse-output();
+    callback open-output();
+    callback start-conversion();
+    callback cancel-conversion();
+    callback clear-tasks();
+    callback format-defaults-requested(int);
+    callback toggle-template-token(string);
+
+    init => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    changed dark-mode => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    changed format-index => {
+        root.format-defaults-requested(root.format-index);
+        if (root.format-index == 0 && root.avif-encoder-index == 1) {
+            root.chroma-index = 3;
+        }
+    }
+
+    changed avif-encoder-index => {
+        if (root.format-index == 0 && root.avif-encoder-index == 1) {
+            root.chroma-index = 3;
+        }
+    }
+
+    changed quality-text => {
+        root.quality-follows-format =
+            (root.format-index == 0 && root.quality-text == root.avif-quality-default)
+            || (root.format-index == 1 && root.quality-text == root.webp-quality-default)
+            || (root.format-index == 2 && root.quality-text == root.jxl-quality-default);
+    }
+
+    changed bit-depth-text => {
+        root.bit-depth-follows-format = root.format-index == 1 ? root.bit-depth-text == root.webp-bit-depth-default : root.bit-depth-text.is-empty;
+    }
+
+    background: root.page-bg;
+
+    Rectangle {
+        background: root.page-bg;
+        animate background { duration: 180ms; easing: ease-out; }
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 232px;
+            height: parent.height;
+            background: root.nav-bg;
+            animate background { duration: 180ms; easing: ease-out; }
+        }
+
+        Rectangle {
+            x: 232px;
+            y: 0px;
+            width: 1px;
+            height: parent.height;
+            background: root.panel-border;
+            animate background { duration: 180ms; easing: ease-out; }
+        }
+
+        Rectangle {
+            x: 236px;
+            y: 18px;
+            width: parent.width - 254px;
+            height: parent.height - 36px;
+            border-radius: 24px;
+            background: root.mica-tint;
+            opacity: 0.56;
+            animate background { duration: 180ms; easing: ease-out; }
+        }
+
+        HorizontalLayout {
+            padding-top: 14px;
+            padding-bottom: 14px;
+            padding-right: 14px;
+            spacing: 14px;
+
+            Rectangle {
+                width: 220px;
+                background: transparent;
+
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+
+                    Rectangle {
+                        height: 52px;
+                        background: transparent;
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "AWJ Studio"; color: root.text-strong; font-size: 23px; font-weight: 800; }
+                        }
+                    }
+
+                    Rectangle { height: 8px; background: transparent; }
+
+                    NavItem {
+                        label: "编码队列";
+                        selected: root.selected-page == 1;
+                        normal-background: transparent;
+                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
+                        selected-background: root.dark-mode ? #155e6d : #0f7c8c;
+                        normal-text: root.text-body;
+                        selected-text: #ffffff;
+                        clicked => { root.selected-page = 1; }
+                    }
+                    NavItem {
+                        label: "参数设置";
+                        selected: root.selected-page == 0;
+                        normal-background: transparent;
+                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
+                        selected-background: root.dark-mode ? #155e6d : #0f7c8c;
+                        normal-text: root.text-body;
+                        selected-text: #ffffff;
+                        clicked => { root.selected-page = 0; }
+                    }
+                    NavItem {
+                        label: "大图模式";
+                        selected: root.selected-page == 2;
+                        normal-background: transparent;
+                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
+                        selected-background: root.dark-mode ? #155e6d : #0f7c8c;
+                        normal-text: root.text-body;
+                        selected-text: #ffffff;
+                        clicked => { root.selected-page = 2; }
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+
+                    NavItem {
+                        label: "设置";
+                        selected: root.selected-page == 3;
+                        normal-background: transparent;
+                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
+                        selected-background: root.dark-mode ? #155e6d : #0f7c8c;
+                        normal-text: root.text-body;
+                        selected-text: #ffffff;
+                        clicked => { root.selected-page = 3; }
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                background: transparent;
+
+                if root.selected-page == 0: ScrollView {
+                    VerticalLayout {
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        spacing: 14px;
+
+                        HorizontalLayout {
+                            spacing: 14px;
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-height: 408px;
+                                border-radius: 18px;
+                                background: root.panel-bg;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+
+                                VerticalLayout {
+                                    padding: 22px;
+                                    spacing: 16px;
+
+                                    HorizontalLayout {
+                                        spacing: 22px;
+
+                                        VerticalLayout {
+                                            spacing: 13px;
+                                            horizontal-stretch: 1;
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "格式"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                SoftComboBox { model: ["AVIF", "WebP", "JXL"]; current-index <=> root.format-index; enabled: !root.running; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "后端"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                SoftComboBox { model: ["Native"]; current-index <=> root.backend-index; enabled: false; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "速度"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                LineEdit { text <=> root.speed-text; placeholder-text: "默认/可选0-10"; enabled: !root.running; horizontal-stretch: 1; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "重复处理"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                SoftComboBox { model: ["覆盖", "跳过", "追加时间", "追加随机"]; current-index <=> root.collision-index; enabled: !root.running; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                opacity: root.format-index == 0 ? 1.0 : 0.56;
+                                                animate opacity { duration: 140ms; easing: ease-out; }
+                                                Text { text: "AVIF编码器"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                SoftComboBox { model: ["auto", "SVT", "AOM", "zenrav1e"]; current-index <=> root.avif-encoder-index; enabled: !root.running && root.format-index == 0; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                opacity: root.format-index == 0 && root.avif-encoder-index != 1 ? 1.0 : 0.56;
+                                                animate opacity { duration: 140ms; easing: ease-out; }
+                                                Text { text: "色度采样"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                SoftComboBox { model: ["auto", "444", "422", "420"]; current-index <=> root.chroma-index; enabled: !root.running && root.format-index == 0 && root.avif-encoder-index != 1; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 13px;
+                                            horizontal-stretch: 1;
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "质量"; width: 78px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                LineEdit { text <=> root.quality-text; placeholder-text: root.visual-quality-text.is-empty ? "1-100" : "由视觉质量自动控制"; enabled: !root.running && root.visual-quality-text.is-empty; horizontal-stretch: 1; opacity: root.visual-quality-text.is-empty ? 1.0 : 0.56; animate opacity { duration: 140ms; easing: ease-out; } }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "视觉质量"; width: 78px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                LineEdit { text <=> root.visual-quality-text; placeholder-text: "空=手动质量，1-100"; input-type: number; enabled: !root.running; horizontal-stretch: 1; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "线程"; width: 78px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                LineEdit { text <=> root.threads-text; placeholder-text: "自动"; input-type: number; enabled: !root.running; horizontal-stretch: 1; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "内存"; width: 78px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                LineEdit { text <=> root.memory-limit-text; placeholder-text: "auto / 4GiB"; enabled: !root.running; horizontal-stretch: 1; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                Text { text: "最长边"; width: 78px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                LineEdit { text <=> root.max-resolution-text; placeholder-text: "不限制"; enabled: !root.running; horizontal-stretch: 1; }
+                                            }
+
+                                            HorizontalLayout {
+                                                spacing: 12px;
+                                                opacity: root.format-index == 1 ? 0.56 : 1.0;
+                                                animate opacity { duration: 140ms; easing: ease-out; }
+                                                Text { text: "位深"; width: 78px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                                LineEdit { text <=> root.bit-depth-text; placeholder-text: root.format-index == 1 ? "8 bit" : "保持原片"; enabled: !root.running && root.format-index != 1; horizontal-stretch: 1; }
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        border-radius: 12px;
+                                        background: root.panel-bg-soft;
+                                        border-color: root.field-border;
+                                        border-width: 1px;
+                                        min-height: 54px;
+                                        animate background, border-color { duration: 180ms; easing: ease-out; }
+                                        HorizontalLayout {
+                                            padding-left: 14px;
+                                            padding-right: 14px;
+                                            spacing: 12px;
+                                            Text { text: "native 选项"; width: 88px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            LineEdit { text <=> root.defines-text; placeholder-text: "预留 key=value，可留空"; enabled: !root.running; horizontal-stretch: 1; }
+                                        }
+                                    }
+                                }
+                            }                        }
+                    }
+                }
+
+                if root.selected-page == 1: VerticalLayout {
+                    spacing: 14px;
+                    padding-left: 4px;
+                    padding-right: 4px;
+
+                    Rectangle {
+                        min-height: 240px;
+                        border-radius: 18px;
+                        background: root.panel-bg;
+                        border-color: root.panel-border;
+                        border-width: 1px;
+                        animate background, border-color { duration: 180ms; easing: ease-out; }
+
+                        VerticalLayout {
+                            padding: 22px;
+                            spacing: 14px;
+
+                                HorizontalLayout {
+                                    spacing: 18px;
+
+                                    VerticalLayout {
+                                        spacing: 12px;
+                                        horizontal-stretch: 1;
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Text { text: "输入路径"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                        LineEdit { text <=> root.input-path; placeholder-text: "输入图片文件或文件夹路径"; enabled: !root.running; horizontal-stretch: 1; }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Rectangle { width: 88px; background: transparent; }
+                                        SoftComboBox { model: ["文件", "文件夹"]; current-index <=> root.input-mode-index; enabled: !root.running; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                        Button { text: "选择"; width: 58px; enabled: !root.running; clicked => { root.browse-input(); } }
+                                        Button { text: "打开"; width: 58px; clicked => { root.open-input(); } }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Text { text: "输出目录"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                        LineEdit { text <=> root.output-dir; placeholder-text: "默认与输入同目录"; enabled: !root.running; horizontal-stretch: 1; }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Rectangle { width: 88px; background: transparent; }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                        Button { text: "选择"; width: 58px; enabled: !root.running; clicked => { root.browse-output(); } }
+                                        Button { text: "打开"; width: 58px; clicked => { root.open-output(); } }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 12px;
+                                    horizontal-stretch: 1;
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Button { text: root.running ? "运行中" : "开始转换"; height: 38px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
+                                        Button { text: "取消"; height: 38px; enabled: root.running; horizontal-stretch: 1; clicked => { root.cancel-conversion(); } }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        Button { text: "清空"; height: 38px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
+                                        Button { text: "打开输出目录"; height: 38px; horizontal-stretch: 1; clicked => { root.open-output(); } }
+                                    }
+
+                                    Rectangle { vertical-stretch: 1; background: transparent; }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        border-radius: 18px;
+                        background: root.panel-bg;
+                        border-color: root.panel-border;
+                        border-width: 1px;
+                        vertical-stretch: 1;
+                        animate background, border-color { duration: 180ms; easing: ease-out; }
+
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+
+                            Rectangle {
+                                height: 32px;
+                                border-radius: 9px;
+                                background: root.field-bg;
+                                border-color: root.field-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    Text { text: "文件名"; width: 260px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "格式"; width: 72px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "状态"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "日志"; width: 340px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+
+                            Rectangle {
+                                vertical-stretch: 1;
+                                border-radius: 12px;
+                                background: root.dark-mode ? #151b25 : #ffffff;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                clip: true;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+
+                                if root.task-rows.length == 0: Text {
+                                    text: "暂无任务";
+                                    color: root.text-muted;
+                                    font-size: 13px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                if root.task-rows.length > 0: ScrollView {
+                                    VerticalLayout {
+                                        padding: 10px;
+                                        spacing: 8px;
+                                        for row in root.task-rows: HorizontalLayout {
+                                            spacing: 10px;
+                                            Text { text: row.filename; width: 260px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                            Text { text: row.format; width: 72px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: row.status; horizontal-stretch: 1; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                            Text { text: row.log; width: 340px; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 10px;
+                                border-radius: 5px;
+                                background: root.progress-track;
+                                clip: true;
+                                animate background { duration: 180ms; easing: ease-out; }
+                                Rectangle {
+                                    x: 0px;
+                                    width: parent.width * root.progress;
+                                    height: parent.height;
+                                    border-radius: 5px;
+                                    background: root.progress-fill;
+                                    animate width, background { duration: 160ms; easing: ease-out; }
+                                }
+                            }
+
+                            Text { text: "总进度：" + root.status-text; color: root.text-muted; font-size: 12px; }
+                        }
+                    }
+                }
+
+                if root.selected-page == 2: ScrollView {
+                    VerticalLayout {
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        spacing: 14px;
+
+                        Rectangle {
+                            height: 120px;
+                            border-radius: 18px;
+                            background: root.chrome-bg;
+                            border-color: root.panel-border;
+                            border-width: 1px;
+                            animate background, border-color { duration: 180ms; easing: ease-out; }
+                            VerticalLayout {
+                                padding: 24px;
+                                spacing: 6px;
+                                Text { text: "大图模式"; color: root.text-strong; font-size: 30px; font-weight: 800; }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-height: 260px;
+                                border-radius: 18px;
+                                background: root.panel-bg;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 22px;
+                                    spacing: 14px;
+                                    Text { text: "当前策略"; color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                    Text { text: "• native 后端按任务执行阶段读取、转换和编码图片。"; color: root.text-body; font-size: 14px; }
+                                    Text { text: "• 内存上限仍由参数设置中的“内存”字段传入后端。"; color: root.text-body; font-size: 14px; }
+                                    Text { text: "• 不恢复 XPSNR/optimize；视觉质量搜索仍由编码管线处理。"; color: root.text-body; font-size: 14px; }
+                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-height: 260px;
+                                border-radius: 18px;
+                                background: root.panel-bg;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 22px;
+                                    spacing: 14px;
+                                    Text { text: "页面切换内存约束"; color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                    Text { text: "• 四个页面使用条件实例化，未选中页面不会常驻控件树。"; color: root.text-body; font-size: 14px; }
+                                    Text { text: "• 本轮不添加预览 buffer、瓦片缓存或异步解码队列。"; color: root.text-body; font-size: 14px; }
+                                    Text { text: "• 后续若增加预览，应单独设计缓存上限、取消过期请求和离页释放。"; color: root.text-body; font-size: 14px; }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            min-height: 150px;
+                            border-radius: 18px;
+                            background: root.warning-soft;
+                            border-color: root.dark-mode ? #5a421e : #ffe1a8;
+                            border-width: 1px;
+                            animate background, border-color { duration: 180ms; easing: ease-out; }
+                            VerticalLayout {
+                                padding: 22px;
+                                spacing: 10px;
+                                Text { text: "后续能力占位"; color: root.warning; font-size: 16px; font-weight: 800; }
+                                Text { text: "瓦片预览、分块参数、超大图片风险提示和精细内存预算将在后续任务中独立实现。"; color: root.text-body; font-size: 14px; }
+                            }
+                        }
+                    }
+                }
+
+                if root.selected-page == 3: ScrollView {
+                    VerticalLayout {
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        spacing: 14px;
+
+                        Rectangle {
+                            height: 120px;
+                            border-radius: 18px;
+                            background: root.chrome-bg;
+                            border-color: root.panel-border;
+                            border-width: 1px;
+                            animate background, border-color { duration: 180ms; easing: ease-out; }
+                            VerticalLayout {
+                                padding: 24px;
+                                spacing: 6px;
+                                Text { text: "设置"; color: root.text-strong; font-size: 30px; font-weight: 800; }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-height: 220px;
+                                border-radius: 18px;
+                                background: root.panel-bg;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 22px;
+                                    spacing: 16px;
+                                    Text { text: "外观"; color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        Text { text: "主题"; width: 76px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                        SoftComboBox { model: ["跟随系统", "浅色", "深色"]; current-index <=> root.theme-index; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                    }                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-height: 220px;
+                                border-radius: 18px;
+                                background: root.panel-bg;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 22px;
+                                    spacing: 16px;
+                                    Text { text: "实验功能"; color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                    CheckBox { text: "启用实验性编码器（zenrav1e）"; checked <=> root.experimental-encoders; enabled: !root.running; }
+                                    Text { text: "启用后，AVIF 编码器选择 zenrav1e 时才会生效；auto 默认不会选择实验编码器。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            min-height: 180px;
+                            border-radius: 18px;
+                            background: root.panel-bg;
+                            border-color: root.panel-border;
+                            border-width: 1px;
+                            animate background, border-color { duration: 180ms; easing: ease-out; }
+                            VerticalLayout {
+                                padding: 22px;
+                                spacing: 12px;
+                                Text { text: "关于后端"; color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                Text { text: "当前内置后端：native codec"; color: root.text-body; font-size: 14px; }
+                                Text { text: "支持：libavif / AOM、实验 zenrav1e、WebP、JXL。"; color: root.text-body; font-size: 14px; }
+                                Text { text: "Magick 与 ffmpeg 保留为未来外部集成方向，不作为内置运行时分发。"; color: root.text-muted; font-size: 13px; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

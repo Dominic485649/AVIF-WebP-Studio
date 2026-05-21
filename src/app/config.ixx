@@ -7,6 +7,7 @@ module;
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <cstdint>
 #include <cstdio>
 #include <scn/scan.h>
 #include <string>
@@ -14,17 +15,21 @@ module;
 #include <thread>
 #include <vector>
 
-export module avif.config;
+export module awj.config;
 
-export namespace avif {
+import awj.encoding_defaults;
+import awj.visual_quality;
+
+export namespace awj {
 
 enum class Preset { fast, balanced, best, extreme };
 enum class OutputFormat { avif, webp, jxl };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random };
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
+enum class AvifEncoderMode { automatic, svt, aom, zenrav1e };
 
 int default_max_jobs() noexcept {
-  // 自动并发不是“吃满 CPU”，而是给桌面、UI 线程和 ImageMagick 内部线程预留余量。
+  // 自动并发不是“吃满 CPU”，而是给桌面、UI 线程和编码器内部线程预留余量。
   const auto hardware = std::thread::hardware_concurrency();
   if (hardware <= 1) {
     return 1;
@@ -41,39 +46,61 @@ int default_max_jobs() noexcept {
 constexpr int default_quality_for(OutputFormat format) noexcept {
   switch (format) {
     case OutputFormat::webp:
+      return encoding_defaults::default_webp_quality;
     case OutputFormat::jxl:
-      return 95;
+      return encoding_defaults::default_jxl_quality;
     case OutputFormat::avif:
     default:
-      return 90;
+      return encoding_defaults::default_avif_quality;
+  }
+}
+
+constexpr int default_speed_for(OutputFormat format) noexcept {
+  switch (format) {
+    case OutputFormat::jxl:
+      return encoding_defaults::default_jxl_native_speed;
+    case OutputFormat::avif:
+      return encoding_defaults::default_avif_native_speed;
+    case OutputFormat::webp:
+    default:
+      return encoding_defaults::default_native_speed;
   }
 }
 
 // 命令行只负责生成这个配置对象；后面的流水线不会再回头解析 argv。
 struct AppConfig {
-  std::filesystem::path input_path{L"input"};
+  std::filesystem::path input_path{std::wstring{encoding_defaults::default_input_path}};
   std::filesystem::path output_dir{};
-  std::filesystem::path magick_path{};
-  std::wstring output_template{L"{name}"};
-  std::vector<std::wstring> magick_defines{};
+  std::wstring output_template{encoding_defaults::default_output_template};
   Preset preset{Preset::best};
   OutputFormat output_format{OutputFormat::avif};
   CollisionMode collision_mode{CollisionMode::overwrite};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
-  int quality{default_quality_for(OutputFormat::avif)};
+  AvifEncoderMode avif_encoder{AvifEncoderMode::automatic};
+  bool enable_experimental_encoders{false};
+  int quality{default_quality_for(output_format)};
+  std::optional<int> visual_quality{};
   std::optional<int> bit_depth{};
-  std::optional<int> magick_speed{};
+  std::optional<int> speed{};
   int max_jobs{default_max_jobs()};
-  int max_resolution{0};
-  int encode_timeout_minutes{30};
-  bool optimize_output{false};
-  double optimize_target_xpsnr{42.0};
-  int optimize_min_quality{50};
+  std::uint64_t memory_limit_bytes{encoding_defaults::default_memory_limit_bytes};
+  int max_resolution{encoding_defaults::default_max_resolution};
+  int encode_timeout_minutes{encoding_defaults::preset_best_timeout_minutes};
+  bool visual_quality_fallback{false};
   bool strip_metadata{false};
   bool write_summary{false};
   bool write_log{false};
-  bool magick_path_overridden{false};
 };
+
+AppConfig default_app_config() {
+  return AppConfig{};
+}
+
+void apply_format_defaults(AppConfig& cfg, OutputFormat format) noexcept {
+  cfg.output_format = format;
+  cfg.quality = default_quality_for(format);
+}
+
 
 struct ParseResult {
   bool should_exit{false};
@@ -115,7 +142,7 @@ std::optional<Number> scan_number(std::wstring_view text) {
 }
 
 std::expected<int, std::string> parse_quality(std::wstring_view text) {
-  // 同时接受 90、q90 和 0.9；内部统一归一化到 ImageMagick 的 1..100 质量值。
+  // 同时接受 90、q90 和 0.9；内部统一归一化到 native 编码质量 1..100。
   const auto value = scan_number<double>(text);
   if (!value) {
     return std::unexpected{"质量参数必须是数字，例如 90 或 q90。"};
@@ -158,6 +185,35 @@ std::expected<int, std::string> parse_auto_jobs(std::wstring_view text) {
   return parse_int_range(text, 1, 128, "并发数量");
 }
 
+std::expected<std::uint64_t, std::string> parse_memory_limit(std::wstring_view text) {
+  const auto lower = lower_copy(text);
+  if (lower == L"auto" || lower == L"自动") {
+    return 0ull;
+  }
+  std::wstring number_part{lower};
+  std::uint64_t multiplier = 1;
+  const auto consume_suffix = [&](std::wstring_view suffix,
+                                  std::uint64_t value) {
+    if (number_part.ends_with(suffix)) {
+      number_part.resize(number_part.size() - suffix.size());
+      multiplier = value;
+      return true;
+    }
+    return false;
+  };
+  consume_suffix(L"gib", 1024ull * 1024ull * 1024ull) ||
+      consume_suffix(L"gb", 1000ull * 1000ull * 1000ull) ||
+      consume_suffix(L"mib", 1024ull * 1024ull) ||
+      consume_suffix(L"mb", 1000ull * 1000ull) ||
+      consume_suffix(L"kib", 1024ull) ||
+      consume_suffix(L"kb", 1000ull) || consume_suffix(L"b", 1ull);
+  const auto value = scan_number<double>(number_part);
+  if (!value || !std::isfinite(*value) || *value < 0.0) {
+    return std::unexpected{"memory-limit 必须是 auto 或非负数字，可带 KiB/MiB/GiB 后缀。"};
+  }
+  return static_cast<std::uint64_t>(*value * static_cast<double>(multiplier));
+}
+
 std::expected<double, std::string> parse_double_range(std::wstring_view text,
                                                       double min_value,
                                                       double max_value,
@@ -177,22 +233,22 @@ std::expected<double, std::string> parse_double_range(std::wstring_view text,
   return *value;
 }
 
-std::expected<void, std::string> validate_define(std::wstring_view define) {
-  constexpr std::size_t max_define_length = 512;
-  if (define.empty()) {
-    return std::unexpected{"--define 不能为空。"};
+std::expected<void, std::string> validate_native_option(std::wstring_view value) {
+  constexpr std::size_t max_option_length = 512;
+  if (value.empty()) {
+    return std::unexpected{"--option 不能为空。"};
   }
-  if (define.size() > max_define_length) {
-    return std::unexpected{"--define 长度不能超过 512 个字符。"};
+  if (value.size() > max_option_length) {
+    return std::unexpected{"--option 长度不能超过 512 个字符。"};
   }
-  const auto pos = define.find(L'=');
-  const auto key = pos == std::wstring_view::npos ? define : define.substr(0, pos);
+  const auto pos = value.find(L'=');
+  const auto key = pos == std::wstring_view::npos ? value : value.substr(0, pos);
   if (key.empty()) {
-    return std::unexpected{"--define 的 key 不能为空。"};
+    return std::unexpected{"--option 的 key 不能为空"};
   }
-  for (const wchar_t ch : define) {
+  for (const wchar_t ch : value) {
     if (ch < 0x20 || ch == 0x7f) {
-      return std::unexpected{"--define 不能包含控制字符。"};
+      return std::unexpected{"--option 不能包含控制字符。"};
     }
   }
   return {};
@@ -281,6 +337,45 @@ std::string chroma_name(ChromaMode mode) {
   }
 }
 
+std::optional<AvifEncoderMode> parse_avif_encoder(std::wstring_view value) {
+  const auto lower = lower_copy(value);
+  if (lower == L"auto" || lower == L"automatic" || lower == L"自动") {
+    return AvifEncoderMode::automatic;
+  }
+  if (lower == L"svt" || lower == L"svt-av1" || lower == L"svt-av1-hdr") {
+    return AvifEncoderMode::svt;
+  }
+  if (lower == L"aom" || lower == L"libaom") {
+    return AvifEncoderMode::aom;
+  }
+  if (lower == L"zenrav1e") {
+    return AvifEncoderMode::zenrav1e;
+  }
+  return std::nullopt;
+}
+
+std::string avif_encoder_name(AvifEncoderMode mode) {
+  switch (mode) {
+    case AvifEncoderMode::svt:
+      return "svt";
+    case AvifEncoderMode::aom:
+      return "aom";
+    case AvifEncoderMode::zenrav1e:
+      return "zenrav1e";
+    case AvifEncoderMode::automatic:
+    default:
+      return "auto";
+  }
+}
+
+bool avif_encoder_is_experimental(AvifEncoderMode mode) noexcept {
+  return mode == AvifEncoderMode::zenrav1e;
+}
+
+bool avif_encoder_is_svt_compatible_chroma(ChromaMode mode) noexcept {
+  return mode == ChromaMode::auto_keep || mode == ChromaMode::yuv420;
+}
+
 bool avif_bit_depth_supported(int bit_depth) noexcept {
   return bit_depth == 8 || bit_depth == 10 || bit_depth == 12;
 }
@@ -289,20 +384,20 @@ void apply_preset(AppConfig& cfg, Preset preset) {
   cfg.preset = preset;
   switch (preset) {
     case Preset::fast:
-      cfg.quality = 75;
-      cfg.encode_timeout_minutes = 10;
+      cfg.quality = encoding_defaults::preset_fast_quality;
+      cfg.encode_timeout_minutes = encoding_defaults::preset_fast_timeout_minutes;
       break;
     case Preset::balanced:
-      cfg.quality = 85;
-      cfg.encode_timeout_minutes = 20;
+      cfg.quality = encoding_defaults::preset_balanced_quality;
+      cfg.encode_timeout_minutes = encoding_defaults::preset_balanced_timeout_minutes;
       break;
     case Preset::best:
-      cfg.quality = 90;
-      cfg.encode_timeout_minutes = 30;
+      cfg.quality = encoding_defaults::preset_best_quality;
+      cfg.encode_timeout_minutes = encoding_defaults::preset_best_timeout_minutes;
       break;
     case Preset::extreme:
-      cfg.quality = 95;
-      cfg.encode_timeout_minutes = 60;
+      cfg.quality = encoding_defaults::preset_extreme_quality;
+      cfg.encode_timeout_minutes = encoding_defaults::preset_extreme_timeout_minutes;
       break;
   }
 }
@@ -313,8 +408,17 @@ std::string chroma_mode_name(ChromaMode mode) {
   return config_detail::chroma_name(mode);
 }
 
-std::expected<void, std::string> validate_magick_define(std::wstring_view define) {
-  return config_detail::validate_define(define);
+std::string avif_encoder_mode_name(AvifEncoderMode mode) {
+  return config_detail::avif_encoder_name(mode);
+}
+
+std::expected<void, std::string> validate_native_option(std::wstring_view value) {
+  return config_detail::validate_native_option(value);
+}
+
+std::expected<std::uint64_t, std::string> parse_memory_limit(
+    std::wstring_view text) {
+  return config_detail::parse_memory_limit(text);
 }
 
 std::expected<void, std::string> validate_config(const AppConfig& cfg) {
@@ -324,7 +428,7 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       if (cfg.bit_depth &&
           !config_detail::avif_bit_depth_supported(*cfg.bit_depth)) {
         return std::unexpected{
-            "当前 ImageMagick/libheif AVIF 输出仅支持 8、10、12-bit 位深；留空表示保持原片。"};
+            "当前 native AVIF 输出仅支持 8、10、12-bit 位深；留空表示自动选择。"};
       }
       break;
     case OutputFormat::webp:
@@ -345,43 +449,73 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       }
       break;
   }
+  if (cfg.output_format == OutputFormat::avif &&
+      cfg.avif_encoder == AvifEncoderMode::svt &&
+      !config_detail::avif_encoder_is_svt_compatible_chroma(cfg.chroma_mode)) {
+    return std::unexpected{
+        "SVT AVIF encoder only supports 420 chroma; use --chroma 420/auto or --avif-encoder aom."};
+  }
+  if (!visual_quality_weights_are_valid()) {
+    return std::unexpected{"视觉质量权重配置无效：GMSD_WEIGHT + MSSSIM_WEIGHT 必须等于 1。"};
+  }
+  if (cfg.visual_quality && (*cfg.visual_quality < 1 || *cfg.visual_quality > 100)) {
+    return std::unexpected{"visual-quality 范围必须在 1 到 100 之间。"};
+  }
+  if (cfg.visual_quality_fallback && !cfg.visual_quality) {
+    return std::unexpected{"--visual-quality-fallback 只能与 --visual-quality 一起使用。"};
+  }
+  if (cfg.memory_limit_bytes > 0 && cfg.memory_limit_bytes < 64ull * 1024ull * 1024ull) {
+    return std::unexpected{"memory-limit 不能低于 64MiB；使用 auto 可由程序自动估算。"};
+  }
   return {};
 }
 
-void print_help() {
-  static constexpr char help[] = R"(AVIF-WebP-Studio C++23
+std::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
+                                                        bool quality_was_set,
+                                                        bool preset_was_set) {
+  if (!quality_was_set && !preset_was_set) {
+    cfg.quality = default_quality_for(cfg.output_format);
+  }
+  if (cfg.output_template.empty()) {
+    cfg.output_template = encoding_defaults::default_output_template;
+  }
+  return validate_config(cfg);
+}
+
+std::string help_text() {
+  std::string help = R"(AWJimage C++23
 =======================
 
-默认后端：ImageMagick MagickWand
-默认质量：AVIF q90，WebP q95，JXL q95
+默认后端：内置 native（libavif/zenrav1e/WebP/JXL）
+默认质量：AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@
 质量范围：q1..q100，q100 为无损
 
 用法:
-  AVIF-WebP-Cli.exe [选项]
+  AWJ-cli.exe [选项]
 
 常用选项:
-  -i, --input <路径>          输入文件或目录，默认 input
+  -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
   -f, --format <avif|webp|jxl> 输出格式，默认 avif
-  -q, --quality <1-100>       ImageMagick 质量，AVIF 默认 90，WebP/JXL 默认 95；100 为无损。也接受 q90 或 0.9
-  -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片，WebP 固定 8
-  --chroma <auto|444|422|420> AVIF 色度采样，JXL/WebP 不支持手动采样；也可用 --444 / --422 / --420
+  -q, --quality <1-100>       编码质量，AVIF 默认 @AVIF_QUALITY@，WebP/JXL 默认 @WEBP_QUALITY@；100 为无损。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100 直接无损，1..99 自动搜索最小体积达标候选
+  --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选
+  -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片，WebP 固定 @WEBP_BIT_DEPTH@
+  --chroma <auto|444|422|420> AVIF 色度采样；SVT 仅支持 420，JXL/WebP 不支持手动采样；也可用 --444 / --422 / --420
+  --avif-encoder <auto|svt|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 只选择当前构建真实可用的稳定编码器
+  --experimental-encoders   启用实验 AVIF 编码器；开启后可显式使用 zenrav1e
   -p, --preset <名称>         fast / balanced / best / extreme，默认 best
   -t, --threads <数量>        并发数量，默认 CPU 线程数
-  -m, --template <模板>       输出命名，默认 {name}
-  --max-resolution <像素>     限制最长边；0 表示不缩放，默认 0
-  --speed <0-10>             可选：AVIF 传给 heic:speed，JXL 映射为 jxl:effort；默认使用 Magick 自身默认值
-  --define <key=value>        高级选项：额外传给 MagickWand 的 define，可重复；key 不能为空
+  --memory-limit <auto|大小>  内存限制；auto 为总内存一半与可用内存 80% 的较小值，可用 4GiB/4096MiB
+  -m, --template <模板>       输出命名，默认 @OUTPUT_TEMPLATE@
+  --max-resolution <像素>     限制最长边；0 表示不缩放，默认 @MAX_RESOLUTION@
+  --speed <0-10>             统一速度参数；WebP method / JXL effort / AVIF encoder speed-preset
+  --option <key=value>       预留 native 高级选项，可重复；当前版本只记录与校验，不调用外部 Magick/ffmpeg
   --collision <策略>          overwrite / skip / time / random，默认 overwrite
-  --backend magick            后端占位参数；当前仅支持 magick
-  --magick <路径>             指定 ImageMagick 运行时目录
-  --timeout-encode <分钟>     单张图片编码超时，默认 30
-  --optimize                 自动搜索达到目标 XPSNR 的最小体积版本
-  --target-xpsnr <dB>        optimize 的最低 XPSNR，默认 42.0 dB
-  --min-quality <1-100>      optimize 的最低搜索质量，默认 50
+  --timeout-encode <分钟>     单张图片编码超时，默认 @ENCODE_TIMEOUT@
   --strip                    去除 EXIF/ICC 等元数据，通常更小且更隐私
   --summary                  生成 summary.csv
-  --log                      生成 log\avif-console.log
+  --log                      生成 log\awj-cli.log
   --skip-existing            已有输出时跳过
   --overwrite                已有输出时覆盖，默认行为
   --suffix-time              输出名追加时间后缀
@@ -402,19 +536,42 @@ void print_help() {
   {params} 编码参数，例如 q95t5 或 q95t5_444_10
 
 示例:
-  AVIF-WebP-Cli.exe -i "D:\图片" -o Avifoutput -q q90
-  AVIF-WebP-Cli.exe -i input --format webp --template "{name}-{date}"
-  AVIF-WebP-Cli.exe -i input.png -o output.jxl --format jxl -q 90
-  AVIF-WebP-Cli.exe -i input --chroma 444 --bit-depth 10 --optimize
+  AWJ-cli.exe -i "D:\图片" -o Avifoutput -q q90
+  AWJ-cli.exe -i input --format webp --template "{name}-{date}"
+  AWJ-cli.exe -i input.png -o output.jxl --format jxl -q 90
+  AWJ-cli.exe -i input --visual-quality 92 --summary
+  AWJ-cli.exe -i input --chroma 444 --bit-depth 10
 )";
-  std::fputs(help, stdout);
+  const auto replace_all = [](std::string& text,
+                              std::string_view from,
+                              std::string_view to) {
+    std::size_t pos = 0;
+    while ((pos = text.find(from, pos)) != std::string::npos) {
+      text.replace(pos, from.size(), to);
+      pos += to.size();
+    }
+  };
+  replace_all(help, "@AVIF_QUALITY@", std::format("{}", default_quality_for(OutputFormat::avif)));
+  replace_all(help, "@WEBP_QUALITY@", std::format("{}", default_quality_for(OutputFormat::webp)));
+  replace_all(help, "@JXL_QUALITY@", std::format("{}", default_quality_for(OutputFormat::jxl)));
+  replace_all(help, "@INPUT_PATH@", encoding_defaults::default_input_path_text);
+  replace_all(help, "@WEBP_BIT_DEPTH@", std::format("{}", encoding_defaults::default_webp_bit_depth));
+  replace_all(help, "@OUTPUT_TEMPLATE@", encoding_defaults::default_output_template_text);
+  replace_all(help, "@MAX_RESOLUTION@", std::format("{}", encoding_defaults::default_max_resolution));
+  replace_all(help, "@ENCODE_TIMEOUT@", std::format("{}", encoding_defaults::preset_best_timeout_minutes));
+  return help;
+}
+
+void print_help() {
+  const auto help = help_text();
+  std::fputs(help.c_str(), stdout);
   std::fputc('\n', stdout);
 }
 
 std::expected<ParseResult, std::string> parse_arguments(
     const std::vector<std::wstring>& args) {
   // CLI 参数直接落到 AppConfig，确保命令行和 Slint UI 走同一套核心逻辑。
-  AppConfig cfg;
+  AppConfig cfg = default_app_config();
   bool preset_was_set = false;
   bool quality_was_set = false;
 
@@ -472,13 +629,7 @@ std::expected<ParseResult, std::string> parse_arguments(
     }
 
     if (lower == L"--magick") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      cfg.magick_path = *value;
-      cfg.magick_path_overridden = true;
-      continue;
+      return std::unexpected{"内置 Magick 后端已移除；当前版本只使用 native 后端，外部 Magick/ffmpeg 集成暂未启用。"};
     }
 
     if (lower == L"--backend") {
@@ -487,10 +638,10 @@ std::expected<ParseResult, std::string> parse_arguments(
         return std::unexpected{value.error()};
       }
       const auto backend = config_detail::lower_copy(*value);
-      if (backend != L"magick" && backend != L"imagemagick") {
-        return std::unexpected{"当前版本仅支持 magick / imagemagick 后端。"};
+      if (backend == L"native") {
+        continue;
       }
-      continue;
+      return std::unexpected{"内置 Magick 后端已移除；当前版本只支持 native 后端。"};
     }
 
     if (lower == L"-m" || lower == L"--template" ||
@@ -533,6 +684,32 @@ std::expected<ParseResult, std::string> parse_arguments(
       continue;
     }
 
+    if (lower == L"--visual-quality" || lower == L"--visual_quality") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto visual_quality =
+          config_detail::parse_int_range(*value, 1, 100, "visual-quality");
+      if (!visual_quality) {
+        return std::unexpected{visual_quality.error()};
+      }
+      cfg.visual_quality = *visual_quality;
+      continue;
+    }
+
+    if (lower == L"--visual-quality-fallback" ||
+        lower == L"--visual_quality_fallback") {
+      cfg.visual_quality_fallback = true;
+      continue;
+    }
+
+    if (lower == L"--no-visual-quality-fallback" ||
+        lower == L"--no_visual_quality_fallback") {
+      cfg.visual_quality_fallback = false;
+      continue;
+    }
+
     if (lower == L"-d" || lower == L"--depth" ||
         lower == L"--bit-depth" || lower == L"--bitdepth") {
       const auto value = require_value(i, args[i]);
@@ -561,6 +738,32 @@ std::expected<ParseResult, std::string> parse_arguments(
             config_detail::narrow_ascii(*value))};
       }
       cfg.chroma_mode = *chroma;
+      continue;
+    }
+
+    if (lower == L"--avif-encoder" || lower == L"--avif_encoder") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto encoder = config_detail::parse_avif_encoder(*value);
+      if (!encoder) {
+        return std::unexpected{std::format(
+            "AVIF encoder 不支持: {}。可选值：auto、svt、aom、zenrav1e。",
+            config_detail::narrow_ascii(*value))};
+      }
+      cfg.avif_encoder = *encoder;
+      continue;
+    }
+
+    if (lower == L"--experimental-encoders" ||
+        lower == L"--enable-experimental-encoders") {
+      cfg.enable_experimental_encoders = true;
+      continue;
+    }
+
+    if (lower == L"--no-experimental-encoders") {
+      cfg.enable_experimental_encoders = false;
       continue;
     }
 
@@ -593,6 +796,19 @@ std::expected<ParseResult, std::string> parse_arguments(
       continue;
     }
 
+    if (lower == L"--memory-limit" || lower == L"--memory") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto memory_limit = config_detail::parse_memory_limit(*value);
+      if (!memory_limit) {
+        return std::unexpected{memory_limit.error()};
+      }
+      cfg.memory_limit_bytes = *memory_limit;
+      continue;
+    }
+
     if (lower == L"--speed") {
       const auto value = require_value(i, args[i]);
       if (!value) {
@@ -602,7 +818,7 @@ std::expected<ParseResult, std::string> parse_arguments(
       if (!speed) {
         return std::unexpected{speed.error()};
       }
-      cfg.magick_speed = *speed;
+      cfg.speed = *speed;
       continue;
     }
 
@@ -634,59 +850,19 @@ std::expected<ParseResult, std::string> parse_arguments(
       continue;
     }
 
-    if (lower == L"--optimize" || lower == L"--search-best") {
-      cfg.optimize_output = true;
-      continue;
-    }
-
-    if (lower == L"--no-optimize") {
-      cfg.optimize_output = false;
-      continue;
-    }
-
-    if (lower == L"--target-xpsnr" || lower == L"--optimize-xpsnr") {
+    if (lower == L"--option") {
       const auto value = require_value(i, args[i]);
       if (!value) {
         return std::unexpected{value.error()};
       }
-      const auto target =
-          config_detail::parse_double_range(*value, 0.0, 120.0, "target-xpsnr");
-      if (!target) {
-        return std::unexpected{target.error()};
+      if (auto valid = config_detail::validate_native_option(*value); !valid) {
+        return std::unexpected{valid.error()};
       }
-      cfg.optimize_target_xpsnr = *target;
-      continue;
-    }
-
-    if (lower == L"--target-ssim" || lower == L"--optimize-ssim") {
-      return std::unexpected{
-          "自动搜索已改为 XPSNR，请使用 --target-xpsnr <dB>。"};
-    }
-
-    if (lower == L"--min-quality" || lower == L"--optimize-min-quality") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      const auto minimum =
-          config_detail::parse_int_range(*value, 1, 100, "min-quality");
-      if (!minimum) {
-        return std::unexpected{minimum.error()};
-      }
-      cfg.optimize_min_quality = *minimum;
       continue;
     }
 
     if (lower == L"--define") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      if (auto valid = config_detail::validate_define(*value); !valid) {
-        return std::unexpected{valid.error()};
-      }
-      cfg.magick_defines.push_back(*value);
-      continue;
+      return std::unexpected{"--define 是旧 Magick 选项，内置 Magick 已移除；当前版本不再接收 Magick define。"};
     }
 
     if (lower == L"--collision") {
@@ -758,14 +934,11 @@ std::expected<ParseResult, std::string> parse_arguments(
         std::format("未知参数: {}", config_detail::narrow_ascii(args[i]))};
   }
 
-  if (!quality_was_set && !preset_was_set) {
-    cfg.quality = default_quality_for(cfg.output_format);
-  }
-  if (auto valid = validate_config(cfg); !valid) {
+  if (auto valid = finalize_config_defaults(cfg, quality_was_set, preset_was_set); !valid) {
     return std::unexpected{valid.error()};
   }
 
   return ParseResult{.should_exit = false, .exit_code = 0, .config = cfg};
 }
 
-}  // namespace avif
+}  // namespace awj

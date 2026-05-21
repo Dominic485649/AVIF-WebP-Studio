@@ -1,5 +1,9 @@
 module;
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -17,14 +21,17 @@ module;
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <windows.h>
 
-export module avif.pipeline;
+export module awj.pipeline;
 
-import avif.config;
-import avif.core;
-import avif.magick_backend;
+import awj.config;
+import awj.core;
+import awj.resource_planner;
+import awj.visual_quality;
+import awj.native_backend;
 
-export namespace avif {
+export namespace awj {
 
 namespace pipeline_detail {
 
@@ -75,6 +82,17 @@ std::string format_result_line(const EncodeResult& result) {
             ? 0.0
             : static_cast<double>(result.output_bytes) /
                   static_cast<double>(result.original_bytes);
+    if (result.requested_visual_quality) {
+      return std::format("[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s, VQ {}→{:.2f}, q{}, {} 次{})",
+                         result.index + 1,
+                         path_to_utf8(result.input_path.filename()),
+                         path_to_utf8(result.output_path.filename()),
+                         format_size(result.output_bytes), ratio * 100.0,
+                         result.seconds, *result.requested_visual_quality,
+                         result.visual_score, result.final_encoder_quality,
+                         result.search_attempt_count,
+                         result.lossless ? ", lossless" : "");
+    }
     return std::format("[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s)",
                        result.index + 1,
                        path_to_utf8(result.input_path.filename()),
@@ -132,6 +150,16 @@ void emit_progress(const ProgressCallback& progress, BatchProgress event) {
   }
 }
 
+MemoryStatus current_memory_status() noexcept {
+  MEMORYSTATUSEX status{};
+  status.dwLength = sizeof(status);
+  if (!GlobalMemoryStatusEx(&status)) {
+    return {};
+  }
+  return MemoryStatus{.total_bytes = status.ullTotalPhys,
+                      .available_bytes = status.ullAvailPhys};
+}
+
 std::expected<BatchSummary, std::string> run_batch(
     const AppConfig& cfg,
     ProgressCallback progress = {},
@@ -141,16 +169,10 @@ std::expected<BatchSummary, std::string> run_batch(
       return std::unexpected{valid.error()};
     }
 
-    const auto runtime = resolve_magick_runtime(cfg);
-    if (!runtime) {
-      return std::unexpected{runtime.error()};
-    }
-
-    configure_magick_environment(*runtime);
     const auto output_dir = output_dir_for(cfg);
 
     FileLogger logger{output_dir, cfg.write_log};
-    logger.info(std::format("imagemagick runtime: {}", path_to_utf8(runtime->root)));
+    logger.info("native backend enabled");
     if (cfg.write_log && !logger.enabled()) {
       const auto text = std::format("[WARN] 日志写入失败: {}",
                                     logger.last_error());
@@ -186,12 +208,27 @@ std::expected<BatchSummary, std::string> run_batch(
     }
 
     auto work = pipeline_detail::build_work_groups(cfg, files);
+    const auto largest_file = std::ranges::max(files, {}, &ImageFile::bytes).bytes;
+    const auto configured_memory_limit = cfg.memory_limit_bytes == 0
+                                             ? automatic_memory_limit(current_memory_status())
+                                             : cfg.memory_limit_bytes;
+    const auto resource_plan = plan_resources(ResourcePlanRequest{
+        .automatic_thread_budget = cfg.max_jobs,
+        .file_count = static_cast<int>(work.size()),
+        .memory_limit_bytes = configured_memory_limit,
+        .estimated_bytes_per_file = largest_file == 0 ? 1 : largest_file,
+        .av1_encoder = cfg.output_format == OutputFormat::avif});
     const int jobs = std::max(
-        1, std::min<int>(cfg.max_jobs, static_cast<int>(work.size())));
+        1, std::min<int>(resource_plan.file_parallelism, static_cast<int>(work.size())));
     emit_progress(progress, BatchProgress{
                                 .kind = BatchEventKind::message,
                                 .total = files.size(),
-                                .text = std::format("共 {} 个文件，并发 {}。", files.size(), jobs)});
+                                .text = std::format("共 {} 个文件，并发 {}，编码器线程/文件 {}，内存限制 {}。",
+                                                    files.size(), jobs,
+                                                    resource_plan.encoder_threads_per_file,
+                                                    resource_plan.memory_limit_bytes == 0
+                                                        ? std::string{"未限制"}
+                                                        : format_size(resource_plan.memory_limit_bytes))});
 
     std::vector<EncodeResult> results(files.size());
     for (const auto& image : files) {
@@ -200,7 +237,12 @@ std::expected<BatchSummary, std::string> run_batch(
                                           .output_path = output_path_for(cfg, image),
                                           .original_bytes = image.bytes,
                                           .quality = cfg.quality,
-                                          .speed = cfg.magick_speed.value_or(-1),
+                                          .requested_visual_quality = cfg.visual_quality,
+                                          .gmsd_weight = GMSD_WEIGHT,
+                                          .msssim_weight = MSSSIM_WEIGHT,
+                                          .final_encoder_quality = cfg.quality,
+                                          .speed = cfg.speed.value_or(-1),
+                                          .quality_overridden_by_visual_quality = cfg.visual_quality.has_value(),
                                           .message = "未处理。"};
     }
 
@@ -215,7 +257,7 @@ std::expected<BatchSummary, std::string> run_batch(
       workers.emplace_back([&] {
         try {
           set_current_thread_low_priority();
-          MagickBackend backend{cfg, *runtime, logger};
+          NativeBackend native_backend{cfg, logger, resource_plan};
           while (true) {
             if (stop_token.stop_requested()) {
               break;
@@ -243,7 +285,7 @@ std::expected<BatchSummary, std::string> run_batch(
               if (stop_token.stop_requested()) {
                 break;
               }
-              auto result = backend.encode(image, stop_token);
+              auto result = native_backend.encode(image, stop_token);
               const auto event_result = result;
               results[result.index] = std::move(result);
               const auto done = completed.fetch_add(1) + 1;
@@ -378,4 +420,4 @@ int run_pipeline(const AppConfig& cfg) {
   return summary->exit_code;
 }
 
-}  // namespace avif
+}  // namespace awj

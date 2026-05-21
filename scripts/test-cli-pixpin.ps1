@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
-$cli = Join-Path $repo 'bin\x64\Release\AVIF-WebP-Cli.exe'
+$cli = Join-Path $repo 'bin\x64\Release\AWJ-cli.exe'
 $runId = Get-Date -Format 'yyyyMMdd-HHmmss'
 $workRoot = Join-Path $repo ".claude\cli-pixpin-test\$runId"
 $sampleDir = Join-Path $workRoot 'input'
@@ -17,7 +17,7 @@ if (-not (Test-Path $SourceDir)) {
     throw "测试集目录不存在：$SourceDir"
 }
 
-cmake --build (Join-Path $repo $BuildDir) --config $Configuration --target AVIF-WebP-Cli | Write-Host
+cmake --build (Join-Path $repo $BuildDir) --config $Configuration --target AWJ-cli | Write-Host
 if ($LASTEXITCODE -ne 0) {
     throw "CLI 构建失败：$LASTEXITCODE"
 }
@@ -51,8 +51,8 @@ $cases = @(
     @{ Name = 'jxl-default'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'jxl-default'), '-f', 'jxl', '--summary', '--overwrite') },
     @{ Name = 'avif-resize-strip'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'avif-resize-strip'), '-f', 'avif', '--max-resolution', '1600', '--strip', '--chroma', '420', '--bit-depth', '8', '--template', '{index}_{name}_{params}', '--suffix-random', '--summary') },
     @{ Name = 'webp-skip-existing'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'webp-default'), '-f', 'webp', '--skip-existing', '--summary') },
-    @{ Name = 'avif-optimized-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'avif-optimized-smoke'), '-f', 'avif', '--optimize', '--target-xpsnr', '38', '--min-quality', '40', '--summary') },
-    @{ Name = 'jxl-optimized-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'jxl-optimized-smoke'), '-f', 'jxl', '--optimize', '--target-xpsnr', '38', '--min-quality', '40', '--summary') }
+    @{ Name = 'avif-visual-quality-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'avif-visual-quality-smoke'), '-f', 'avif', '--visual-quality', '88', '--summary') },
+    @{ Name = 'jxl-visual-quality-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'jxl-visual-quality-smoke'), '-f', 'jxl', '--visual-quality', '88', '--summary') }
 )
 
 $results = @()

@@ -1,18 +1,12 @@
 param(
-    [string]$MagickRoot = "",
     [string]$VcpkgRoot = "",
     [string]$VcpkgTriplet = "",
     [switch]$StaticRuntime,
     [switch]$DynamicRuntime,
     [switch]$SharedSlint,
-    [ValidateSet("Static", "Dynamic")]
-    [string]$MagickLinkage = "Static",
-    [string]$ImageMagickRef = "6ad8928f61d4abf3fe17646d7083bb6866eae92e",
-    [switch]$FullMagickBuild,
-    [switch]$InstallMfc,
     [switch]$NoVcpkgInstall,
-    [switch]$UseScoopFallback,
-    [switch]$EnableLto
+    [switch]$EnableLto,
+    [switch]$DisableZenravif
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,23 +21,15 @@ if (-not $VcpkgRoot) {
     }
 }
 
-function Test-MagickRuntimeLooksStatic([string]$Root) {
-    if (-not $Root -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
-        return $false
-    }
-
-    $Dll = Get-ChildItem -LiteralPath $Root -Filter "*.dll" -File -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    return $null -eq $Dll
-}
-
 function Ensure-VcpkgPackage([string]$Root, [string]$Triplet, [string]$Port, [string]$PackageShareName, [bool]$NoInstall) {
     if (-not $Root) {
         throw "未找到 vcpkg。请设置 VCPKG_ROOT，或传入 -VcpkgRoot。"
     }
 
-    $ShareDir = Join-Path $Root "installed\$Triplet\share\$PackageShareName"
-    if (Test-Path -LiteralPath $ShareDir -PathType Container) {
+    $ManifestInstalled = Join-Path $BuildDir "vcpkg_installed\$Triplet\share\$PackageShareName"
+    $GlobalInstalled = Join-Path $Root "installed\$Triplet\share\$PackageShareName"
+    if ((Test-Path -LiteralPath $ManifestInstalled -PathType Container) -or
+        (Test-Path -LiteralPath $GlobalInstalled -PathType Container)) {
         return
     }
 
@@ -63,48 +49,13 @@ function Ensure-VcpkgPackage([string]$Root, [string]$Triplet, [string]$Port, [st
     }
 }
 
-if (-not $MagickRoot) {
-    $SelfBuilt = Join-Path $Repo "third_party\imagemagick-runtime\x64\Release"
-    if (Test-Path (Join-Path $SelfBuilt "include\MagickWand\MagickWand.h")) {
-        $MagickRoot = $SelfBuilt
-    } elseif ($UseScoopFallback -and (Test-Path "D:\Scoop\apps\imagemagick\current\include\MagickWand\MagickWand.h")) {
-        $MagickRoot = "D:\Scoop\apps\imagemagick\current"
-        Write-Warning "未发现自编译 ImageMagick，按 -UseScoopFallback 临时使用 Scoop ImageMagick。"
-    } else {
-        Write-Host "未发现自编译 ImageMagick，开始自动构建 Release $MagickLinkage 运行时..."
-        $MagickBuildScript = Join-Path $Repo "scripts\build-magick.ps1"
-        $MagickBuildArgs = @{
-            Configuration = "Release"
-            Arch = "x64"
-            Linkage = $MagickLinkage
-            ImageMagickRef = $ImageMagickRef
-        }
-        if ($FullMagickBuild) {
-            $MagickBuildArgs.FullBuild = $true
-        }
-        if ($InstallMfc) {
-            $MagickBuildArgs.InstallMfc = $true
-        }
-
-        & $MagickBuildScript @MagickBuildArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "ImageMagick 自动构建失败，退出码 $LASTEXITCODE。"
-        }
-        if (-not (Test-Path (Join-Path $SelfBuilt "include\MagickWand\MagickWand.h"))) {
-            throw "ImageMagick 自动构建完成后仍未找到运行时: $SelfBuilt"
-        }
-        $MagickRoot = $SelfBuilt
-    }
-}
-
 if ($StaticRuntime -and $DynamicRuntime) {
     throw "不能同时指定 -StaticRuntime 和 -DynamicRuntime。"
 }
 
-$UseStaticRuntime = [bool]$StaticRuntime
-if (-not $StaticRuntime -and -not $DynamicRuntime -and (Test-MagickRuntimeLooksStatic $MagickRoot)) {
+$UseStaticRuntime = -not [bool]$DynamicRuntime
+if ($StaticRuntime) {
     $UseStaticRuntime = $true
-    Write-Host "检测到静态 ImageMagick runtime，自动使用 /MT 运行库。"
 }
 
 if (-not $VcpkgTriplet) {
@@ -112,13 +63,14 @@ if (-not $VcpkgTriplet) {
 }
 
 Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "scnlib" "scnlib" $NoVcpkgInstall
+Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "libwebp" "libwebp" $NoVcpkgInstall
+Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "libjxl" "libjxl" $NoVcpkgInstall
+Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "libavif[aom]" "libavif" $NoVcpkgInstall
 
 $ConfigureArgs = @(
     "-U", "scn_DIR",
     "-U", "FastFloat_DIR",
     "-U", "fast_float_DIR",
-    "-U", "MAGICKWAND_LIBRARY",
-    "-U", "MAGICKCORE_LIBRARY",
     "-S", $Repo,
     "-B", $BuildDir,
     "-G", "Visual Studio 18 2026",
@@ -128,45 +80,39 @@ if ($VcpkgRoot) {
     $ConfigureArgs += "-DVCPKG_ROOT=$VcpkgRoot"
     $ConfigureArgs += "-DVCPKG_TRIPLET=$VcpkgTriplet"
 }
-if ($MagickRoot) {
-    $ConfigureArgs += "-DMAGICK_ROOT=$MagickRoot"
-}
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { 'OFF' })"
+$ConfigureArgs += "-DAWJ_ENABLE_ZENRAVIF=$(if ($DisableZenravif) { 'OFF' } else { 'ON' })"
 
 cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake 配置失败，退出码 $LASTEXITCODE。"
 }
-cmake --build $BuildDir --config Release --parallel
+cmake --build $BuildDir --config Release --target AWJ-cli AWJ-studio --parallel
 if ($LASTEXITCODE -ne 0) {
     throw "Release 构建失败，退出码 $LASTEXITCODE。"
 }
 
 $OutputDir = Join-Path $Repo "bin\x64\Release"
-$StaleArtifacts = @(
-    "avif_core.dll",
-    "avif_core.pdb"
-)
-foreach ($LegacyPrefix in @(
-    ("AVIF" + "Console" + "Cpp"),
-    ("AVIF" + "Console" + "Cli"),
-    ("AVIF" + "Studio")
-)) {
-    $StaleArtifacts += @("$LegacyPrefix.exe", "$LegacyPrefix.pdb")
-}
-if (-not $SharedSlint) {
-    $StaleArtifacts += @("slint_cpp.dll", "slint-compiler.exe", "slint_compiler.pdb")
-}
-foreach ($Name in $StaleArtifacts) {
-    $Path = Join-Path $OutputDir $Name
-    if (Test-Path $Path) {
-        Remove-Item -LiteralPath $Path -Force
+$InternalDir = Join-Path $Repo "bin\x64\internal\Release"
+$Keep = @("AWJ-cli.exe", "AWJ-studio.exe", "AWJ-cli.pdb", "AWJ-studio.pdb", "slint_cpp.dll")
+if (Test-Path $OutputDir) {
+    Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $Keep -notcontains $_.Name } | Remove-Item -Recurse -Force
+    if (-not $SharedSlint) {
+        foreach ($Name in @("slint_cpp.dll", "slint-compiler.exe", "slint_compiler.pdb")) {
+            $Path = Join-Path $OutputDir $Name
+            if (Test-Path $Path) { Remove-Item -LiteralPath $Path -Force }
+        }
     }
+}
+if (Test-Path $InternalDir) {
+    Get-ChildItem -LiteralPath $InternalDir -Force | Where-Object { $_.Name -notin @("AWJ-native-avif-helper.exe", "AWJ-native-avif-helper.pdb") } | Remove-Item -Recurse -Force
 }
 
 Write-Host ""
 Write-Host "Release 输出:"
-Write-Host "  $OutputDir\AVIF-WebP-Cli.exe"
-Write-Host "  $OutputDir\AVIF-WebP-Studio.exe"
+Write-Host "  $OutputDir\AWJ-cli.exe"
+Write-Host "  $OutputDir\AWJ-studio.exe"
+Write-Host "内部 helper:"
+Write-Host "  $InternalDir\AWJ-native-avif-helper.exe"
