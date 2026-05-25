@@ -81,7 +81,12 @@ struct NativeVisualQualitySearchResult {
   bool target_met{};
 };
 
-export std::expected<VisualQualityCandidate, std::string> evaluate_visual_quality_candidate(
+struct EvaluatedVisualQualityCandidate {
+  VisualQualityCandidate candidate{};
+  NativeEncodeResult encode_result{};
+};
+
+export std::expected<EvaluatedVisualQualityCandidate, std::string> evaluate_visual_quality_candidate(
     const LumaImage& reference_luma,
     const ImageBuffer& reference_image,
     const ImageEncoder& encoder,
@@ -95,12 +100,16 @@ export std::expected<VisualQualityCandidate, std::string> evaluate_visual_qualit
   if (!encoded) {
     return std::unexpected{encoded.error()};
   }
-  if (auto written = native_visual_search_detail::write_bytes(
-          candidate_path, std::span<const std::byte>{encoded->encoded.bytes});
-      !written) {
-    return std::unexpected{written.error()};
+  auto decoded = decoder.decode_memory(
+      std::span<const std::byte>{encoded->encoded.bytes}, candidate_path.string());
+  if (!decoded) {
+    if (auto written = native_visual_search_detail::write_bytes(
+            candidate_path, std::span<const std::byte>{encoded->encoded.bytes});
+        !written) {
+      return std::unexpected{written.error()};
+    }
+    decoded = decoder.decode(candidate_path);
   }
-  auto decoded = decoder.decode(candidate_path);
   if (!decoded) {
     return std::unexpected{decoded.error()};
   }
@@ -118,13 +127,17 @@ export std::expected<VisualQualityCandidate, std::string> evaluate_visual_qualit
     return std::unexpected{ms_ssim.error()};
   }
   const auto score = calculate_visual_score(*gmsd, *ms_ssim);
-  return VisualQualityCandidate{.quality = encoded->final_quality,
-                                .bytes = encoded->encoded.bytes.size(),
-                                .visual_score = score.visual_score,
-                                .raw_gmsd = *gmsd,
-                                .raw_ms_ssim = *ms_ssim,
-                                .gmsd_quality_score = score.gmsd_quality_score,
-                                .msssim_quality_score = score.msssim_quality_score};
+  const auto encoded_bytes = encoded->encoded.bytes.size();
+  auto encode_result = std::move(*encoded);
+  return EvaluatedVisualQualityCandidate{
+      .candidate = VisualQualityCandidate{.quality = encode_result.final_quality,
+                                          .bytes = encoded_bytes,
+                                          .visual_score = score.visual_score,
+                                          .raw_gmsd = *gmsd,
+                                          .raw_ms_ssim = *ms_ssim,
+                                          .gmsd_quality_score = score.gmsd_quality_score,
+                                          .msssim_quality_score = score.msssim_quality_score},
+      .encode_result = std::move(encode_result)};
 }
 
 export std::expected<NativeVisualQualitySearchResult, std::string>
@@ -172,6 +185,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     return std::unexpected{reference_luma.error()};
   }
 
+  std::vector<EvaluatedVisualQualityCandidate> evaluated_candidates;
   std::vector<VisualQualityCandidate> candidates;
   for (int quality : native_visual_search_detail::build_quality_probe_order(range)) {
     if (stop_token.stop_requested()) {
@@ -182,7 +196,8 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     if (!candidate) {
       return std::unexpected{candidate.error()};
     }
-    candidates.push_back(*candidate);
+    candidates.push_back(candidate->candidate);
+    evaluated_candidates.push_back(std::move(*candidate));
   }
 
   auto selected = select_smallest_passing_visual_quality_candidate(candidates, requested);
@@ -199,23 +214,29 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     return std::unexpected{"visual_quality 搜索没有产生候选。"};
   }
 
-  settings.quality = selected.candidate.quality;
-  settings.visual_quality.reset();
-  auto encoded = encoder.encode(reference_image, settings);
-  if (!encoded) {
-    return std::unexpected{encoded.error()};
+  auto selected_result = std::ranges::find_if(
+      evaluated_candidates,
+      [&](const EvaluatedVisualQualityCandidate& candidate) {
+        return candidate.candidate.quality == selected.candidate.quality &&
+               candidate.candidate.bytes == selected.candidate.bytes &&
+               candidate.candidate.visual_score == selected.candidate.visual_score;
+      });
+  if (selected_result == evaluated_candidates.end()) {
+    return std::unexpected{"visual_quality 搜索无法匹配已选候选。"};
   }
-  encoded->final_quality = selected.candidate.quality;
-  encoded->lossless = false;
-  encoded->search_attempt_count = static_cast<int>(candidates.size());
-  encoded->raw_gmsd = selected.candidate.raw_gmsd;
-  encoded->raw_ms_ssim = selected.candidate.raw_ms_ssim;
-  encoded->visual_score = VisualScoreBreakdown{
+
+  auto encoded = std::move(selected_result->encode_result);
+  encoded.final_quality = selected.candidate.quality;
+  encoded.lossless = false;
+  encoded.search_attempt_count = static_cast<int>(candidates.size());
+  encoded.raw_gmsd = selected.candidate.raw_gmsd;
+  encoded.raw_ms_ssim = selected.candidate.raw_ms_ssim;
+  encoded.visual_score = VisualScoreBreakdown{
       .visual_score = selected.candidate.visual_score,
       .gmsd_quality_score = selected.candidate.gmsd_quality_score,
       .msssim_quality_score = selected.candidate.msssim_quality_score};
 
-  return NativeVisualQualitySearchResult{.encode_result = std::move(*encoded),
+  return NativeVisualQualitySearchResult{.encode_result = std::move(encoded),
                                          .candidate = selected.candidate,
                                          .target_met = target_met};
 }

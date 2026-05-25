@@ -176,24 +176,31 @@ export class WebPImageDecoder final : public ImageDecoder {
                                                          "WebP");
   }
 
+  std::expected<ImageDecodeResult, std::string> decode_memory(
+      std::span<const std::byte> bytes,
+      std::string_view source_name) const override {
+    return decode_bytes(bytes, source_name);
+  }
+
   std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const override {
     auto bytes = webp_detail::read_file_bytes(path);
     if (!bytes) {
       return std::unexpected{bytes.error()};
     }
+    return decode_bytes(*bytes, path_to_utf8(path));
+  }
 
+ private:
+  static std::expected<ImageDecodeResult, std::string> decode_bytes(
+      std::span<const std::byte> bytes,
+      std::string_view source_name) {
     int width = 0;
     int height = 0;
-    const auto* data = reinterpret_cast<const std::uint8_t*>(bytes->data());
-    if (WebPGetInfo(data, bytes->size(), &width, &height) == 0 ||
+    const auto* data = reinterpret_cast<const std::uint8_t*>(bytes.data());
+    if (WebPGetInfo(data, bytes.size(), &width, &height) == 0 ||
         width <= 0 || height <= 0) {
-      return std::unexpected{std::format("WebP 文件信息无效: {}", path_to_utf8(path))};
-    }
-
-    webp_detail::WebPBytes decoded{WebPDecodeRGBA(data, bytes->size(), &width, &height)};
-    if (!decoded) {
-      return std::unexpected{std::format("WebP 解码失败: {}", path_to_utf8(path))};
+      return std::unexpected{std::format("WebP 文件信息无效: {}", source_name)};
     }
 
     const auto stride = webp_detail::checked_rgba_stride(static_cast<std::size_t>(width), "WebP decoder");
@@ -204,10 +211,18 @@ export class WebPImageDecoder final : public ImageDecoder {
     if (!byte_count) {
       return std::unexpected{byte_count.error()};
     }
+    if (*stride > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        *byte_count > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      return std::unexpected{"WebP decoder 输出尺寸超过 libwebp API 限制。"};
+    }
+
     ImagePlane plane{.stride = *stride};
     plane.bytes.resize(*byte_count);
-    std::ranges::copy_n(reinterpret_cast<std::byte*>(decoded.get()), *byte_count,
-                        plane.bytes.begin());
+    auto* output = reinterpret_cast<std::uint8_t*>(plane.bytes.data());
+    if (WebPDecodeRGBAInto(data, bytes.size(), output, plane.bytes.size(),
+                           static_cast<int>(*stride)) == nullptr) {
+      return std::unexpected{std::format("WebP 解码失败: {}", source_name)};
+    }
 
     ImageBuffer image{.width = static_cast<std::size_t>(width),
                       .height = static_cast<std::size_t>(height),

@@ -11,6 +11,7 @@ module;
 #include <limits>
 #include <memory>
 #include <string>
+#include <span>
 #include <vector>
 
 #include <jxl/decode.h>
@@ -223,13 +224,25 @@ export class JXLImageDecoder final : public ImageDecoder {
     }
   }
 
+  std::expected<ImageDecodeResult, std::string> decode_memory(
+      std::span<const std::byte> bytes,
+      std::string_view source_name) const override {
+    return decode_bytes(bytes, source_name);
+  }
+
   std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const override {
     auto bytes = jxl_detail::read_file_bytes(path);
     if (!bytes) {
       return std::unexpected{bytes.error()};
     }
+    return decode_bytes(*bytes, path_to_utf8(path));
+  }
 
+ private:
+  static std::expected<ImageDecodeResult, std::string> decode_bytes(
+      std::span<const std::byte> bytes,
+      std::string_view source_name) {
     jxl_detail::DecoderPtr decoder{JxlDecoderCreate(nullptr)};
     if (!decoder) {
       return std::unexpected{"创建 JXL decoder 失败。"};
@@ -249,8 +262,8 @@ export class JXLImageDecoder final : public ImageDecoder {
       return std::unexpected{"订阅 JXL decoder 事件失败。"};
     }
 
-    const auto* input = reinterpret_cast<const std::uint8_t*>(bytes->data());
-    if (JxlDecoderSetInput(decoder.get(), input, bytes->size()) != JXL_DEC_SUCCESS) {
+    const auto* input = reinterpret_cast<const std::uint8_t*>(bytes.data());
+    if (JxlDecoderSetInput(decoder.get(), input, bytes.size()) != JXL_DEC_SUCCESS) {
       return std::unexpected{"设置 JXL 输入 buffer 失败。"};
     }
     JxlDecoderCloseInput(decoder.get());
@@ -265,15 +278,15 @@ export class JXLImageDecoder final : public ImageDecoder {
     while (true) {
       const auto status = JxlDecoderProcessInput(decoder.get());
       if (status == JXL_DEC_ERROR) {
-        return std::unexpected{std::format("JXL 解码失败: {}", path_to_utf8(path))};
+        return std::unexpected{std::format("JXL 解码失败: {}", source_name)};
       }
       if (status == JXL_DEC_NEED_MORE_INPUT) {
-        return std::unexpected{std::format("JXL 输入不完整: {}", path_to_utf8(path))};
+        return std::unexpected{std::format("JXL 输入不完整: {}", source_name)};
       }
       if (status == JXL_DEC_BASIC_INFO) {
         if (JxlDecoderGetBasicInfo(decoder.get(), &info) != JXL_DEC_SUCCESS ||
             info.xsize == 0 || info.ysize == 0) {
-          return std::unexpected{std::format("JXL 基础信息无效: {}", path_to_utf8(path))};
+          return std::unexpected{std::format("JXL 基础信息无效: {}", source_name)};
         }
         size_t output_size = 0;
         if (JxlDecoderImageOutBufferSize(decoder.get(), &format, &output_size) !=
@@ -306,7 +319,7 @@ export class JXLImageDecoder final : public ImageDecoder {
       }
       if (status == JXL_DEC_SUCCESS) {
         return std::unexpected{std::format("JXL 解码结束但未得到完整图像: {}",
-                                           path_to_utf8(path))};
+                                           source_name)};
       }
     }
   }

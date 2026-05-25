@@ -201,28 +201,26 @@ export std::expected<double, std::string> compute_gmsd(
   }
 
   constexpr double c = 0.0026;
-  std::vector<double> similarities;
-  similarities.reserve(reference.pixels.size());
+  std::size_t count = 0;
   double mean = 0.0;
+  double m2 = 0.0;
   for (std::size_t y = 0; y < reference.height; ++y) {
     for (std::size_t x = 0; x < reference.width; ++x) {
       const double ref_grad = visual_metrics_detail::gradient_magnitude(reference, x, y);
       const double candidate_grad = visual_metrics_detail::gradient_magnitude(candidate, x, y);
       const double similarity = (2.0 * ref_grad * candidate_grad + c) /
                                 (ref_grad * ref_grad + candidate_grad * candidate_grad + c);
-      similarities.push_back(similarity);
-      mean += similarity;
+      ++count;
+      const double delta = similarity - mean;
+      mean += delta / static_cast<double>(count);
+      const double delta_after = similarity - mean;
+      m2 += delta * delta_after;
     }
   }
-  mean /= static_cast<double>(similarities.size());
-
-  double variance = 0.0;
-  for (double similarity : similarities) {
-    const double delta = similarity - mean;
-    variance += delta * delta;
+  if (count == 0) {
+    return std::unexpected{"视觉指标输入为空。"};
   }
-  variance /= static_cast<double>(similarities.size());
-  return std::sqrt(variance);
+  return std::sqrt(m2 / static_cast<double>(count));
 }
 
 export std::expected<double, std::string> compute_ms_ssim(
@@ -233,15 +231,19 @@ export std::expected<double, std::string> compute_ms_ssim(
   }
 
   constexpr std::array<double, 5> weights{0.0448, 0.2856, 0.3001, 0.2363, 0.1333};
-  LumaImage ref_level = reference;
-  LumaImage candidate_level = candidate;
+  const LumaImage* ref_level = &reference;
+  const LumaImage* candidate_level = &candidate;
+  LumaImage ref_owned;
+  LumaImage candidate_owned;
   double value = 1.0;
   for (std::size_t level = 0; level < weights.size(); ++level) {
-    const double ssim = visual_metrics_detail::ssim_global(ref_level, candidate_level);
+    const double ssim = visual_metrics_detail::ssim_global(*ref_level, *candidate_level);
     value *= std::pow(std::clamp(ssim, 1e-9, 1.0), weights[level]);
     if (level + 1 < weights.size()) {
-      ref_level = visual_metrics_detail::downsample_2x(ref_level);
-      candidate_level = visual_metrics_detail::downsample_2x(candidate_level);
+      ref_owned = visual_metrics_detail::downsample_2x(*ref_level);
+      candidate_owned = visual_metrics_detail::downsample_2x(*candidate_level);
+      ref_level = &ref_owned;
+      candidate_level = &candidate_owned;
     }
   }
   return std::clamp(value, 0.0, 1.0);

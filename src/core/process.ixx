@@ -348,7 +348,13 @@ class FileLogger {
         last_error_ = std::format("无法创建日志目录 {}: {}",
                                   path_to_utf8(log_dir_), ec.message());
       } else {
-        info("===== NEW SESSION START =====");
+        stream_.open(log_file_, std::ios::app | std::ios::binary);
+        if (!stream_) {
+          enabled_ = false;
+          last_error_ = std::format("无法写入日志文件 {}", path_to_utf8(log_file_));
+        } else {
+          info("===== NEW SESSION START =====");
+        }
       }
     }
   }
@@ -373,21 +379,21 @@ class FileLogger {
     if (!enabled_) {
       return;
     }
-    std::ofstream stream{log_file_, std::ios::app | std::ios::binary};
-    if (!stream) {
-      enabled_ = false;
-      last_error_ = std::format("无法写入日志文件 {}", path_to_utf8(log_file_));
-      return;
-    }
     const auto now = std::chrono::floor<std::chrono::seconds>(
         std::chrono::system_clock::now());
-    stream << std::format("[{:%F %T}] [{}] {}\n", now, level, message);
+    stream_ << std::format("[{:%F %T}] [{}] {}\n", now, level, message);
+    stream_.flush();
+    if (!stream_) {
+      enabled_ = false;
+      last_error_ = std::format("无法写入日志文件 {}", path_to_utf8(log_file_));
+    }
   }
 
   bool enabled_{true};
   fs::path log_dir_;
   fs::path log_file_;
   std::string last_error_{};
+  std::ofstream stream_{};
   mutable std::mutex mutex_;
 };
 

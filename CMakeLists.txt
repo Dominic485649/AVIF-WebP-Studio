@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.4
+    VERSION 0.4.1
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -175,6 +175,32 @@ function(awj_set_runtime_directory target base_dir)
         set_target_properties(${target} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${base_dir}/${config}")
     endforeach()
+endfunction()
+
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cmake")
+set(AWJ_WRITE_SHA256_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/cmake/write_sha256.cmake")
+file(WRITE "${AWJ_WRITE_SHA256_SCRIPT}" [=[
+if(NOT DEFINED AWJ_SHA256_INPUT)
+    message(FATAL_ERROR "AWJ_SHA256_INPUT is required.")
+endif()
+if(NOT DEFINED AWJ_SHA256_OUTPUT)
+    message(FATAL_ERROR "AWJ_SHA256_OUTPUT is required.")
+endif()
+if(NOT DEFINED AWJ_SHA256_NAME)
+    get_filename_component(AWJ_SHA256_NAME "${AWJ_SHA256_INPUT}" NAME)
+endif()
+file(SHA256 "${AWJ_SHA256_INPUT}" AWJ_SHA256_HASH)
+file(WRITE "${AWJ_SHA256_OUTPUT}" "${AWJ_SHA256_HASH}  ${AWJ_SHA256_NAME}\n")
+]=])
+
+function(awj_add_sha256_post_build target)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                "-DAWJ_SHA256_INPUT=$<TARGET_FILE:${target}>"
+                "-DAWJ_SHA256_OUTPUT=$<TARGET_FILE:${target}>.sha256"
+                "-DAWJ_SHA256_NAME=$<TARGET_FILE_NAME:${target}>"
+                -P "${AWJ_WRITE_SHA256_SCRIPT}"
+        VERBATIM)
 endfunction()
 
 function(avif_copy_slint_runtime target)
@@ -440,6 +466,7 @@ target_link_libraries(awj_core INTERFACE awj_pipeline)
 add_executable(AWJ-cli src/cli/main.cpp)
 avif_enable_common_options(AWJ-cli)
 target_link_libraries(AWJ-cli PRIVATE awj_core)
+awj_add_sha256_post_build(AWJ-cli)
 
 if(BUILD_TESTING)
     add_executable(awj_visual_quality_tests tests/visual_quality_tests.cpp)
@@ -583,3 +610,4 @@ if(MSVC AND AVIF_STATIC_SLINT AND AWJ_ZENRAVIF_AVAILABLE)
 endif()
 avif_add_slint_sources(AWJ-studio ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ-studio)
+awj_add_sha256_post_build(AWJ-studio)

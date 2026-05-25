@@ -13,6 +13,7 @@ module;
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1043,12 +1044,25 @@ export class AvifImageDecoder final : public ImageDecoder {
                                                          "AVIF");
   }
 
+  std::expected<ImageDecodeResult, std::string> decode_memory(
+      std::span<const std::byte> bytes,
+      std::string_view source_name) const override {
+    return decode_bytes(bytes, source_name);
+  }
+
   std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const override {
     auto bytes = avif_aom_detail::read_file_bytes(path);
     if (!bytes) {
       return std::unexpected{bytes.error()};
     }
+    return decode_bytes(*bytes, path_to_utf8(path));
+  }
+
+ private:
+  static std::expected<ImageDecodeResult, std::string> decode_bytes(
+      std::span<const std::byte> bytes,
+      std::string_view source_name) {
     avif_aom_detail::AvifDecoder decoder{avifDecoderCreate()};
     if (!decoder) {
       return std::unexpected{"无法创建 libavif decoder。"};
@@ -1061,10 +1075,10 @@ export class AvifImageDecoder final : public ImageDecoder {
       return std::unexpected{"无法创建 libavif decode image。"};
     }
     auto result = avifDecoderReadMemory(
-        decoder.get(), image.get(), reinterpret_cast<const std::uint8_t*>(bytes->data()),
-        bytes->size());
+        decoder.get(), image.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()),
+        bytes.size());
     if (result != AVIF_RESULT_OK) {
-      return std::unexpected{std::format("AVIF 解码失败: {}",
+      return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
                                          avif_aom_detail::avif_decode_error(result, decoder.get()))};
     }
 
@@ -1075,13 +1089,13 @@ export class AvifImageDecoder final : public ImageDecoder {
     rgb.maxThreads = 1;
     result = avifRGBImageAllocatePixels(&rgb);
     if (result != AVIF_RESULT_OK) {
-      return std::unexpected{std::format("AVIF RGB buffer 分配失败: {}",
+      return std::unexpected{std::format("AVIF RGB buffer 分配失败: {}: {}", source_name,
                                          avifResultToString(result))};
     }
     avif_aom_detail::AvifRgbPixels rgb_guard{&rgb};
     result = avifImageYUVToRGB(image.get(), &rgb);
     if (result != AVIF_RESULT_OK) {
-      return std::unexpected{std::format("AVIF YUV 转 RGB 失败: {}",
+      return std::unexpected{std::format("AVIF YUV 转 RGB 失败: {}: {}", source_name,
                                          avifResultToString(result))};
     }
 
