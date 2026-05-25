@@ -49,7 +49,7 @@ $cases = @(
     @{ Name = 'avif-default'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'avif-default'), '-f', 'avif', '--summary', '--log', '--overwrite') },
     @{ Name = 'webp-default'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'webp-default'), '-f', 'webp', '--summary', '--overwrite') },
     @{ Name = 'jxl-default'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'jxl-default'), '-f', 'jxl', '--summary', '--overwrite') },
-    @{ Name = 'avif-resize-strip'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'avif-resize-strip'), '-f', 'avif', '--max-resolution', '1600', '--strip', '--chroma', '420', '--bit-depth', '8', '--template', '{index}_{name}_{params}', '--suffix-random', '--summary') },
+    @{ Name = 'avif-strip'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'avif-strip'), '-f', 'avif', '--strip', '--chroma', '420', '--bit-depth', '8', '--template', '{index}_{name}_{params}', '--suffix-random', '--summary') },
     @{ Name = 'webp-skip-existing'; Args = @('-i', $sampleDir, '-o', (Join-Path $outRoot 'webp-default'), '-f', 'webp', '--skip-existing', '--summary') },
     @{ Name = 'avif-visual-quality-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'avif-visual-quality-smoke'), '-f', 'avif', '--visual-quality', '88', '--summary') },
     @{ Name = 'jxl-visual-quality-smoke'; Args = @('-i', (Get-ChildItem -Path $sampleDir -File | Select-Object -First 1).FullName, '-o', (Join-Path $outRoot 'jxl-visual-quality-smoke'), '-f', 'jxl', '--visual-quality', '88', '--summary') }

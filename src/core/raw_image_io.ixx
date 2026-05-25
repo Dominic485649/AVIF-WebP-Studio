@@ -76,8 +76,13 @@ export std::expected<void, std::string> write_raw_image_file(
   }
   if (image.width > std::numeric_limits<std::uint32_t>::max() ||
       image.height > std::numeric_limits<std::uint32_t>::max() ||
-      plane.stride > std::numeric_limits<std::uint32_t>::max()) {
+      plane.stride > std::numeric_limits<std::uint32_t>::max() ||
+      plane.stride > std::numeric_limits<std::uint64_t>::max() / image.height) {
     return std::unexpected{"raw image dimensions exceed file format limits."};
+  }
+  const auto min_bytes = static_cast<std::uint64_t>(plane.stride) * image.height;
+  if (plane.bytes.size() < min_bytes) {
+    return std::unexpected{"raw image payload is smaller than its dimensions."};
   }
   raw_image_detail::Header header{};
   std::ranges::copy(raw_image_detail::magic, header.magic);
@@ -122,13 +127,19 @@ export std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::pat
        header.bit_depth != 16)) {
     return std::unexpected{"raw image format is unsupported."};
   }
+  if (header.width == 0 || header.height == 0 || header.stride == 0 ||
+      header.width > std::numeric_limits<std::uint64_t>::max() / 4ull /
+                         (header.bit_depth > 8 ? 2ull : 1ull)) {
+    return std::unexpected{"raw image dimensions are invalid."};
+  }
   const auto expected_min_stride = static_cast<std::uint64_t>(header.width) * 4ull *
                                    (header.bit_depth > 8 ? 2ull : 1ull);
-  if (header.width == 0 || header.height == 0 || header.stride < expected_min_stride) {
+  if (header.width == 0 || header.height == 0 || header.stride < expected_min_stride ||
+      header.height > std::numeric_limits<std::uint64_t>::max() / header.stride) {
     return std::unexpected{"raw image dimensions are invalid."};
   }
   const auto min_bytes = static_cast<std::uint64_t>(header.stride) * header.height;
-  if (header.byte_count < min_bytes ||
+  if (header.byte_count < min_bytes || header.byte_count != min_bytes ||
       header.byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
     return std::unexpected{"raw image byte count is invalid."};
   }

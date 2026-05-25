@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.3.1
+    VERSION 0.4
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -14,7 +14,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(AVIF_STATIC_SLINT "Link Slint statically so AWJ-studio does not need slint_cpp.dll" ON)
 option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bundles when all dependencies allow it" ON)
 option(AVIF_ENABLE_RELEASE_IPO "Enable interprocedural optimization for Release builds when the compiler supports it" OFF)
-option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into the private AVIF helper" ON)
+option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targets" ON)
+option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into the main executables" ON)
+option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into the main executables" ON)
+set(AWJ_SVTAV1HDR_GIT_REPOSITORY "https://github.com/juliobbv-p/svt-av1-hdr.git" CACHE STRING "svt-av1-hdr repository")
+set(AWJ_SVTAV1HDR_GIT_TAG "b90fe2474a0c464121c0724d073f01953f792034" CACHE STRING "svt-av1-hdr git tag or commit")
+set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
+set(AWJ_LIBAVIF_GIT_TAG "6543b22b5bc706c53f038a16fe515f921556d9b3" CACHE STRING "libavif git tag or commit")
 
 set(AVIF_RELEASE_IPO_SUPPORTED OFF)
 if(AVIF_ENABLE_RELEASE_IPO)
@@ -73,7 +79,16 @@ message(STATUS "AWJimage MSVC runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}")
 
 find_package(scn CONFIG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
-find_package(libavif CONFIG REQUIRED)
+find_package(PNG REQUIRED)
+find_package(JPEG REQUIRED)
+find_package(GIF REQUIRED)
+find_package(TIFF REQUIRED)
+find_package(libraw CONFIG REQUIRED)
+find_package(AOM CONFIG REQUIRED)
+find_package(libyuv CONFIG REQUIRED)
+
+set(AWJ_SVTAV1HDR_AVAILABLE OFF)
+set(AWJ_SVTAV1HDR_STATIC_DEFINE 0)
 
 set(AVIF_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TRIPLET}")
 function(avif_find_vcpkg_library out_var library_name)
@@ -130,6 +145,8 @@ function(avif_enable_common_options target)
             /utf-8
             /permissive-
             /EHsc
+            $<$<BOOL:${AWJ_ENABLE_STRICT_MSVC_CHECKS}>:/W4>
+            $<$<BOOL:${AWJ_ENABLE_STRICT_MSVC_CHECKS}>:/sdl>
             $<$<CONFIG:Release>:/O2>
             $<$<CONFIG:Release>:/Oi>
             $<$<CONFIG:Release>:/Ot>
@@ -181,6 +198,53 @@ function(avif_copy_slint_runtime target)
 endfunction()
 
 include(FetchContent)
+
+if(AWJ_ENABLE_SVTAV1HDR)
+    set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_APPS OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(BUILD_DEC OFF CACHE BOOL "" FORCE)
+    set(COMPILE_C_ONLY ON CACHE BOOL "" FORCE)
+    set(ENABLE_AVX512 OFF CACHE BOOL "" FORCE)
+    set(SVT_AV1_BUILD_APPS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(SvtAv1Hdr
+        GIT_REPOSITORY ${AWJ_SVTAV1HDR_GIT_REPOSITORY}
+        GIT_TAG ${AWJ_SVTAV1HDR_GIT_TAG})
+    FetchContent_MakeAvailable(SvtAv1Hdr)
+    if(TARGET SvtAv1Enc)
+        set(AWJ_SVTAV1HDR_AVAILABLE ON)
+        set(AWJ_SVTAV1HDR_STATIC_DEFINE 1)
+        set(AWJ_SVTAV1HDR_INCLUDE_COMPAT_DIR "${CMAKE_CURRENT_BINARY_DIR}/svtav1hdr-include/svt-av1")
+        file(MAKE_DIRECTORY "${AWJ_SVTAV1HDR_INCLUDE_COMPAT_DIR}")
+        file(GLOB AWJ_SVTAV1HDR_API_HEADERS "${svtav1hdr_SOURCE_DIR}/Source/API/*.h")
+        file(COPY ${AWJ_SVTAV1HDR_API_HEADERS} DESTINATION "${AWJ_SVTAV1HDR_INCLUDE_COMPAT_DIR}")
+        target_include_directories(SvtAv1Enc INTERFACE
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/svtav1hdr-include>")
+    else()
+        message(FATAL_ERROR "svt-av1-hdr FetchContent did not provide SvtAv1Enc.")
+    endif()
+    set(BUILD_TESTING ${AWJ_PARENT_BUILD_TESTING} CACHE BOOL "" FORCE)
+endif()
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(AVIF_CODEC_AOM SYSTEM CACHE STRING "" FORCE)
+set(AVIF_CODEC_AOM_DECODE ON CACHE BOOL "" FORCE)
+set(AVIF_CODEC_AOM_ENCODE ON CACHE BOOL "" FORCE)
+if(AWJ_SVTAV1HDR_AVAILABLE)
+    set(AVIF_CODEC_SVT SYSTEM CACHE STRING "" FORCE)
+else()
+    set(AVIF_CODEC_SVT OFF CACHE STRING "" FORCE)
+endif()
+set(AVIF_LIBYUV SYSTEM CACHE STRING "" FORCE)
+set(AVIF_BUILD_APPS OFF CACHE BOOL "" FORCE)
+set(AVIF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(AVIF_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(libavif
+    GIT_REPOSITORY ${AWJ_LIBAVIF_GIT_REPOSITORY}
+    GIT_TAG ${AWJ_LIBAVIF_GIT_TAG})
+FetchContent_MakeAvailable(libavif)
+
 if(AVIF_STATIC_SLINT)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 endif()
@@ -227,6 +291,7 @@ target_sources(awj_base
     PUBLIC
         FILE_SET awj_base_modules TYPE CXX_MODULES FILES
             src/core/encoding_defaults.ixx
+            src/core/large_image_plan.ixx
             src/app/config.ixx
             src/core/visual_quality.ixx
             src/core/visual_metrics.ixx
@@ -255,30 +320,32 @@ add_library(awj_native_codecs STATIC)
 avif_enable_common_options(awj_native_codecs)
 target_link_libraries(awj_native_codecs PUBLIC
     awj_base
+    awj_raw_image_io
     WebP::webp
     WebP::webpdemux
     WebP::libwebpmux
-    JXL::jxl)
+    JXL::jxl
+    PNG::PNG
+    JPEG::JPEG
+    GIF::GIF
+    TIFF::TIFF
+    libraw::raw_r
+    windowscodecs)
 target_sources(awj_native_codecs
     PUBLIC
         FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
             src/codecs/avif_registry.ixx
+            src/codecs/decoder_common.ixx
             src/codecs/webp_codec.ixx
-            src/codecs/jxl_codec.ixx)
+            src/codecs/jxl_codec.ixx
+            src/codecs/png_codec.ixx
+            src/codecs/jpeg_codec.ixx
+            src/codecs/gif_codec.ixx
+            src/codecs/tiff_codec.ixx
+            src/codecs/libraw_codec.ixx
+            src/codecs/raw_codec.ixx
+            src/codecs/wic_codec.ixx)
 
-add_library(awj_avif_base_codec STATIC)
-avif_enable_common_options(awj_avif_base_codec)
-target_link_libraries(awj_avif_base_codec PUBLIC
-    awj_native_codecs
-    avif)
-target_compile_definitions(awj_avif_base_codec PUBLIC AWJ_HAS_ZENRAVIF=0)
-target_sources(awj_avif_base_codec
-    PUBLIC
-        FILE_SET avif_base_codec_modules TYPE CXX_MODULES FILES
-            src/codecs/avif_aom_codec.ixx)
-
-add_library(awj_avif_helper_codec STATIC)
-avif_enable_common_options(awj_avif_helper_codec)
 set(ZENRAVIF_BRIDGE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.toml")
 set(ZENRAVIF_BRIDGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/src/lib.rs")
 set(AWJ_ZENRAVIF_AVAILABLE OFF)
@@ -307,25 +374,40 @@ else()
     message(STATUS "Experimental zenrav1e AVIF encoder disabled by AWJ_ENABLE_ZENRAVIF=OFF.")
 endif()
 
-target_link_libraries(awj_avif_helper_codec PUBLIC
+add_library(awj_avif_base_codec STATIC)
+avif_enable_common_options(awj_avif_base_codec)
+target_link_libraries(awj_avif_base_codec PUBLIC
     awj_native_codecs
     avif)
 if(AWJ_ZENRAVIF_AVAILABLE)
-    target_link_libraries(awj_avif_helper_codec PUBLIC zenravif_bridge)
-    target_compile_definitions(awj_avif_helper_codec PUBLIC AWJ_HAS_ZENRAVIF=1)
-    add_dependencies(awj_avif_helper_codec zenravif_bridge_static)
+    target_link_libraries(awj_avif_base_codec PUBLIC zenravif_bridge)
+    target_compile_definitions(awj_avif_base_codec PUBLIC AWJ_HAS_ZENRAVIF=1)
+    add_dependencies(awj_avif_base_codec zenravif_bridge_static)
 else()
-    target_compile_definitions(awj_avif_helper_codec PUBLIC AWJ_HAS_ZENRAVIF=0)
+    target_compile_definitions(awj_avif_base_codec PUBLIC AWJ_HAS_ZENRAVIF=0)
 endif()
-target_sources(awj_avif_helper_codec
+target_compile_definitions(awj_avif_base_codec PUBLIC
+    AWJ_HAS_SVTAV1HDR_STATIC=${AWJ_SVTAV1HDR_STATIC_DEFINE})
+target_sources(awj_avif_base_codec
     PUBLIC
-        FILE_SET avif_helper_codec_modules TYPE CXX_MODULES FILES
+        FILE_SET avif_base_codec_modules TYPE CXX_MODULES FILES
             src/codecs/avif_aom_codec.ixx)
 
-add_executable(AWJ-native-avif-helper src/cli/native_avif_aom_helper.cpp)
-avif_enable_common_options(AWJ-native-avif-helper)
-awj_set_runtime_directory(AWJ-native-avif-helper "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/internal")
-target_link_libraries(AWJ-native-avif-helper PRIVATE awj_avif_helper_codec awj_raw_image_io)
+add_library(awj_svtav1hdr_codec STATIC)
+avif_enable_common_options(awj_svtav1hdr_codec)
+target_link_libraries(awj_svtav1hdr_codec PUBLIC
+    awj_base
+    awj_native_codecs
+    avif)
+target_compile_definitions(awj_svtav1hdr_codec PUBLIC
+    AWJ_HAS_SVTAV1HDR_STATIC=${AWJ_SVTAV1HDR_STATIC_DEFINE})
+if(AWJ_SVTAV1HDR_AVAILABLE)
+    target_link_libraries(awj_svtav1hdr_codec PUBLIC SvtAv1Enc)
+endif()
+target_sources(awj_svtav1hdr_codec
+    PUBLIC
+        FILE_SET awj_svtav1hdr_codec_modules TYPE CXX_MODULES FILES
+            src/codecs/svtav1hdr_codec.ixx)
 
 add_library(awj_native_backend STATIC)
 avif_enable_common_options(awj_native_backend)
@@ -334,10 +416,12 @@ target_link_libraries(awj_native_backend PUBLIC
     awj_raw_image_io
     awj_native_visual_search
     awj_native_codecs
-    awj_avif_base_codec)
+    awj_avif_base_codec
+    awj_svtav1hdr_codec)
 target_sources(awj_native_backend
     PUBLIC
         FILE_SET awj_native_backend_modules TYPE CXX_MODULES FILES
+            src/codecs/decoder_registry.ixx
             src/backends/native_backend.ixx)
 
 add_library(awj_pipeline STATIC)
@@ -356,7 +440,6 @@ target_link_libraries(awj_core INTERFACE awj_pipeline)
 add_executable(AWJ-cli src/cli/main.cpp)
 avif_enable_common_options(AWJ-cli)
 target_link_libraries(AWJ-cli PRIVATE awj_core)
-add_dependencies(AWJ-cli AWJ-native-avif-helper)
 
 if(BUILD_TESTING)
     add_executable(awj_visual_quality_tests tests/visual_quality_tests.cpp)
@@ -395,10 +478,21 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_native_visual_search_tests)
     target_link_libraries(awj_native_visual_search_tests PRIVATE awj_native_visual_search awj_native_codecs)
 
+    add_executable(awj_decoder_registry_tests tests/decoder_registry_tests.cpp)
+    avif_enable_common_options(awj_decoder_registry_tests)
+    target_link_libraries(awj_decoder_registry_tests PRIVATE awj_native_backend)
+
     add_executable(awj_native_pipeline_tests tests/native_pipeline_tests.cpp)
     avif_enable_common_options(awj_native_pipeline_tests)
     target_link_libraries(awj_native_pipeline_tests PRIVATE awj_native_backend)
-    add_dependencies(awj_native_pipeline_tests AWJ-native-avif-helper)
+
+    add_executable(awj_pipeline_security_tests tests/pipeline_security_tests.cpp)
+    avif_enable_common_options(awj_pipeline_security_tests)
+    target_link_libraries(awj_pipeline_security_tests PRIVATE awj_pipeline awj_native_codecs)
+
+    add_executable(awj_memory_cancel_tests tests/memory_cancel_tests.cpp)
+    avif_enable_common_options(awj_memory_cancel_tests)
+    target_link_libraries(awj_memory_cancel_tests PRIVATE awj_native_visual_search awj_native_codecs awj_raw_image_io)
 
     add_executable(awj_cli_config_entry tests/cli_config_entry.cpp)
     avif_enable_common_options(awj_cli_config_entry)
@@ -407,7 +501,6 @@ if(BUILD_TESTING)
     add_executable(awj_cli_native_avif_aom_tests tests/cli_native_avif_aom_tests.cpp)
     avif_enable_common_options(awj_cli_native_avif_aom_tests)
     target_link_libraries(awj_cli_native_avif_aom_tests PRIVATE awj_native_backend)
-    add_dependencies(awj_cli_native_avif_aom_tests AWJ-native-avif-helper)
 
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
     add_test(NAME config_defaults_core COMMAND awj_config_defaults_tests)
@@ -418,7 +511,10 @@ if(BUILD_TESTING)
     add_test(NAME avif_registry_core COMMAND awj_avif_registry_tests)
     add_test(NAME jxl_codec_core COMMAND awj_jxl_codec_tests)
     add_test(NAME native_visual_search_core COMMAND awj_native_visual_search_tests)
+    add_test(NAME decoder_registry_core COMMAND awj_decoder_registry_tests)
     add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
+    add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
+    add_test(NAME memory_cancel_core COMMAND awj_memory_cancel_tests)
 
     add_test(NAME cli_help COMMAND awj_cli_config_entry --help)
     set_tests_properties(cli_help PROPERTIES
@@ -442,13 +538,6 @@ if(BUILD_TESTING)
 
     add_test(NAME cli_accepts_visual_quality_priority
         COMMAND awj_cli_config_entry --visual-quality 90 --quality 20 --help)
-
-    add_test(NAME cli_accepts_backend_native_webp
-        COMMAND awj_cli_config_entry --backend native --format webp --help)
-
-    add_test(NAME cli_rejects_backend_magick
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
-            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--backend' 'magick' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('Magick 后端已移除')) { exit 1 }")
 
     add_test(NAME cli_native_avif_aom_converts_webp
         COMMAND awj_cli_native_avif_aom_tests)
@@ -475,7 +564,8 @@ endif()
 
 add_executable(AWJ-studio WIN32
     src/ui/main.cpp
-    src/ui/AWJ-studio.manifest)
+    src/ui/AWJ-studio.manifest
+    src/ui/AWJ-studio.rc)
 avif_enable_common_options(AWJ-studio)
 target_link_libraries(AWJ-studio PRIVATE
     awj_core
@@ -485,6 +575,11 @@ target_link_libraries(AWJ-studio PRIVATE
     uxtheme
     imm32
     opengl32)
-add_dependencies(AWJ-studio AWJ-native-avif-helper)
+if(MSVC AND AVIF_STATIC_SLINT AND AWJ_ZENRAVIF_AVAILABLE)
+    # Both Slint's static C++ runtime and zenravif_bridge are Rust static libraries.
+    # MSVC otherwise reports duplicate Rust std runtime symbols even when built by
+    # the same toolchain for one final executable.
+    target_link_options(AWJ-studio PRIVATE "/FORCE:MULTIPLE")
+endif()
 avif_add_slint_sources(AWJ-studio ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ-studio)

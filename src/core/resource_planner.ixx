@@ -9,6 +9,8 @@ module;
 
 export module awj.resource_planner;
 
+import awj.encoding_defaults;
+
 export namespace awj {
 
 struct MemoryStatus {
@@ -63,7 +65,12 @@ export ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
   }
 
   int encoder_threads = std::max(1, budget / file_parallelism);
-  if (!request.av1_encoder) {
+  if (request.av1_encoder) {
+    const int leave_headroom = std::max(1, budget - 2);
+    const int av1_cap = std::max(1, std::min(encoding_defaults::default_av1_encoder_thread_cap,
+                                             leave_headroom));
+    encoder_threads = std::min(encoder_threads, av1_cap);
+  } else {
     encoder_threads = std::min(encoder_threads, 4);
   }
   while (file_parallelism * encoder_threads > budget && encoder_threads > 1) {
@@ -74,6 +81,18 @@ export ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
                       .encoder_threads_per_file = encoder_threads,
                       .global_thread_budget = budget,
                       .memory_limit_bytes = memory_limit};
+}
+
+export ResourcePlan plan_large_deferred_resources(ResourcePlan base,
+                                                  int file_count) noexcept {
+  const int budget = std::max(1, base.global_thread_budget);
+  const int threads_per_file = std::max(1, std::min(8, budget));
+  const int files = std::max(1, file_count);
+  const int file_parallelism = std::max(1, std::min(files, budget / threads_per_file));
+  return ResourcePlan{.file_parallelism = file_parallelism,
+                      .encoder_threads_per_file = threads_per_file,
+                      .global_thread_budget = budget,
+                      .memory_limit_bytes = base.memory_limit_bytes};
 }
 
 }  // namespace awj

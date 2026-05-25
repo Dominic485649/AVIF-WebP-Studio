@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -77,8 +78,8 @@ std::expected<awj::AvifEncoderMode, std::string> parse_encoder(std::wstring_view
   if (text == "aom") {
     return awj::AvifEncoderMode::aom;
   }
-  if (text == "svt") {
-    return awj::AvifEncoderMode::svt;
+  if (text == "svt" || text == "svt-av1" || text == "svt-av1-hdr") {
+    return std::unexpected{"svt-av1-hdr 由官方静态 SvtAv1EncApp helper 处理，不通过 AWJ-native-avif-helper。"};
   }
   if (text == "zenrav1e") {
     return awj::AvifEncoderMode::zenrav1e;
@@ -283,6 +284,9 @@ std::expected<void, std::string> run_encode(const HelperConfig& cfg) {
   if (!decoded) {
     return std::unexpected{decoded.error()};
   }
+  if (decoded->image.width > std::numeric_limits<std::uint64_t>::max() / decoded->image.height) {
+    return std::unexpected{"native AVIF helper 输入尺寸过大。"};
+  }
   const auto pixel_count = static_cast<std::uint64_t>(decoded->image.width) *
                            static_cast<std::uint64_t>(decoded->image.height);
   const auto selection = awj::select_avif_encoder_for_current_build(
@@ -306,6 +310,7 @@ std::expected<void, std::string> run_encode(const HelperConfig& cfg) {
       awj::NativeEncodeSettings{.output_format = awj::OutputFormat::avif,
                                  .quality = cfg.quality,
                                  .speed = cfg.speed,
+                                 .speed_explicit = true,
                                  .bit_depth = selection->applied_bit_depth,
                                  .chroma_mode = selection->applied_chroma,
                                  .avif_encoder = selection->applied_encoder,

@@ -3,6 +3,7 @@ module;
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -14,6 +15,7 @@ export module awj.codec;
 import awj.config;
 import awj.encoding_defaults;
 import awj.image;
+import awj.large_image_plan;
 import awj.resource_planner;
 import awj.visual_quality;
 
@@ -59,18 +61,67 @@ struct SpeedMapping {
   std::string codec_key{};
 };
 
+struct SvtAv1HdrSettings {
+  std::optional<int> crf{};
+  int preset{encoding_defaults::default_svtav1hdr_preset};
+  std::string tune{std::string{encoding_defaults::default_svtav1hdr_tune}};
+  int keyint{encoding_defaults::default_svtav1hdr_keyint};
+  bool avif{encoding_defaults::default_svtav1hdr_avif};
+  std::vector<std::wstring> params{};
+  std::optional<int> color_primaries{};
+  std::optional<int> transfer_characteristics{};
+  std::optional<int> matrix_coefficients{};
+  std::optional<int> color_range{};
+  std::wstring mastering_display{};
+  std::wstring content_light{};
+};
+
 struct EncodeDiagnostics {
   std::string decoder_id{};
   std::string encoder_id{};
   std::string requested_encoder_id{};
+  std::string user_encoder_id{};
+  std::string user_chroma{};
+  std::string source_chroma{};
   std::string requested_chroma{};
   std::string applied_chroma{};
+  std::string chroma_reason{};
+  std::optional<int> source_bit_depth{};
   std::optional<int> requested_bit_depth{};
   std::optional<int> applied_bit_depth{};
   std::string bit_depth_reason{};
+  std::string alpha_policy{};
+  bool source_has_alpha_channel{};
+  std::string source_alpha_mode{};
+  std::optional<bool> has_non_opaque_alpha{};
+  bool encoder_supports_alpha{};
+  std::string applied_alpha{};
+  std::string alpha_reason{};
+  std::optional<int> source_color_primaries{};
+  std::optional<int> source_transfer_characteristics{};
+  std::optional<int> source_matrix_coefficients{};
+  std::optional<int> source_color_range{};
+  std::optional<int> applied_color_primaries{};
+  std::optional<int> applied_transfer_characteristics{};
+  std::optional<int> applied_matrix_coefficients{};
+  std::optional<int> applied_color_range{};
+  bool source_has_icc{};
+  std::string applied_icc{};
+  bool source_has_hdr_metadata{};
+  std::string applied_hdr_metadata{};
+  std::string color_metadata_source{};
+  std::string color_reason{};
   std::string fallback_reason{};
   bool encoder_experimental{};
   std::string encoder_license{};
+  std::string integration_mode{};
+  std::string svtav1hdr_helper_path{};
+  std::optional<int> svtav1hdr_crf{};
+  std::optional<int> svtav1hdr_preset{};
+  std::string svtav1hdr_tune{};
+  std::optional<int> svtav1hdr_keyint{};
+  std::string svtav1hdr_hdr_metadata{};
+  std::string svtav1hdr_note{};
   SpeedMapping speed_mapping{};
   int encoder_threads{};
   std::uint64_t memory_budget_bytes{};
@@ -82,18 +133,51 @@ struct NativeEncodeSettings {
   int quality{default_quality_for(output_format)};
   std::optional<int> visual_quality{};
   int speed{default_speed_for(output_format)};
+  bool speed_explicit{};
   std::optional<int> bit_depth{};
+  bool bit_depth_explicit{};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
   AvifEncoderMode avif_encoder{AvifEncoderMode::automatic};
+  AlphaModePolicy alpha_policy{AlphaModePolicy::automatic};
   ChromaMode requested_chroma_mode{ChromaMode::auto_keep};
   AvifEncoderMode requested_avif_encoder{AvifEncoderMode::automatic};
+  AlphaModePolicy requested_alpha_policy{AlphaModePolicy::automatic};
   std::optional<int> requested_bit_depth{};
+  std::string user_encoder_id{};
+  std::string user_chroma{};
+  std::string source_chroma{};
+  std::optional<int> source_bit_depth{};
+  std::string chroma_reason{};
+  std::string alpha_policy_name{};
+  bool source_has_alpha_channel{};
+  std::string source_alpha_mode{};
+  std::optional<bool> has_non_opaque_alpha{};
+  bool encoder_supports_alpha{};
+  std::string applied_alpha{};
+  std::string alpha_reason{};
+  std::optional<int> source_color_primaries{};
+  std::optional<int> source_transfer_characteristics{};
+  std::optional<int> source_matrix_coefficients{};
+  std::optional<int> source_color_range{};
+  std::optional<int> applied_color_primaries{};
+  std::optional<int> applied_transfer_characteristics{};
+  std::optional<int> applied_matrix_coefficients{};
+  std::optional<int> applied_color_range{};
+  bool source_has_icc{};
+  std::string applied_icc{};
+  bool source_has_hdr_metadata{};
+  std::string applied_hdr_metadata{};
+  std::string color_metadata_source{};
+  std::string color_reason{};
   std::string bit_depth_reason{};
   std::string encoder_fallback_reason{};
   bool strip_metadata{};
   bool visual_quality_fallback{};
+  bool jxl_jpeg_lossless_candidate{};
   bool avif_tune_iq{encoding_defaults::default_avif_tune_iq};
+  SvtAv1HdrSettings svtav1hdr{};
   ResourcePlan resources{};
+  std::optional<GridPlan> avif_grid_plan{};
 };
 
 struct NativeEncodeResult {
@@ -107,6 +191,37 @@ struct NativeEncodeResult {
   double raw_ms_ssim{};
 };
 
+EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings) {
+  return EncodeDiagnostics{.user_encoder_id = settings.user_encoder_id,
+                           .user_chroma = settings.user_chroma,
+                           .source_chroma = settings.source_chroma,
+                           .chroma_reason = settings.chroma_reason,
+                           .source_bit_depth = settings.source_bit_depth,
+                           .alpha_policy = settings.alpha_policy_name.empty()
+                                               ? alpha_mode_policy_name(settings.requested_alpha_policy)
+                                               : settings.alpha_policy_name,
+                           .source_has_alpha_channel = settings.source_has_alpha_channel,
+                           .source_alpha_mode = settings.source_alpha_mode,
+                           .has_non_opaque_alpha = settings.has_non_opaque_alpha,
+                           .encoder_supports_alpha = settings.encoder_supports_alpha,
+                           .applied_alpha = settings.applied_alpha,
+                           .alpha_reason = settings.alpha_reason,
+                           .source_color_primaries = settings.source_color_primaries,
+                           .source_transfer_characteristics = settings.source_transfer_characteristics,
+                           .source_matrix_coefficients = settings.source_matrix_coefficients,
+                           .source_color_range = settings.source_color_range,
+                           .applied_color_primaries = settings.applied_color_primaries,
+                           .applied_transfer_characteristics = settings.applied_transfer_characteristics,
+                           .applied_matrix_coefficients = settings.applied_matrix_coefficients,
+                           .applied_color_range = settings.applied_color_range,
+                           .source_has_icc = settings.source_has_icc,
+                           .applied_icc = settings.applied_icc,
+                           .source_has_hdr_metadata = settings.source_has_hdr_metadata,
+                           .applied_hdr_metadata = settings.applied_hdr_metadata,
+                           .color_metadata_source = settings.color_metadata_source,
+                           .color_reason = settings.color_reason};
+}
+
 class ImageDecoder {
  public:
   virtual ~ImageDecoder() = default;
@@ -114,6 +229,19 @@ class ImageDecoder {
   [[nodiscard]] virtual bool can_decode(const fs::path& path) const = 0;
   virtual std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const = 0;
+  virtual std::expected<ImageDimensions, std::string> probe_dimensions(
+      const fs::path& path) const {
+    auto decoded = decode(path);
+    if (!decoded) {
+      return std::unexpected{decoded.error()};
+    }
+    if (decoded->image.width > std::numeric_limits<std::uint32_t>::max() ||
+        decoded->image.height > std::numeric_limits<std::uint32_t>::max()) {
+      return std::unexpected{"图片尺寸超过当前大图调度上限。"};
+    }
+    return make_image_dimensions(static_cast<std::uint32_t>(decoded->image.width),
+                                 static_cast<std::uint32_t>(decoded->image.height));
+  }
 };
 
 class ImageEncoder {

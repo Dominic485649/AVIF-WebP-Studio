@@ -7,5 +7,8 @@ publish = false
 [lib]
 crate-type = ["staticlib"]
 
+[profile.release]
+panic = "abort"
+
 [dependencies]
-zenravif = { version = "0.1.3", default-features = false, features = ["threading"] }
+zenravif = { version = "0.1.3", default-features = false, features = ["threading", "imazen"] }

@@ -9,6 +9,7 @@ module;
 #include <optional>
 #include <ranges>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,7 @@ struct NativeVisualQualitySearchResult {
 };
 
 export std::expected<VisualQualityCandidate, std::string> evaluate_visual_quality_candidate(
+    const LumaImage& reference_luma,
     const ImageBuffer& reference_image,
     const ImageEncoder& encoder,
     const ImageDecoder& decoder,
@@ -103,19 +105,15 @@ export std::expected<VisualQualityCandidate, std::string> evaluate_visual_qualit
     return std::unexpected{decoded.error()};
   }
 
-  auto reference_luma = make_luma_image(reference_image);
-  if (!reference_luma) {
-    return std::unexpected{reference_luma.error()};
-  }
   auto candidate_luma = make_luma_image(decoded->image);
   if (!candidate_luma) {
     return std::unexpected{candidate_luma.error()};
   }
-  auto gmsd = compute_gmsd(*reference_luma, *candidate_luma);
+  auto gmsd = compute_gmsd(reference_luma, *candidate_luma);
   if (!gmsd) {
     return std::unexpected{gmsd.error()};
   }
-  auto ms_ssim = compute_ms_ssim(*reference_luma, *candidate_luma);
+  auto ms_ssim = compute_ms_ssim(reference_luma, *candidate_luma);
   if (!ms_ssim) {
     return std::unexpected{ms_ssim.error()};
   }
@@ -134,7 +132,8 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
                                          const ImageEncoder& encoder,
                                          const ImageDecoder& decoder,
                                          NativeEncodeSettings settings,
-                                         const fs::path& candidate_path) {
+                                         const fs::path& candidate_path,
+                                         std::stop_token stop_token = {}) {
   if (!settings.visual_quality) {
     auto encoded = encoder.encode(reference_image, settings);
     if (!encoded) {
@@ -168,9 +167,17 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
         .target_met = true};
   }
 
+  auto reference_luma = make_luma_image(reference_image);
+  if (!reference_luma) {
+    return std::unexpected{reference_luma.error()};
+  }
+
   std::vector<VisualQualityCandidate> candidates;
   for (int quality : native_visual_search_detail::build_quality_probe_order(range)) {
-    auto candidate = evaluate_visual_quality_candidate(reference_image, encoder, decoder,
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"visual_quality 搜索已取消。"};
+    }
+    auto candidate = evaluate_visual_quality_candidate(*reference_luma, reference_image, encoder, decoder,
                                                        settings, quality, candidate_path);
     if (!candidate) {
       return std::unexpected{candidate.error()};

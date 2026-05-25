@@ -29,19 +29,31 @@
 #include <shellapi.h>
 #include <shobjidl.h>
 
+import awj.avif_aom_codec;
+import awj.avif_registry;
 import awj.config;
 import awj.core;
 import awj.encoding_defaults;
+import awj.large_image_plan;
+import awj.native_backend;
 import awj.pipeline;
+import awj.resource_planner;
 
 namespace {
 
 struct UiState {
   std::jthread worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
+  std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
+  std::vector<awj::BatchLargeImageItem> large_image_items{};
   slint::Timer theme_timer{};
+  slint::Timer update_timer{};
   std::uint64_t run_id{};
   std::mutex mutex{};
+  std::vector<awj::BatchProgress> pending_events{};
+  std::optional<awj::AppConfig> queued_config{};
+  bool stop_requested_for_restart{};
+  bool worker_active{};
 };
 
 struct ComApartment {
@@ -148,14 +160,6 @@ std::expected<int, std::string> parse_jobs_field(std::string text) {
   return parse_int_field(std::move(text), "线程", 1, 128);
 }
 
-std::expected<int, std::string> parse_resolution_field(std::string text) {
-  text = trim_copy(std::move(text));
-  if (text.empty()) {
-    return 0;
-  }
-  return parse_int_field(std::move(text), "最长边", 0, 100000);
-}
-
 std::expected<std::optional<int>, std::string> parse_bit_depth_field(std::string text) {
   text = trim_copy(std::move(text));
   if (text.empty()) {
@@ -176,25 +180,6 @@ std::expected<std::uint64_t, std::string> parse_memory_limit_field(std::string t
   return awj::parse_memory_limit(awj::wide_from_utf8(text));
 }
 
-std::expected<void, std::string> validate_token_options(std::string text) {
-  std::size_t start = 0;
-  while (start < text.size()) {
-    const auto end = text.find_first_of(",;", start);
-    auto token = trim_copy(text.substr(start, end - start));
-    if (!token.empty()) {
-      auto wide = awj::wide_from_utf8(token);
-      if (auto valid = awj::validate_native_option(wide); !valid) {
-        return std::unexpected{valid.error()};
-      }
-    }
-    if (end == std::string::npos) {
-      break;
-    }
-    start = end + 1;
-  }
-  return {};
-}
-
 slint::SharedString to_shared(std::string_view text) {
   return slint::SharedString{std::string{text}.c_str()};
 }
@@ -205,6 +190,44 @@ std::string text_from_wide(std::wstring_view text) {
 
 std::string text_from_int(int value) {
   return std::format("{}", value);
+}
+
+ComboOption combo_option(std::string_view text, bool enabled = true) {
+  return ComboOption{.text = to_shared(text), .enabled = enabled};
+}
+
+void set_combo_options(AwjStudio& app,
+                       const std::vector<ComboOption>& options,
+                       void (AwjStudio::*setter)(const std::shared_ptr<slint::Model<ComboOption>>&) const) {
+  auto model = std::make_shared<slint::VectorModel<ComboOption>>();
+  model->set_vector(options);
+  (app.*setter)(model);
+}
+
+bool avif_encoder_enabled_for_ui(awj::AvifEncoderMode mode, bool enable_experimental) {
+  if (mode == awj::AvifEncoderMode::automatic) {
+    return true;
+  }
+  auto capabilities = awj::avif_encoder_capabilities_for_current_build(enable_experimental);
+  const auto it = std::ranges::find(capabilities, mode, &awj::AvifEncoderCapability::mode);
+  return it != capabilities.end() && it->enabled && (!it->experimental || it->feature_enabled);
+}
+
+std::vector<ComboOption> avif_encoder_options(bool enable_experimental) {
+  return {combo_option("auto"),
+          combo_option("svt-av1-hdr", avif_encoder_enabled_for_ui(awj::AvifEncoderMode::svt, enable_experimental)),
+          combo_option("aom", avif_encoder_enabled_for_ui(awj::AvifEncoderMode::aom, enable_experimental)),
+          combo_option("zenrav1e", avif_encoder_enabled_for_ui(awj::AvifEncoderMode::zenrav1e, enable_experimental))};
+}
+
+void refresh_avif_encoder_options(AwjStudio& app) {
+  const auto options = avif_encoder_options(app.get_experimental_encoders());
+  set_combo_options(app, options, &AwjStudio::set_avif_encoder_options);
+  const auto selected = app.get_avif_encoder_index();
+  if (selected < 0 || static_cast<std::size_t>(selected) >= options.size() ||
+      !options[static_cast<std::size_t>(selected)].enabled) {
+    app.set_avif_encoder_index(0);
+  }
 }
 
 bool template_contains_token(std::string_view text, std::string_view token) {
@@ -315,6 +338,20 @@ std::string result_log_text(const awj::EncodeResult& result) {
       awj::format_size(result.output_bytes));
 }
 
+constexpr std::size_t kMaxTaskRows = 5000;
+constexpr std::size_t kMaxPendingEvents = 2048;
+
+void push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+                   TaskRow row) {
+  if (rows == nullptr) {
+    return;
+  }
+  rows->push_back(std::move(row));
+  while (rows->row_count() > kMaxTaskRows) {
+    rows->erase(0);
+  }
+}
+
 void add_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
                   const awj::EncodeResult& result) {
   auto output_format = awj::OutputFormat::avif;
@@ -327,26 +364,125 @@ void add_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
     output_format = awj::OutputFormat::jxl;
   }
 
-  rows->push_back(TaskRow{.filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
-                          .format = to_shared(awj::output_format_name(output_format)),
-                          .status = to_shared(result_status_text(result)),
-                          .log = to_shared(result_log_text(result))});
-  constexpr std::size_t max_rows = 5000;
-  if (rows->row_count() > max_rows) {
-    rows->erase(0);
-  }
+  push_task_row(rows,
+                TaskRow{.filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
+                        .format = to_shared(awj::output_format_name(output_format)),
+                        .status = to_shared(result_status_text(result)),
+                        .log = to_shared(result_log_text(result))});
 }
 
 void append_log_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
                     std::string_view text) {
-  rows->push_back(TaskRow{.filename = {},
-                          .format = {},
-                          .status = {},
-                          .log = to_shared(text)});
-  constexpr std::size_t max_rows = 5000;
-  if (rows->row_count() > max_rows) {
-    rows->erase(0);
+  push_task_row(rows, TaskRow{.filename = {},
+                              .format = {},
+                              .status = {},
+                              .log = to_shared(text)});
+}
+
+LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
+                                   std::string_view status) {
+  std::string actions;
+  if (item.decision.available_grid) {
+    actions = "可用：grid";
   }
+  if (item.decision.available_zenrav1e) {
+    actions += actions.empty() ? "可用：zenrav1e" : " / zenrav1e";
+  }
+  if (actions.empty()) {
+    actions = "无可用大图编码器";
+  }
+
+  return LargeImageRow{
+      .filename = to_shared(awj::path_to_utf8(item.file.path.filename())),
+      .dimensions = to_shared(std::format("{} x {}", item.dimensions.width,
+                                          item.dimensions.height)),
+      .reason = to_shared(std::format("{} · {}", awj::large_image_reason_name(item.decision.reason),
+                                      item.decision.reason_text)),
+      .actions = to_shared(actions),
+      .status = to_shared(status)};
+}
+
+void push_large_image_row(UiState& state, awj::BatchLargeImageItem item) {
+  if (state.large_image_rows == nullptr) {
+    return;
+  }
+  state.large_image_items.push_back(item);
+  state.large_image_rows->push_back(make_large_image_row(item, "等待选择"));
+}
+
+void set_large_image_status(UiState& state,
+                            int index,
+                            std::string_view status) {
+  if (state.large_image_rows == nullptr || index < 0 ||
+      static_cast<std::size_t>(index) >= state.large_image_items.size()) {
+    return;
+  }
+  state.large_image_rows->set_row_data(
+      static_cast<std::size_t>(index),
+      make_large_image_row(state.large_image_items[static_cast<std::size_t>(index)], status));
+}
+
+bool large_image_action_available(const awj::BatchLargeImageItem& item,
+                                  std::string_view action) noexcept {
+  if (action == "grid") {
+    return item.decision.available_grid;
+  }
+  if (action == "zenrav1e") {
+    return item.decision.available_zenrav1e &&
+           item.dimensions.width <= awj::encoding_defaults::avif_single_image_max_dimension &&
+           item.dimensions.height <= awj::encoding_defaults::avif_single_image_max_dimension;
+  }
+  return false;
+}
+
+std::string large_image_action_status(const awj::BatchLargeImageItem& item,
+                                      std::string_view action) {
+  if (!large_image_action_available(item, action)) {
+    return std::format("{} 不可用", action);
+  }
+  if (action == "grid") {
+    const auto plan = awj::plan_grid(awj::GridPlanRequest{
+        .width = item.dimensions.width,
+        .height = item.dimensions.height,
+        .mode = awj::GridMode::auto_grid});
+    if (!plan) {
+      return std::format("grid 规划失败：{}", plan.error());
+    }
+    return std::format("已选择 grid · {}x{} 分块 · tile {}x{}",
+                       plan->cols, plan->rows, plan->tile_width, plan->tile_height);
+  }
+  if (action == "zenrav1e") {
+    return "已选择 zenrav1e · 等待单项编码接入";
+  }
+  return "未知处理方式";
+}
+
+void append_pending_event(UiState& state,
+                          std::uint64_t run_id,
+                          const awj::BatchProgress& event) {
+  std::scoped_lock lock{state.mutex};
+  if (state.run_id != run_id) {
+    return;
+  }
+  if (state.pending_events.size() >= kMaxPendingEvents) {
+    const auto keep = [](const awj::BatchProgress& pending) {
+      return pending.kind == awj::BatchEventKind::item_finished ||
+             pending.kind == awj::BatchEventKind::warning ||
+             pending.kind == awj::BatchEventKind::large_image_queued;
+    };
+    const auto retained = std::ranges::remove_if(state.pending_events,
+                                                 [&](const awj::BatchProgress& pending) {
+                                                   return !keep(pending);
+                                                 });
+    state.pending_events.erase(retained.begin(), retained.end());
+    if (state.pending_events.size() >= kMaxPendingEvents) {
+      state.pending_events.erase(state.pending_events.begin(),
+                                 state.pending_events.begin() +
+                                     static_cast<std::ptrdiff_t>(state.pending_events.size() -
+                                                                 kMaxPendingEvents + 1));
+    }
+  }
+  state.pending_events.push_back(event);
 }
 
 void trim_process_working_set() {
@@ -394,6 +530,18 @@ awj::ChromaMode chroma_from_index(int index) {
   }
 }
 
+awj::AlphaModePolicy alpha_policy_from_index(int index) {
+  switch (index) {
+    case 0:
+      return awj::AlphaModePolicy::force;
+    case 2:
+      return awj::AlphaModePolicy::off;
+    case 1:
+    default:
+      return awj::AlphaModePolicy::automatic;
+  }
+}
+
 awj::AvifEncoderMode avif_encoder_from_index(int index) {
   switch (index) {
     case 1:
@@ -409,6 +557,7 @@ awj::AvifEncoderMode avif_encoder_from_index(int index) {
 }
 
 void apply_format_defaults_to_ui(AwjStudio& app, int format_index) {
+  refresh_avif_encoder_options(app);
   const auto format = output_format_from_index(format_index);
   if (app.get_quality_follows_format()) {
     app.set_quality_text(to_shared(text_from_int(awj::default_quality_for(format))));
@@ -435,12 +584,14 @@ void initialize_ui_defaults(AwjStudio& app) {
   app.set_webp_quality_default(to_shared(text_from_int(awj::default_quality_for(awj::OutputFormat::webp))));
   app.set_jxl_quality_default(to_shared(text_from_int(awj::default_quality_for(awj::OutputFormat::jxl))));
   app.set_webp_bit_depth_default(to_shared(text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
-  app.set_memory_limit_text(to_shared(awj::encoding_defaults::default_memory_limit_text));
+  app.set_memory_limit_text({});
   app.set_format_index(0);
-  app.set_backend_index(0);
+  app.set_experimental_encoders(defaults.enable_experimental_encoders);
+  refresh_avif_encoder_options(app);
   app.set_avif_encoder_index(0);
   app.set_collision_index(0);
   app.set_chroma_index(0);
+  app.set_alpha_policy_index(1);
   app.set_quality_follows_format(true);
   app.set_bit_depth_follows_format(true);
 }
@@ -454,12 +605,22 @@ std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) 
   if (cfg.output_template.empty()) {
     cfg.output_template = awj::encoding_defaults::default_output_template;
   }
+  cfg.allow_wic_fallback = app.get_allow_wic_fallback();
 
   cfg.output_format = output_format_from_index(app.get_format_index());
   cfg.avif_encoder = cfg.output_format == awj::OutputFormat::avif
                          ? avif_encoder_from_index(app.get_avif_encoder_index())
                          : awj::AvifEncoderMode::automatic;
   cfg.enable_experimental_encoders = app.get_experimental_encoders();
+  if (cfg.avif_encoder == awj::AvifEncoderMode::zenrav1e) {
+    const auto capabilities = awj::avif_encoder_capabilities_for_current_build(
+        cfg.enable_experimental_encoders);
+    const auto it = std::ranges::find(capabilities, awj::AvifEncoderMode::zenrav1e,
+                                      &awj::AvifEncoderCapability::mode);
+    if (it == capabilities.end() || !it->enabled || (it->experimental && !it->feature_enabled)) {
+      return std::unexpected{"zenrav1e 当前构建不可用，无法选择。"};
+    }
+  }
   cfg.collision_mode = collision_from_index(app.get_collision_index());
 
   const auto quality =
@@ -475,26 +636,23 @@ std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) 
   }
   cfg.visual_quality = *visual_quality;
 
-  const auto bit_depth = app.get_format_index() == 1
+  const auto bit_depth = cfg.output_format == awj::OutputFormat::webp
                              ? std::expected<std::optional<int>, std::string>{std::optional<int>{awj::encoding_defaults::default_webp_bit_depth}}
-                             : parse_bit_depth_field(shared_to_string(app.get_bit_depth_text()));
+                             : (cfg.output_format == awj::OutputFormat::jxl
+                                    ? std::expected<std::optional<int>, std::string>{std::optional<int>{}}
+                                    : parse_bit_depth_field(shared_to_string(app.get_bit_depth_text())));
   if (!bit_depth) {
     return std::unexpected{bit_depth.error()};
   }
   cfg.bit_depth = *bit_depth;
 
+  cfg.alpha_policy = cfg.output_format == awj::OutputFormat::avif
+                         ? alpha_policy_from_index(app.get_alpha_policy_index())
+                         : awj::AlphaModePolicy::automatic;
   cfg.chroma_mode = cfg.output_format == awj::OutputFormat::avif
-                        ? (cfg.avif_encoder == awj::AvifEncoderMode::svt
-                               ? awj::ChromaMode::yuv420
-                               : chroma_from_index(app.get_chroma_index()))
+                        ? chroma_from_index(app.get_chroma_index())
                         : awj::ChromaMode::auto_keep;
 
-  const auto max_resolution = parse_resolution_field(
-      shared_to_string(app.get_max_resolution_text()));
-  if (!max_resolution) {
-    return std::unexpected{max_resolution.error()};
-  }
-  cfg.max_resolution = *max_resolution;
 
   const auto max_jobs = parse_jobs_field(shared_to_string(app.get_threads_text()));
   if (!max_jobs) {
@@ -519,10 +677,6 @@ std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) 
   cfg.strip_metadata = app.get_strip_metadata();
   cfg.write_summary = app.get_write_summary();
   cfg.write_log = app.get_write_log();
-  if (auto options = validate_token_options(shared_to_string(app.get_defines_text()));
-      !options) {
-    return std::unexpected{options.error()};
-  }
 
   if (auto valid = awj::finalize_config_defaults(cfg, true, false); !valid) {
     return std::unexpected{valid.error()};
@@ -614,6 +768,276 @@ void open_path(std::filesystem::path path, bool create_if_missing) {
   }
 }
 
+void begin_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
+                          const std::shared_ptr<UiState>& state,
+                          awj::AppConfig cfg);
+
+void begin_large_image_run(slint::ComponentWeakHandle<AwjStudio> weak,
+                           const std::shared_ptr<UiState>& state,
+                           awj::AppConfig cfg,
+                           awj::BatchLargeImageItem item,
+                           int index,
+                           std::string action) {
+  auto app = weak.lock();
+  if (!app) {
+    return;
+  }
+
+  if (!large_image_action_available(item, action)) {
+    const auto status = std::format("{} 不可用", action);
+    set_large_image_status(*state, index, status);
+    (*app)->set_status_text(to_shared(status));
+    return;
+  }
+
+  std::optional<awj::GridPlan> grid_plan;
+  if (action == "grid") {
+    auto planned = awj::plan_grid(awj::GridPlanRequest{
+        .width = item.dimensions.width,
+        .height = item.dimensions.height,
+        .mode = awj::GridMode::auto_grid,
+        .clamped_padding_enabled = cfg.experimental_clamped_grid_padding});
+    if (!planned) {
+      const auto status = std::format("grid 规划失败：{}", planned.error());
+      set_large_image_status(*state, index, status);
+      (*app)->set_status_text(to_shared(status));
+      return;
+    }
+    if (planned->uses_padding) {
+      const auto status = "grid 规划需要 padding；当前版本尚未启用安全裁切。";
+      set_large_image_status(*state, index, status);
+      (*app)->set_status_text(to_shared(status));
+      return;
+    }
+    grid_plan = *planned;
+  }
+
+  cfg.output_format = awj::OutputFormat::avif;
+  cfg.input_path = item.file.path;
+  cfg.avif_encoder = action == "grid" ? awj::AvifEncoderMode::aom
+                                       : awj::AvifEncoderMode::zenrav1e;
+  cfg.visual_quality.reset();
+
+  const auto configured_memory_limit = cfg.memory_limit_bytes == 0
+                                           ? awj::automatic_memory_limit(awj::current_memory_status())
+                                           : cfg.memory_limit_bytes;
+  const auto resource_plan = awj::plan_large_deferred_resources(
+      awj::plan_resources(awj::ResourcePlanRequest{
+          .automatic_thread_budget = cfg.max_jobs,
+          .file_count = 1,
+          .memory_limit_bytes = configured_memory_limit,
+          .estimated_bytes_per_file = item.file.bytes == 0 ? 1 : item.file.bytes,
+          .av1_encoder = true}),
+      1);
+
+  {
+    std::scoped_lock lock{state->mutex};
+    if (state->worker_active) {
+      (*app)->set_status_text(to_shared("当前任务仍在运行"));
+      return;
+    }
+    state->worker_active = true;
+    set_large_image_status(*state, index, std::format("正在使用 {} 编码…", action));
+  }
+  (*app)->set_running(true);
+  (*app)->set_status_text(to_shared(std::format("正在处理大图：{}", action)));
+
+  std::jthread worker{[weak, state, cfg = std::move(cfg), item = std::move(item),
+                       index, action = std::move(action), resource_plan,
+                       grid_plan = std::move(grid_plan)](std::stop_token token) mutable {
+    awj::FileLogger logger{awj::output_dir_for(cfg), cfg.write_log};
+    awj::NativeBackend backend{cfg, logger, resource_plan};
+    awj::EncodeResult result = action == "grid"
+                                   ? backend.encode_avif_grid(item.file, *grid_plan, token)
+                                   : backend.encode_avif_zenrav1e(item.file, token);
+    trim_process_working_set();
+
+    post_to_ui(weak, [weak, state, index, result = std::move(result)](AwjStudio& app) mutable {
+      std::optional<awj::AppConfig> queued_config;
+      {
+        std::scoped_lock lock{state->mutex};
+        set_large_image_status(*state, index,
+                               result.ok ? "完成" : (result.canceled ? "已取消" : result.message));
+        state->worker_active = false;
+        if (state->queued_config) {
+          queued_config = std::move(state->queued_config);
+          state->queued_config.reset();
+        }
+        state->stop_requested_for_restart = false;
+      }
+      add_task_row(state->task_rows, result);
+      if (queued_config) {
+        app.set_status_text(to_shared("正在启动新的任务…"));
+        begin_conversion_run(weak, state, std::move(*queued_config));
+        return;
+      }
+      app.set_running(false);
+      app.set_status_text(to_shared(result.ok ? "大图处理完成"
+                                              : std::format("大图处理失败：{}", result.message)));
+    });
+  }};
+
+  {
+    std::scoped_lock lock{state->mutex};
+    state->worker = std::move(worker);
+  }
+}
+
+void begin_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
+                          const std::shared_ptr<UiState>& state,
+                          awj::AppConfig cfg) {
+  auto app = weak.lock();
+  if (!app) {
+    return;
+  }
+
+  {
+    std::scoped_lock lock{state->mutex};
+    if (state->worker_active) {
+      state->queued_config = std::move(cfg);
+      state->stop_requested_for_restart = true;
+      if (state->worker.joinable()) {
+        state->worker.request_stop();
+      }
+      (*app)->set_running(true);
+      (*app)->set_status_text(to_shared("正在停止当前任务…"));
+      return;
+    }
+  }
+
+  (*app)->set_running(true);
+  (*app)->set_progress(0.0f);
+  (*app)->set_status_text(to_shared("准备中"));
+
+  std::uint64_t run_id{};
+  std::shared_ptr<slint::VectorModel<TaskRow>> rows;
+  std::shared_ptr<slint::VectorModel<LargeImageRow>> large_rows;
+  {
+    std::scoped_lock lock{state->mutex};
+    run_id = ++state->run_id;
+    state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+    state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
+    state->large_image_items.clear();
+    rows = state->task_rows;
+    large_rows = state->large_image_rows;
+    state->pending_events.clear();
+    state->queued_config.reset();
+    state->stop_requested_for_restart = false;
+    state->worker_active = true;
+
+    // Start the UI update timer
+    state->update_timer.start(
+        slint::TimerMode::Repeated, std::chrono::milliseconds{80}, [weak, state, run_id] {
+          if (auto app = weak.lock()) {
+            std::vector<awj::BatchProgress> events;
+            {
+              std::scoped_lock lock{state->mutex};
+              if (state->run_id != run_id || state->pending_events.empty()) {
+                return;
+              }
+              events = std::move(state->pending_events);
+            }
+
+            auto rows = state->task_rows;
+            std::size_t completed = 0;
+            std::size_t total = 0;
+            bool has_progress = false;
+
+            for (const auto& event : events) {
+              if (event.total > 0) {
+                completed = event.completed;
+                total = event.total;
+                has_progress = true;
+              }
+              if (event.kind == awj::BatchEventKind::item_finished) {
+                add_task_row(rows, event.result);
+              }
+              if (event.kind == awj::BatchEventKind::warning) {
+                append_log_row(rows, event.text);
+              }
+              if (event.kind == awj::BatchEventKind::large_image_queued) {
+                push_large_image_row(*state, event.large_image);
+              }
+            }
+
+            if (has_progress && total > 0) {
+              const auto progress = static_cast<float>(completed) / static_cast<float>(total);
+              (*app)->set_progress(std::clamp(progress, 0.0f, 1.0f));
+              (*app)->set_status_text(to_shared(std::format("{}/{}", completed, total)));
+            }
+          }
+        });
+  }
+  (*app)->set_task_rows(rows);
+  (*app)->set_large_image_rows(large_rows);
+  (*app)->set_selected_large_image_index(-1);
+
+  std::jthread worker{[weak, state, run_id, cfg = std::move(cfg)](std::stop_token token) {
+    const auto summary = awj::run_batch(
+        cfg,
+        [state, run_id](const awj::BatchProgress& event) {
+          append_pending_event(*state, run_id, event);
+        },
+        token);
+
+    trim_process_working_set();
+    // summary 回调同样可能晚于用户新开的一轮转换，必须在 event loop 内再次校验 run_id。
+    post_to_ui(weak, [summary, state, weak, run_id](AwjStudio& app) mutable {
+      std::optional<awj::AppConfig> queued_config;
+      {
+        std::scoped_lock lock{state->mutex};
+        if (state->run_id != run_id) {
+          return;
+        }
+
+        // Flush any remaining events
+        if (!state->pending_events.empty()) {
+          auto events = std::move(state->pending_events);
+          auto rows = state->task_rows;
+          for (const auto& event : events) {
+            if (event.kind == awj::BatchEventKind::item_finished) {
+              add_task_row(rows, event.result);
+            }
+            if (event.kind == awj::BatchEventKind::warning) {
+              append_log_row(rows, event.text);
+            }
+            if (event.kind == awj::BatchEventKind::large_image_queued) {
+              push_large_image_row(*state, event.large_image);
+            }
+          }
+        }
+        state->update_timer.stop();
+        state->worker_active = false;
+        if (state->queued_config) {
+          queued_config = std::move(state->queued_config);
+          state->queued_config.reset();
+        }
+        state->stop_requested_for_restart = false;
+      }
+
+      if (queued_config) {
+        app.set_status_text(to_shared("正在启动新的任务…"));
+        begin_conversion_run(weak, state, std::move(*queued_config));
+        return;
+      }
+
+      if (!summary) {
+        app.set_status_text(to_shared(std::format("失败：{}", summary.error())));
+      } else if (summary->canceled) {
+        app.set_status_text(to_shared("已取消"));
+      } else {
+        app.set_status_text(to_shared(summary->failed_count == 0 ? "完成" : "有失败"));
+        app.set_progress(1.0f);
+      }
+      app.set_running(false);
+    });
+  }};
+  {
+    std::scoped_lock lock{state->mutex};
+    state->worker = std::move(worker);
+  }
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
@@ -621,9 +1045,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     auto app = AwjStudio::create();
     auto state = std::make_shared<UiState>();
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+    state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
     auto weak = slint::ComponentWeakHandle(app);
 
     app->set_task_rows(state->task_rows);
+    app->set_large_image_rows(state->large_image_rows);
     initialize_ui_defaults(*app);
     app->set_threads_text({});
     app->set_system_dark_mode(windows_prefers_dark_mode());
@@ -631,7 +1057,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     app->on_clear_tasks([weak, state] {
       state->task_rows->set_vector({});
+      state->large_image_rows->set_vector({});
+      state->large_image_items.clear();
       if (auto app = weak.lock()) {
+        (*app)->set_selected_large_image_index(-1);
         (*app)->set_progress(0.0f);
         (*app)->set_status_text(to_shared("就绪"));
       }
@@ -690,11 +1119,48 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       }
     });
 
-    app->on_cancel_conversion([state] {
-      std::scoped_lock lock{state->mutex};
-      if (state->worker.joinable()) {
-        state->worker.request_stop();
+    app->on_cancel_conversion([weak, state] {
+      std::uint64_t run_id{};
+      {
+        std::scoped_lock lock{state->mutex};
+        run_id = state->run_id;
+        state->queued_config.reset();
+        state->stop_requested_for_restart = false;
+        if (state->worker.joinable()) {
+          state->worker.request_stop();
+        }
       }
+      if (auto app = weak.lock()) {
+        (*app)->set_running(true);
+        (*app)->set_status_text(to_shared("正在取消…"));
+      }
+    });
+
+    app->on_large_image_action_requested([weak, state](int index, slint::SharedString action_text) {
+      auto app = weak.lock();
+      if (!app) {
+        return;
+      }
+      const auto action = shared_to_string(action_text);
+      awj::BatchLargeImageItem item{};
+      {
+        std::scoped_lock lock{state->mutex};
+        if (index < 0 || static_cast<std::size_t>(index) >= state->large_image_items.size()) {
+          (*app)->set_status_text(to_shared("未选择大图任务"));
+          return;
+        }
+        if (state->worker_active) {
+          (*app)->set_status_text(to_shared("当前任务仍在运行"));
+          return;
+        }
+        item = state->large_image_items[static_cast<std::size_t>(index)];
+      }
+      auto cfg = config_from_ui(**app);
+      if (!cfg) {
+        (*app)->set_status_text(to_shared(std::format("配置错误：{}", cfg.error())));
+        return;
+      }
+      begin_large_image_run(weak, state, std::move(*cfg), std::move(item), index, action);
     });
 
     app->on_start_conversion([weak, state] {
@@ -711,86 +1177,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return;
       }
 
-      (*app)->set_running(true);
-      (*app)->set_progress(0.0f);
-      (*app)->set_status_text(to_shared("准备中"));
-
-      std::jthread old_worker;
-      {
-        std::scoped_lock lock{state->mutex};
-        old_worker = std::move(state->worker);
-      }
-      if (old_worker.joinable()) {
-        old_worker.request_stop();
-        old_worker.join();
-      }
-
-      std::uint64_t run_id{};
-      std::shared_ptr<slint::VectorModel<TaskRow>> rows;
-      {
-        std::scoped_lock lock{state->mutex};
-        run_id = ++state->run_id;
-        state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
-        rows = state->task_rows;
-      }
-      (*app)->set_task_rows(rows);
-
-      std::jthread worker{
-          [weak, state, rows, run_id, cfg = std::move(*cfg)](
-              std::stop_token token) {
-            const auto summary = awj::run_batch(
-                cfg,
-                [weak, state, rows, run_id](const awj::BatchProgress& event) {
-                  // 后台线程只能投递 weak handle；run_id 用来丢弃上一轮转换迟到的 UI 更新。
-                  post_to_ui(weak, [event, state, rows, run_id](AwjStudio& app) {
-                    {
-                      std::scoped_lock lock{state->mutex};
-                      if (state->run_id != run_id) {
-                        return;
-                      }
-                    }
-                    if (event.total > 0) {
-                      const auto progress =
-                          static_cast<float>(event.completed) /
-                          static_cast<float>(event.total);
-                      app.set_progress(std::clamp(progress, 0.0f, 1.0f));
-                      app.set_status_text(to_shared(
-                          std::format("{}/{}", event.completed, event.total)));
-                    }
-                    if (event.kind == awj::BatchEventKind::item_finished) {
-                      add_task_row(rows, event.result);
-                    }
-                    if (event.kind == awj::BatchEventKind::warning) {
-                      append_log_row(rows, event.text);
-                    }
-                  });
-                },
-                token);
-
-            trim_process_working_set();
-            // summary 回调同样可能晚于用户新开的一轮转换，必须在 event loop 内再次校验 run_id。
-            post_to_ui(weak, [summary, state, run_id](AwjStudio& app) {
-              {
-                std::scoped_lock lock{state->mutex};
-                if (state->run_id != run_id) {
-                  return;
-                }
-              }
-              if (!summary) {
-                app.set_status_text(to_shared(std::format("失败：{}", summary.error())));
-              } else if (summary->canceled) {
-                app.set_status_text(to_shared("已取消"));
-              } else {
-                app.set_status_text(to_shared(summary->failed_count == 0 ? "完成" : "有失败"));
-                app.set_progress(1.0f);
-              }
-              app.set_running(false);
-            });
-          }};
-      {
-        std::scoped_lock lock{state->mutex};
-        state->worker = std::move(worker);
-      }
+      begin_conversion_run(weak, state, std::move(*cfg));
     });
 
     app->show();

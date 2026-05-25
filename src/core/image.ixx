@@ -48,12 +48,24 @@ struct ImagePlane {
   std::size_t stride{};
 };
 
+struct ImageSourceInfo {
+  PixelFormat pixel_format{PixelFormat::unknown};
+  int bit_depth{};
+  std::optional<int> color_primaries{};
+  std::optional<int> transfer_characteristics{};
+  std::optional<int> matrix_coefficients{};
+  std::optional<int> color_range{};
+  bool has_hdr_metadata{};
+  std::string color_metadata_source{};
+};
+
 struct ImageBuffer {
   std::size_t width{};
   std::size_t height{};
   PixelFormat pixel_format{PixelFormat::unknown};
   AlphaMode alpha_mode{AlphaMode::none};
   int bit_depth{8};
+  std::optional<ImageSourceInfo> source_info{};
   std::vector<ImagePlane> planes{};
   std::vector<MetadataBlock> metadata{};
 

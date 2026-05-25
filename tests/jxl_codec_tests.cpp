@@ -6,6 +6,7 @@
 
 import awj.codec;
 import awj.config;
+import awj.encoding_defaults;
 import awj.image;
 import awj.jxl_codec;
 import awj.resource_planner;
@@ -41,6 +42,7 @@ int main() {
       awj::NativeEncodeSettings{.output_format = awj::OutputFormat::jxl,
                                  .quality = 100,
                                  .speed = 10,
+                                 .speed_explicit = true,
                                  .resources = awj::ResourcePlan{
                                      .file_parallelism = 1,
                                      .encoder_threads_per_file = 1,
@@ -53,6 +55,19 @@ int main() {
   }
   if (encoded->diagnostics.speed_mapping.codec_value != 3) {
     return fail("JXL speed mapping invalid.");
+  }
+
+  auto default_speed = encoder.encode(
+      image,
+      awj::NativeEncodeSettings{.output_format = awj::OutputFormat::jxl,
+                                 .quality = 90,
+                                 .speed = awj::default_speed_for(awj::OutputFormat::jxl),
+                                 .resources = awj::ResourcePlan{
+                                     .file_parallelism = 1,
+                                     .encoder_threads_per_file = 1,
+                                     .global_thread_budget = 1}});
+  if (!default_speed || default_speed->diagnostics.speed_mapping.codec_value != awj::encoding_defaults::default_jxl_effort) {
+    return fail(default_speed ? "JXL default effort diagnostics invalid." : default_speed.error());
   }
 
   const auto path = std::filesystem::temp_directory_path() /

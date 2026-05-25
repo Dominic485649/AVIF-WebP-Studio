@@ -6,6 +6,7 @@ module;
 #include <cstddef>
 #include <expected>
 #include <format>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -36,14 +37,23 @@ export std::expected<LumaImage, std::string> make_luma_image(
     return std::unexpected{"当前视觉指标仅支持 8-bit 图像。"};
   }
 
+  if (image.width > std::numeric_limits<std::size_t>::max() / image.height) {
+    return std::unexpected{"输入图像尺寸过大，无法计算视觉指标。"};
+  }
+
   const auto& plane = image.planes.front();
   LumaImage luma{.width = image.width, .height = image.height};
   luma.pixels.resize(image.width * image.height);
 
   if (image.pixel_format == PixelFormat::rgba || image.pixel_format == PixelFormat::rgb) {
     const std::size_t channels = image.pixel_format == PixelFormat::rgba ? 4 : 3;
+    if (image.width > std::numeric_limits<std::size_t>::max() / channels) {
+      return std::unexpected{"RGB/RGBA 图像宽度过大，无法计算视觉指标。"};
+    }
     const std::size_t min_stride = image.width * channels;
-    if (plane.stride < min_stride || plane.bytes.size() < plane.stride * image.height) {
+    if (plane.stride < min_stride ||
+        plane.stride > std::numeric_limits<std::size_t>::max() / image.height ||
+        plane.bytes.size() < plane.stride * image.height) {
       return std::unexpected{"RGB/RGBA 图像 buffer 尺寸无效，无法计算视觉指标。"};
     }
     const auto* bytes = reinterpret_cast<const unsigned char*>(plane.bytes.data());
@@ -62,7 +72,9 @@ export std::expected<LumaImage, std::string> make_luma_image(
   }
 
   if (image.pixel_format == PixelFormat::gray) {
-    if (plane.stride < image.width || plane.bytes.size() < plane.stride * image.height) {
+    if (plane.stride < image.width ||
+        plane.stride > std::numeric_limits<std::size_t>::max() / image.height ||
+        plane.bytes.size() < plane.stride * image.height) {
       return std::unexpected{"灰度图像 buffer 尺寸无效，无法计算视觉指标。"};
     }
     const auto* bytes = reinterpret_cast<const unsigned char*>(plane.bytes.data());
@@ -112,8 +124,15 @@ LumaImage downsample_2x(const LumaImage& source) {
   if (source.width <= 1 || source.height <= 1) {
     return source;
   }
+  if (source.width > std::numeric_limits<std::size_t>::max() - 1 ||
+      source.height > std::numeric_limits<std::size_t>::max() - 1) {
+    return source;
+  }
   LumaImage result{.width = (source.width + 1) / 2,
                    .height = (source.height + 1) / 2};
+  if (result.width > std::numeric_limits<std::size_t>::max() / result.height) {
+    return source;
+  }
   result.pixels.resize(result.width * result.height);
   for (std::size_t y = 0; y < result.height; ++y) {
     for (std::size_t x = 0; x < result.width; ++x) {

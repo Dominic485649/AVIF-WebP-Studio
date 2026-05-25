@@ -50,6 +50,12 @@ pub extern "C" fn zenravif_bridge_encode_rgba8(
     bit_depth: i32,
     chroma: i32,
     threads: usize,
+    keyint: i32,
+    still_picture: bool,
+    enable_qm: bool,
+    vaq_strength: f64,
+    enable_trellis: bool,
+    rdo_tx_decision: bool,
     out: *mut ZenravifOutput,
     error_out: *mut u8,
     error_capacity: usize,
@@ -65,6 +71,12 @@ pub extern "C" fn zenravif_bridge_encode_rgba8(
         let chroma = chroma_from_i32(chroma).map_err(str::to_string)?;
         let quality = quality.clamp(1, 100) as f32;
         let speed = speed.clamp(1, 10) as u8;
+        if keyint != 1 {
+            return Err("zenravif bridge currently supports still-image keyint=1 only".to_string());
+        }
+        if !still_picture {
+            return Err("zenravif bridge currently supports still_picture=true only".to_string());
+        }
         let mut rgba = Vec::<RGBA8>::with_capacity(width.saturating_mul(height));
         for y in 0..height {
             let row = slice::from_raw_parts(pixels.add(y.saturating_mul(stride)), width.saturating_mul(4));
@@ -81,6 +93,11 @@ pub extern "C" fn zenravif_bridge_encode_rgba8(
             .with_chroma_subsampling(chroma)
             .with_alpha_color_mode(AlphaColorMode::UnassociatedDirty)
             .with_num_threads(Some(threads.max(1)))
+            .with_still_image_tuning(still_picture)
+            .with_qm(enable_qm)
+            .with_vaq(true, vaq_strength)
+            .with_trellis(enable_trellis)
+            .with_rdo_tx_decision(Some(rdo_tx_decision))
             .encode_rgba(image)
             .map_err(|err| err.to_string())?;
         let mut bytes = encoded.avif_file.into_boxed_slice();

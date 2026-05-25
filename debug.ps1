@@ -5,7 +5,8 @@ param(
     [switch]$DynamicRuntime,
     [switch]$SharedSlint,
     [switch]$NoVcpkgInstall,
-    [switch]$DisableZenravif
+    [switch]$DisableZenravif,
+    [switch]$DisableSvtAv1Hdr
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,7 +65,8 @@ if (-not $VcpkgTriplet) {
 Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "scnlib" "scnlib" $NoVcpkgInstall
 Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "libwebp" "libwebp" $NoVcpkgInstall
 Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "libjxl" "libjxl" $NoVcpkgInstall
-Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "libavif[aom]" "libavif" $NoVcpkgInstall
+Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "aom" "aom" $NoVcpkgInstall
+Ensure-VcpkgPackage $VcpkgRoot $VcpkgTriplet "libyuv" "libyuv" $NoVcpkgInstall
 
 $ConfigureArgs = @(
     "-U", "scn_DIR",
@@ -78,22 +80,25 @@ $ConfigureArgs = @(
 if ($VcpkgRoot) {
     $ConfigureArgs += "-DVCPKG_ROOT=$VcpkgRoot"
     $ConfigureArgs += "-DVCPKG_TRIPLET=$VcpkgTriplet"
+    $ToolchainPath = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+    $ConfigureArgs += "-DCMAKE_TOOLCHAIN_FILE=$ToolchainPath"
 }
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAWJ_ENABLE_ZENRAVIF=$(if ($DisableZenravif) { 'OFF' } else { 'ON' })"
+$ConfigureArgs += "-DAWJ_ENABLE_SVTAV1HDR=$(if ($DisableSvtAv1Hdr) { 'OFF' } else { 'ON' })"
 
 cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake 配置失败，退出码 $LASTEXITCODE。"
 }
 cmake --build $BuildDir --config Debug --target AWJ-cli AWJ-studio --parallel
+
 if ($LASTEXITCODE -ne 0) {
     throw "Debug 构建失败，退出码 $LASTEXITCODE。"
 }
 
 $OutputDir = Join-Path $Repo "bin\x64\Debug"
-$InternalDir = Join-Path $Repo "bin\x64\internal\Debug"
 $Keep = @("AWJ-cli.exe", "AWJ-studio.exe", "AWJ-cli.pdb", "AWJ-studio.pdb", "slint_cpp.dll")
 if (Test-Path $OutputDir) {
     Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $Keep -notcontains $_.Name } | Remove-Item -Recurse -Force
@@ -104,13 +109,9 @@ if (Test-Path $OutputDir) {
         }
     }
 }
-if (Test-Path $InternalDir) {
-    Get-ChildItem -LiteralPath $InternalDir -Force | Where-Object { $_.Name -notin @("AWJ-native-avif-helper.exe", "AWJ-native-avif-helper.pdb") } | Remove-Item -Recurse -Force
-}
 
 Write-Host ""
 Write-Host "Debug 输出:"
 Write-Host "  $OutputDir\AWJ-cli.exe"
 Write-Host "  $OutputDir\AWJ-studio.exe"
-Write-Host "内部 helper:"
-Write-Host "  $InternalDir\AWJ-native-avif-helper.exe"
+Write-Host "  svt-av1-hdr: 已静态集成到主程序。"

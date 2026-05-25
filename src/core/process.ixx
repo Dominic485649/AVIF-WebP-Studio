@@ -74,14 +74,49 @@ struct EncodeResult {
   std::string decoder_id{};
   std::string encoder_id{};
   std::string requested_encoder_id{};
+  std::string user_encoder_id{};
+  std::string user_chroma{};
+  std::string source_chroma{};
   std::string requested_chroma{};
   std::string applied_chroma{};
+  std::string chroma_reason{};
+  std::optional<int> source_bit_depth{};
   std::optional<int> requested_bit_depth{};
   std::optional<int> applied_bit_depth{};
   std::string bit_depth_reason{};
+  std::string alpha_policy{};
+  bool source_has_alpha_channel{};
+  std::string source_alpha_mode{};
+  std::optional<bool> has_non_opaque_alpha{};
+  bool encoder_supports_alpha{};
+  std::string applied_alpha{};
+  std::string alpha_reason{};
+  std::optional<int> source_color_primaries{};
+  std::optional<int> source_transfer_characteristics{};
+  std::optional<int> source_matrix_coefficients{};
+  std::optional<int> source_color_range{};
+  std::optional<int> applied_color_primaries{};
+  std::optional<int> applied_transfer_characteristics{};
+  std::optional<int> applied_matrix_coefficients{};
+  std::optional<int> applied_color_range{};
+  bool source_has_icc{};
+  std::string applied_icc{};
+  bool source_has_hdr_metadata{};
+  std::string applied_hdr_metadata{};
+  std::string color_metadata_source{};
+  std::string color_reason{};
   std::string fallback_reason{};
+  bool used_decoder_fallback{};
   bool encoder_experimental{};
   std::string encoder_license{};
+  std::string integration_mode{};
+  std::string svtav1hdr_helper_path{};
+  std::optional<int> svtav1hdr_crf{};
+  std::optional<int> svtav1hdr_preset{};
+  std::string svtav1hdr_tune{};
+  std::optional<int> svtav1hdr_keyint{};
+  std::string svtav1hdr_hdr_metadata{};
+  std::string svtav1hdr_note{};
   std::string speed_parameter_kind{};
   int applied_speed{};
   int encoder_threads{};
@@ -92,6 +127,7 @@ struct EncodeResult {
   bool processed{false};
   bool ok{false};
   bool skipped{false};
+  bool large_image_queued{false};
   bool canceled{false};
   std::string message{};
   std::string command{};
@@ -359,11 +395,18 @@ bool is_supported_image_extension(const fs::path& path) {
   auto ext = path.extension().wstring();
   std::ranges::transform(ext, ext.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
-  return ext == L".jpg" || ext == L".jpeg" || ext == L".png" ||
-         ext == L".webp" || ext == L".bmp" || ext == L".tif" ||
-         ext == L".tiff" || ext == L".gif" || ext == L".jxl" ||
-         ext == L".jp2" || ext == L".heic" || ext == L".heif" ||
-         ext == L".avif";
+  return ext == L".jpg" || ext == L".jpeg" || ext == L".jpe" ||
+         ext == L".jfif" || ext == L".png" || ext == L".webp" ||
+         ext == L".bmp" || ext == L".dib" || ext == L".rle" ||
+         ext == L".tif" || ext == L".tiff" || ext == L".gif" ||
+         ext == L".jxl" || ext == L".avif" || ext == L".awsraw" ||
+         ext == L".dng" || ext == L".cr2" || ext == L".cr3" ||
+         ext == L".nef" || ext == L".arw" || ext == L".rw2" ||
+         ext == L".orf" || ext == L".raf" || ext == L".pef" ||
+         ext == L".srw" || ext == L".x3f" || ext == L".3fr" ||
+         ext == L".erf" || ext == L".kdc" || ext == L".mrw" ||
+         ext == L".raw" || ext == L".heic" || ext == L".heif" ||
+         ext == L".jxr" || ext == L".wdp" || ext == L".hdp";
 }
 
 fs::path default_output_dir_for(const fs::path& input_path) {
@@ -571,7 +614,7 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
   if (fs::is_regular_file(input_path, ec) && !ec) {
     if (!is_supported_image_extension(input_path)) {
       return std::unexpected{
-          std::format("输入文件格式不受支持: {}。支持 jpg/jpeg/png/webp/bmp/tif/tiff/gif/jxl/jp2/heic/heif/avif。",
+          std::format("输入文件格式不受支持: {}。支持 jpg/jpeg/png/webp/bmp/tif/tiff/gif/jxl/avif/awsraw/dng/cr2/cr3/nef/arw/rw2/orf/raf/pef/srw/raw/heic/heif/jxr。",
                       path_to_utf8(input_path))};
     }
     auto bytes = fs::file_size(input_path, ec);
@@ -748,6 +791,11 @@ std::string format_size(std::uintmax_t bytes) {
   return std::format("{} B", bytes);
 }
 
+std::string display_path_for_report(const fs::path& path) {
+  auto filename = path.filename();
+  return path_to_utf8(filename.empty() ? path : filename);
+}
+
 std::expected<void, std::string> write_csv(const fs::path& output_dir,
                                            std::span<const EncodeResult> results) {
   std::error_code ec;
@@ -770,11 +818,17 @@ std::expected<void, std::string> write_csv(const fs::path& output_dir,
          "requested_visual_quality,visual_score,raw_gmsd,raw_ms_ssim,"
          "gmsd_quality_score,msssim_quality_score,gmsd_weight,msssim_weight,"
          "final_encoder_quality,search_attempt_count,"
-         "decoder_id,encoder_selected,encoder_requested,encoder_experimental,encoder_license,"
+         "decoder_id,decoder_fallback,encoder_selected,encoder_requested,encoder_experimental,encoder_license,"
+         "integration_mode,svtav1hdr_helper_path,svtav1hdr_crf,svtav1hdr_preset,svtav1hdr_tune,svtav1hdr_keyint,svtav1hdr_hdr_metadata,svtav1hdr_note,"
          "requested_chroma,applied_chroma,requested_bit_depth,applied_bit_depth,bit_depth_reason,"
          "fallback_reason,speed_parameter_kind,applied_speed,encoder_threads,memory_budget_bytes,"
          "quality_overridden_by_visual_quality,lossless,"
-         "seconds,status,message,command\n";
+         "seconds,status,message,command,"
+         "user_encoder,user_chroma,source_chroma,chroma_reason,source_bit_depth,"
+         "alpha_policy,source_has_alpha_channel,source_alpha_mode,has_non_opaque_alpha,encoder_supports_alpha,applied_alpha,alpha_reason,"
+         "source_color_primaries,source_transfer_characteristics,source_matrix_coefficients,source_color_range,"
+         "applied_color_primaries,applied_transfer_characteristics,applied_matrix_coefficients,applied_color_range,"
+         "source_has_icc,applied_icc,source_has_hdr_metadata,applied_hdr_metadata,color_metadata_source,color_reason\n";
 
   for (const auto& result : results) {
     const double ratio =
@@ -796,12 +850,15 @@ std::expected<void, std::string> write_csv(const fs::path& output_dir,
     const auto optional_int = [](std::optional<int> value) {
       return value ? std::to_string(*value) : std::string{};
     };
+    const auto optional_bool = [](std::optional<bool> value) {
+      return value ? (*value ? std::string{"true"} : std::string{"false"}) : std::string{};
+    };
     const auto metric = [](double value) {
       return value > 0.0 ? std::format("{:.6f}", value) : std::string{};
     };
     csv << (result.index + 1) << ','
-        << core_detail::csv_escape(path_to_utf8(result.input_path)) << ','
-        << core_detail::csv_escape(path_to_utf8(result.output_path)) << ','
+        << core_detail::csv_escape(display_path_for_report(result.input_path)) << ','
+        << core_detail::csv_escape(display_path_for_report(result.output_path)) << ','
         << result.original_bytes << ',' << result.output_bytes << ','
         << std::format("{:.4f}", ratio) << ',' << result.quality << ','
         << speed << ',' << requested_visual_quality << ','
@@ -812,10 +869,19 @@ std::expected<void, std::string> write_csv(const fs::path& output_dir,
         << metric(result.gmsd_weight) << ',' << metric(result.msssim_weight) << ','
         << result.final_encoder_quality << ',' << result.search_attempt_count << ','
         << core_detail::csv_escape(result.decoder_id) << ','
+        << (result.used_decoder_fallback ? "yes" : "no") << ','
         << core_detail::csv_escape(result.encoder_id) << ','
         << core_detail::csv_escape(result.requested_encoder_id) << ','
         << (result.encoder_experimental ? "true" : "false") << ','
         << core_detail::csv_escape(result.encoder_license) << ','
+        << core_detail::csv_escape(result.integration_mode) << ','
+        << core_detail::csv_escape(result.svtav1hdr_helper_path) << ','
+        << optional_int(result.svtav1hdr_crf) << ','
+        << optional_int(result.svtav1hdr_preset) << ','
+        << core_detail::csv_escape(result.svtav1hdr_tune) << ','
+        << optional_int(result.svtav1hdr_keyint) << ','
+        << core_detail::csv_escape(result.svtav1hdr_hdr_metadata) << ','
+        << core_detail::csv_escape(result.svtav1hdr_note) << ','
         << core_detail::csv_escape(result.requested_chroma) << ','
         << core_detail::csv_escape(result.applied_chroma) << ','
         << optional_int(result.requested_bit_depth) << ','
@@ -829,7 +895,33 @@ std::expected<void, std::string> write_csv(const fs::path& output_dir,
         << (result.lossless ? "true" : "false") << ','
         << std::format("{:.3f}", result.seconds) << ','
         << status << ',' << core_detail::csv_escape(result.message) << ','
-        << core_detail::csv_escape(result.command) << '\n';
+        << core_detail::csv_escape(result.command) << ','
+        << core_detail::csv_escape(result.user_encoder_id) << ','
+        << core_detail::csv_escape(result.user_chroma) << ','
+        << core_detail::csv_escape(result.source_chroma) << ','
+        << core_detail::csv_escape(result.chroma_reason) << ','
+        << optional_int(result.source_bit_depth) << ','
+        << core_detail::csv_escape(result.alpha_policy) << ','
+        << (result.source_has_alpha_channel ? "true" : "false") << ','
+        << core_detail::csv_escape(result.source_alpha_mode) << ','
+        << optional_bool(result.has_non_opaque_alpha) << ','
+        << (result.encoder_supports_alpha ? "true" : "false") << ','
+        << core_detail::csv_escape(result.applied_alpha) << ','
+        << core_detail::csv_escape(result.alpha_reason) << ','
+        << optional_int(result.source_color_primaries) << ','
+        << optional_int(result.source_transfer_characteristics) << ','
+        << optional_int(result.source_matrix_coefficients) << ','
+        << optional_int(result.source_color_range) << ','
+        << optional_int(result.applied_color_primaries) << ','
+        << optional_int(result.applied_transfer_characteristics) << ','
+        << optional_int(result.applied_matrix_coefficients) << ','
+        << optional_int(result.applied_color_range) << ','
+        << (result.source_has_icc ? "true" : "false") << ','
+        << core_detail::csv_escape(result.applied_icc) << ','
+        << (result.source_has_hdr_metadata ? "true" : "false") << ','
+        << core_detail::csv_escape(result.applied_hdr_metadata) << ','
+        << core_detail::csv_escape(result.color_metadata_source) << ','
+        << core_detail::csv_escape(result.color_reason) << '\n';
   }
 
   if (!csv) {

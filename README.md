@@ -2,7 +2,7 @@
 
 AWJimage 是一个 Windows C++23 / Slint 批量图片转换工具。当前内置转换路径只保留 native codec：
 
-- AVIF：libavif/AOM，实验 `zenrav1e` 通过私有 helper 进程隔离
+- AVIF：libavif/AOM；实验 `zenrav1e` 静态链接进主程序但仍需显式启用；`svt-av1-hdr` 通过 libavif SVT backend 静态链接进主程序
 - WebP：libwebp
 - JXL：libjxl
 
@@ -28,11 +28,7 @@ cmake --build --preset windows-msvc-x64-release --target AWJ-cli AWJ-studio
 - `bin\x64\Release\AWJ-cli.exe`
 - `bin\x64\Release\AWJ-studio.exe`
 
-AVIF helper 会放在内部目录：
-
-- `bin\x64\internal\Release\AWJ-native-avif-helper.exe`
-
-它不是用户直接启动的文件。
+`svt-av1-hdr` 已作为源码依赖构建并静态链接进主程序，Release 不需要 `SvtAv1EncApp.exe`、DLL 或其他 SVT sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
 ## CLI 示例
 

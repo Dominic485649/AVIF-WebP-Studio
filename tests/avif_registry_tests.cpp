@@ -16,54 +16,140 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
-  auto selected = awj::select_avif_encoder(awj::AvifEncoderSelectionRequest{
-      .requested_encoder = awj::AvifEncoderMode::automatic,
-      .requested_chroma = awj::ChromaMode::auto_keep,
-      .requested_bit_depth = {},
-      .pixel_count = 1024,
-      .speed = awj::default_speed_for(awj::OutputFormat::avif)});
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
+  auto selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::auto_keep,
+          .requested_bit_depth = {},
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, false, false));
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt ||
       selected->applied_chroma != awj::ChromaMode::yuv420 ||
       selected->applied_bit_depth != 10 ||
       selected->bit_depth_reason.find("10-bit") == std::string::npos) {
-    return fail("auto small request did not prefer available AOM 10-bit output.");
+    return fail("auto small opaque request did not prefer available SVT 10-bit output.");
   }
 
-  selected = awj::select_avif_encoder(awj::AvifEncoderSelectionRequest{
-      .requested_encoder = awj::AvifEncoderMode::automatic,
-      .requested_chroma = awj::ChromaMode::auto_keep,
-      .requested_bit_depth = 8,
-      .pixel_count = 1024,
-      .speed = awj::default_speed_for(awj::OutputFormat::avif)});
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::auto_keep,
+          .requested_bit_depth = 8,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, false, false));
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt ||
       selected->applied_chroma != awj::ChromaMode::yuv420 ||
       selected->applied_bit_depth != 8) {
-    return fail("auto small 420/8-bit request did not select available AOM.");
+    return fail("auto small opaque 420/8-bit request did not select available SVT.");
   }
 
-  selected = awj::select_avif_encoder(awj::AvifEncoderSelectionRequest{
-      .requested_encoder = awj::AvifEncoderMode::automatic,
-      .requested_chroma = awj::ChromaMode::yuv444,
-      .requested_bit_depth = 8,
-      .pixel_count = 1024,
-      .speed = awj::default_speed_for(awj::OutputFormat::avif)});
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::auto_keep,
+          .requested_bit_depth = 8,
+          .has_alpha = true,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
+      selected->fallback_reason.find("alpha") == std::string::npos) {
+    return fail("auto alpha request did not select AOM by default.");
+  }
+
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv444,
+          .requested_bit_depth = 8,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
   if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
       selected->applied_chroma != awj::ChromaMode::yuv444) {
     return fail("auto 444 request did not select AOM.");
   }
 
-  selected = awj::select_avif_encoder(awj::AvifEncoderSelectionRequest{
-      .requested_encoder = awj::AvifEncoderMode::automatic,
-      .requested_chroma = awj::ChromaMode::yuv420,
-      .requested_bit_depth = 12,
-      .pixel_count = 1024,
-      .speed = awj::default_speed_for(awj::OutputFormat::avif)});
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv422,
+          .requested_bit_depth = 8,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
+      selected->applied_chroma != awj::ChromaMode::yuv422) {
+    return fail("auto 422 request did not select AOM.");
+  }
+
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 12,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
   if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
       selected->applied_bit_depth != 12) {
     return fail("auto 12-bit request did not select AOM.");
   }
 
-  auto rejected = awj::select_avif_encoder(awj::AvifEncoderSelectionRequest{
+  auto rejected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 14,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
+  if (rejected || rejected.error().find("14-bit") == std::string::npos) {
+    return fail("auto >12-bit request was not rejected clearly.");
+  }
+
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 10,
+          .visual_quality_search = true,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt) {
+    return fail("auto visual-quality request should preserve normal capability-driven selection.");
+  }
+
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::auto_keep,
+          .requested_bit_depth = 10,
+          .pixel_count = awj::encoding_defaults::large_image_threshold_pixels + 1,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::zenrav1e ||
+      selected->fallback_reason.find("large") == std::string::npos) {
+    return fail("auto large opaque 420-compatible request did not select zenrav1e.");
+  }
+
+  rejected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::auto_keep,
+          .requested_bit_depth = 10,
+          .has_alpha = true,
+          .pixel_count = awj::encoding_defaults::large_image_threshold_pixels + 1,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(false, true, true, true));
+  if (rejected || rejected.error().find("aom") == std::string::npos) {
+    return fail("large alpha request should not incorrectly select zenrav1e without verified alpha policy.");
+  }
+
+  rejected = awj::select_avif_encoder(awj::AvifEncoderSelectionRequest{
       .requested_encoder = awj::AvifEncoderMode::svt,
       .requested_chroma = awj::ChromaMode::yuv444,
       .requested_bit_depth = 8,
@@ -163,6 +249,35 @@ int main() {
   }
 
   auto svt_capabilities = awj::avif_encoder_capabilities_for_build(true, true, false, false);
+  auto auto_with_svt = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 8,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      svt_capabilities);
+  if (!auto_with_svt || auto_with_svt->applied_encoder != awj::AvifEncoderMode::svt ||
+      auto_with_svt->speed != awj::encoding_defaults::default_svtav1hdr_preset) {
+    return fail("auto should prefer svt-av1-hdr for ordinary opaque 420-compatible requests and use its default preset.");
+  }
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::svt,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 10,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      svt_capabilities);
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt ||
+      selected->applied_bit_depth != 10) {
+    return fail("explicit svt-av1-hdr request was not selected when available.");
+  }
+  diagnostics = awj::diagnostics_from_avif_selection(*selected);
+  if (diagnostics.encoder_id != "svt-av1-hdr" ||
+      diagnostics.speed_mapping.codec_key != "svt-av1-hdr:preset") {
+    return fail("svt-av1-hdr diagnostics are incomplete.");
+  }
   for (auto& capability : svt_capabilities) {
     if (capability.mode == awj::AvifEncoderMode::svt) {
       capability.enabled = true;

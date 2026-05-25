@@ -1,15 +1,26 @@
 {
   "name": "awjimage",
-  "version-string": "0.3.1",
+  "version-string": "0.4.0",
   "dependencies": [
     "scnlib",
     "libwebp",
     "libjxl",
+    "libpng",
+    "libjpeg-turbo",
+    "giflib",
     {
-      "name": "libavif",
+      "name": "tiff",
       "features": [
-        "aom"
+        "jpeg"
       ]
-    }
+    },
+    {
+      "name": "libraw",
+      "features": [
+        "dng-lossy"
+      ]
+    },
+    "aom",
+    "libyuv"
   ]
 }

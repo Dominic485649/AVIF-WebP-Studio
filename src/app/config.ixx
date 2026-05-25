@@ -24,9 +24,11 @@ export namespace awj {
 
 enum class Preset { fast, balanced, best, extreme };
 enum class OutputFormat { avif, webp, jxl };
+enum class BackendMode { native };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random };
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
 enum class AvifEncoderMode { automatic, svt, aom, zenrav1e };
+enum class AlphaModePolicy { force, automatic, off };
 
 int default_max_jobs() noexcept {
   // 自动并发不是“吃满 CPU”，而是给桌面、UI 线程和编码器内部线程预留余量。
@@ -62,6 +64,7 @@ constexpr int default_speed_for(OutputFormat format) noexcept {
     case OutputFormat::avif:
       return encoding_defaults::default_avif_native_speed;
     case OutputFormat::webp:
+      return encoding_defaults::default_webp_native_speed;
     default:
       return encoding_defaults::default_native_speed;
   }
@@ -73,19 +76,33 @@ struct AppConfig {
   std::filesystem::path output_dir{};
   std::wstring output_template{encoding_defaults::default_output_template};
   Preset preset{Preset::best};
+  BackendMode backend{BackendMode::native};
   OutputFormat output_format{OutputFormat::avif};
   CollisionMode collision_mode{CollisionMode::overwrite};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
   AvifEncoderMode avif_encoder{AvifEncoderMode::automatic};
-  bool enable_experimental_encoders{false};
+  AlphaModePolicy alpha_policy{AlphaModePolicy::automatic};
+  bool enable_experimental_encoders{true};
+  bool experimental_clamped_grid_padding{encoding_defaults::default_experimental_clamped_grid_padding};
   int quality{default_quality_for(output_format)};
   std::optional<int> visual_quality{};
   std::optional<int> bit_depth{};
   std::optional<int> speed{};
   int max_jobs{default_max_jobs()};
   std::uint64_t memory_limit_bytes{encoding_defaults::default_memory_limit_bytes};
-  int max_resolution{encoding_defaults::default_max_resolution};
   int encode_timeout_minutes{encoding_defaults::preset_best_timeout_minutes};
+  bool allow_wic_fallback{encoding_defaults::default_allow_wic_fallback};
+  std::optional<int> svtav1hdr_crf{};
+  std::optional<int> svtav1hdr_preset{};
+  std::string svtav1hdr_tune{std::string{encoding_defaults::default_svtav1hdr_tune}};
+  std::optional<int> svtav1hdr_keyint{};
+  std::vector<std::wstring> svtav1hdr_params{};
+  std::optional<int> color_primaries{};
+  std::optional<int> transfer_characteristics{};
+  std::optional<int> matrix_coefficients{};
+  std::optional<int> color_range{};
+  std::wstring mastering_display{};
+  std::wstring content_light{};
   bool visual_quality_fallback{false};
   bool strip_metadata{false};
   bool write_summary{false};
@@ -254,6 +271,23 @@ std::expected<void, std::string> validate_native_option(std::wstring_view value)
   return {};
 }
 
+std::expected<void, std::string> validate_svtav1hdr_text(std::wstring_view value,
+                                                          std::string_view name) {
+  constexpr std::size_t max_value_length = 512;
+  if (value.empty()) {
+    return std::unexpected{std::format("{} 不能为空。", name)};
+  }
+  if (value.size() > max_value_length) {
+    return std::unexpected{std::format("{} 长度不能超过 512 个字符。", name)};
+  }
+  for (const wchar_t ch : value) {
+    if (ch < 0x20 || ch == 0x7f) {
+      return std::unexpected{std::format("{} 不能包含控制字符。", name)};
+    }
+  }
+  return {};
+}
+
 std::optional<Preset> parse_preset(std::wstring_view value) {
   const auto lower = lower_copy(value);
   if (lower == L"fast") {
@@ -354,10 +388,38 @@ std::optional<AvifEncoderMode> parse_avif_encoder(std::wstring_view value) {
   return std::nullopt;
 }
 
+std::optional<AlphaModePolicy> parse_alpha_policy(std::wstring_view value) {
+  const auto lower = lower_copy(value);
+  if (lower == L"force" || lower == L"on" || lower == L"keep" ||
+      lower == L"forced" || lower == L"强制开启" || lower == L"开启") {
+    return AlphaModePolicy::force;
+  }
+  if (lower == L"auto" || lower == L"automatic" || lower == L"自动") {
+    return AlphaModePolicy::automatic;
+  }
+  if (lower == L"off" || lower == L"disable" || lower == L"disabled" ||
+      lower == L"strip" || lower == L"关闭" || lower == L"删除") {
+    return AlphaModePolicy::off;
+  }
+  return std::nullopt;
+}
+
+std::string alpha_policy_name(AlphaModePolicy policy) {
+  switch (policy) {
+    case AlphaModePolicy::force:
+      return "force";
+    case AlphaModePolicy::off:
+      return "off";
+    case AlphaModePolicy::automatic:
+    default:
+      return "auto";
+  }
+}
+
 std::string avif_encoder_name(AvifEncoderMode mode) {
   switch (mode) {
     case AvifEncoderMode::svt:
-      return "svt";
+      return "svt-av1-hdr";
     case AvifEncoderMode::aom:
       return "aom";
     case AvifEncoderMode::zenrav1e:
@@ -412,6 +474,10 @@ std::string avif_encoder_mode_name(AvifEncoderMode mode) {
   return config_detail::avif_encoder_name(mode);
 }
 
+std::string alpha_mode_policy_name(AlphaModePolicy policy) {
+  return config_detail::alpha_policy_name(policy);
+}
+
 std::expected<void, std::string> validate_native_option(std::wstring_view value) {
   return config_detail::validate_native_option(value);
 }
@@ -449,12 +515,6 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       }
       break;
   }
-  if (cfg.output_format == OutputFormat::avif &&
-      cfg.avif_encoder == AvifEncoderMode::svt &&
-      !config_detail::avif_encoder_is_svt_compatible_chroma(cfg.chroma_mode)) {
-    return std::unexpected{
-        "SVT AVIF encoder only supports 420 chroma; use --chroma 420/auto or --avif-encoder aom."};
-  }
   if (!visual_quality_weights_are_valid()) {
     return std::unexpected{"视觉质量权重配置无效：GMSD_WEIGHT + MSSSIM_WEIGHT 必须等于 1。"};
   }
@@ -486,9 +546,9 @@ std::string help_text() {
   std::string help = R"(AWJimage C++23
 =======================
 
-默认后端：内置 native（libavif/zenrav1e/WebP/JXL）
+默认后端：内置 native（libavif/AOM/zenrav1e/svt-av1-hdr/WebP/JXL）
 默认质量：AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@
-质量范围：q1..q100，q100 为无损
+质量范围：q1..q100；WebP/JXL q100 为无损，AVIF q100 对 AVIF 输入原始流直通，其他输入走 AOM 无损并尽量继承源参数
 
 用法:
   AWJ-cli.exe [选项]
@@ -497,20 +557,35 @@ std::string help_text() {
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
   -f, --format <avif|webp|jxl> 输出格式，默认 avif
-  -q, --quality <1-100>       编码质量，AVIF 默认 @AVIF_QUALITY@，WebP/JXL 默认 @WEBP_QUALITY@；100 为无损。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100 直接无损，1..99 自动搜索最小体积达标候选
+  -q, --quality <1-100>       编码质量，AVIF 默认 @AVIF_QUALITY@，WebP/JXL 默认 @WEBP_QUALITY@；WebP/JXL 100 为无损，AVIF 100 对 AVIF 输入原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：WebP/JXL 按编码器无损语义处理，AVIF 对 AVIF 输入直通、其他输入走 AOM 无损；1..99 自动搜索最小体积达标候选
   --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选
   -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片，WebP 固定 @WEBP_BIT_DEPTH@
-  --chroma <auto|444|422|420> AVIF 色度采样；SVT 仅支持 420，JXL/WebP 不支持手动采样；也可用 --444 / --422 / --420
-  --avif-encoder <auto|svt|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 只选择当前构建真实可用的稳定编码器
-  --experimental-encoders   启用实验 AVIF 编码器；开启后可显式使用 zenrav1e
+  --chroma <auto|444|422|420> AVIF 色度采样；显式 SVT 有损会实际传 420，auto 按源参数和编码器能力选择；也可用 --444 / --422 / --420
+  --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；普通队列 auto 优先 svt-av1-hdr，必要时回退 AOM；超限大图移入 Studio 大图模式
+  --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha 通道，auto 删除无效 alpha，off 总是删除 alpha
+  --svtav1hdr-crf <0-63>     svt-av1-hdr 专家 CRF；未指定时使用通用 quality，避免默认 quality 与默认 CRF 同时生效
+  --svtav1hdr-preset <0-13>  svt-av1-hdr preset；默认 @SVTAV1HDR_PRESET@
+  --svtav1hdr-tune <值>      svt-av1-hdr tune；默认 @SVTAV1HDR_TUNE@，UI 不提供修改入口
+  --svtav1hdr-keyint <1-999999> svt-av1-hdr keyint；默认 @SVTAV1HDR_KEYINT@，UI 不提供修改入口
+  --svtav1hdr-params <key=value> svt-av1-hdr 专家参数，可重复；按原样传给 --svtav1-params
+  --color-primaries <n>      svt-av1-hdr HDR/CICP color primaries
+  --transfer-characteristics <n> svt-av1-hdr HDR/CICP transfer characteristics
+  --matrix-coefficients <n>  svt-av1-hdr HDR/CICP matrix coefficients
+  --color-range <0|1>        svt-av1-hdr color range
+  --mastering-display <值>   svt-av1-hdr mastering display metadata
+  --content-light <值>       svt-av1-hdr content light metadata
+  --experimental-encoders   启用实验 AVIF 编码器；默认开启，构建支持时可显式使用 zenrav1e
+  --experimental-clamped-grid-padding 允许 AVIF grid 分割在无可整除方案时尝试 padding；当前编码会拒绝尚未能安全裁切的 padding 计划
+  --no-experimental-clamped-grid-padding 禁用 AVIF grid padding；不可整除分割会报错
   -p, --preset <名称>         fast / balanced / best / extreme，默认 best
   -t, --threads <数量>        并发数量，默认 CPU 线程数
   --memory-limit <auto|大小>  内存限制；auto 为总内存一半与可用内存 80% 的较小值，可用 4GiB/4096MiB
   -m, --template <模板>       输出命名，默认 @OUTPUT_TEMPLATE@
-  --max-resolution <像素>     限制最长边；0 表示不缩放，默认 @MAX_RESOLUTION@
   --speed <0-10>             统一速度参数；WebP method / JXL effort / AVIF encoder speed-preset
-  --option <key=value>       预留 native 高级选项，可重复；当前版本只记录与校验，不调用外部 Magick/ffmpeg
+  --allow-wic-fallback       允许 native 解码器失败后使用 WIC 兜底，默认开启
+  --no-wic-fallback          禁用 WIC 解码兜底
+  --option <key=value>       预留 native 高级选项，可重复；当前版本只记录与校验
   --collision <策略>          overwrite / skip / time / random，默认 overwrite
   --timeout-encode <分钟>     单张图片编码超时，默认 @ENCODE_TIMEOUT@
   --strip                    去除 EXIF/ICC 等元数据，通常更小且更隐私
@@ -554,10 +629,13 @@ std::string help_text() {
   replace_all(help, "@AVIF_QUALITY@", std::format("{}", default_quality_for(OutputFormat::avif)));
   replace_all(help, "@WEBP_QUALITY@", std::format("{}", default_quality_for(OutputFormat::webp)));
   replace_all(help, "@JXL_QUALITY@", std::format("{}", default_quality_for(OutputFormat::jxl)));
+  replace_all(help, "@SVTAV1HDR_CRF@", std::format("{}", encoding_defaults::default_svtav1hdr_crf));
+  replace_all(help, "@SVTAV1HDR_PRESET@", std::format("{}", encoding_defaults::default_svtav1hdr_preset));
+  replace_all(help, "@SVTAV1HDR_TUNE@", std::string{encoding_defaults::default_svtav1hdr_tune});
+  replace_all(help, "@SVTAV1HDR_KEYINT@", std::format("{}", encoding_defaults::default_svtav1hdr_keyint));
   replace_all(help, "@INPUT_PATH@", encoding_defaults::default_input_path_text);
   replace_all(help, "@WEBP_BIT_DEPTH@", std::format("{}", encoding_defaults::default_webp_bit_depth));
   replace_all(help, "@OUTPUT_TEMPLATE@", encoding_defaults::default_output_template_text);
-  replace_all(help, "@MAX_RESOLUTION@", std::format("{}", encoding_defaults::default_max_resolution));
   replace_all(help, "@ENCODE_TIMEOUT@", std::format("{}", encoding_defaults::preset_best_timeout_minutes));
   return help;
 }
@@ -626,22 +704,6 @@ std::expected<ParseResult, std::string> parse_arguments(
       }
       cfg.output_format = *format;
       continue;
-    }
-
-    if (lower == L"--magick") {
-      return std::unexpected{"内置 Magick 后端已移除；当前版本只使用 native 后端，外部 Magick/ffmpeg 集成暂未启用。"};
-    }
-
-    if (lower == L"--backend") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      const auto backend = config_detail::lower_copy(*value);
-      if (backend == L"native") {
-        continue;
-      }
-      return std::unexpected{"内置 Magick 后端已移除；当前版本只支持 native 后端。"};
     }
 
     if (lower == L"-m" || lower == L"--template" ||
@@ -749,10 +811,26 @@ std::expected<ParseResult, std::string> parse_arguments(
       const auto encoder = config_detail::parse_avif_encoder(*value);
       if (!encoder) {
         return std::unexpected{std::format(
-            "AVIF encoder 不支持: {}。可选值：auto、svt、aom、zenrav1e。",
+            "AVIF encoder 不支持: {}。可选值：auto、svt、svt-av1-hdr、aom、zenrav1e。",
             config_detail::narrow_ascii(*value))};
       }
       cfg.avif_encoder = *encoder;
+      continue;
+    }
+
+    if (lower == L"--alpha" || lower == L"--alpha-mode" ||
+        lower == L"--alpha_mode") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto policy = config_detail::parse_alpha_policy(*value);
+      if (!policy) {
+        return std::unexpected{std::format(
+            "alpha 不支持: {}。可选值：force、auto、off。",
+            config_detail::narrow_ascii(*value))};
+      }
+      cfg.alpha_policy = *policy;
       continue;
     }
 
@@ -764,6 +842,16 @@ std::expected<ParseResult, std::string> parse_arguments(
 
     if (lower == L"--no-experimental-encoders") {
       cfg.enable_experimental_encoders = false;
+      continue;
+    }
+
+    if (lower == L"--experimental-clamped-grid-padding") {
+      cfg.experimental_clamped_grid_padding = true;
+      continue;
+    }
+
+    if (lower == L"--no-experimental-clamped-grid-padding") {
+      cfg.experimental_clamped_grid_padding = false;
       continue;
     }
 
@@ -822,17 +910,152 @@ std::expected<ParseResult, std::string> parse_arguments(
       continue;
     }
 
-    if (lower == L"--max-resolution") {
+    if (lower == L"--allow-wic-fallback") {
+      cfg.allow_wic_fallback = true;
+      continue;
+    }
+
+    if (lower == L"--no-wic-fallback") {
+      cfg.allow_wic_fallback = false;
+      continue;
+    }
+
+    if (lower == L"--svtav1hdr-crf" || lower == L"--svt-av1-hdr-crf") {
       const auto value = require_value(i, args[i]);
       if (!value) {
         return std::unexpected{value.error()};
       }
-      const auto max_resolution =
-          config_detail::parse_int_range(*value, 0, 100000, "max-resolution");
-      if (!max_resolution) {
-        return std::unexpected{max_resolution.error()};
+      const auto crf = config_detail::parse_int_range(*value, 0, 63, "svtav1hdr-crf");
+      if (!crf) {
+        return std::unexpected{crf.error()};
       }
-      cfg.max_resolution = *max_resolution;
+      cfg.svtav1hdr_crf = *crf;
+      continue;
+    }
+
+    if (lower == L"--svtav1hdr-preset" || lower == L"--svt-av1-hdr-preset") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto preset = config_detail::parse_int_range(*value, 0, 13, "svtav1hdr-preset");
+      if (!preset) {
+        return std::unexpected{preset.error()};
+      }
+      cfg.svtav1hdr_preset = *preset;
+      continue;
+    }
+
+    if (lower == L"--svtav1hdr-tune" || lower == L"--svt-av1-hdr-tune") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      if (auto valid = config_detail::validate_svtav1hdr_text(*value, "svtav1hdr-tune"); !valid) {
+        return std::unexpected{valid.error()};
+      }
+      cfg.svtav1hdr_tune = config_detail::narrow_ascii(*value);
+      continue;
+    }
+
+    if (lower == L"--svtav1hdr-keyint" || lower == L"--svt-av1-hdr-keyint") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto keyint = config_detail::parse_int_range(*value, 1, 999999, "svtav1hdr-keyint");
+      if (!keyint) {
+        return std::unexpected{keyint.error()};
+      }
+      cfg.svtav1hdr_keyint = *keyint;
+      continue;
+    }
+
+    if (lower == L"--svtav1hdr-params" || lower == L"--svt-av1-hdr-params") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      if (auto valid = config_detail::validate_native_option(*value); !valid) {
+        return std::unexpected{valid.error()};
+      }
+      cfg.svtav1hdr_params.push_back(*value);
+      continue;
+    }
+
+    if (lower == L"--color-primaries") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 0, 255, "color-primaries");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.color_primaries = *parsed;
+      continue;
+    }
+
+    if (lower == L"--transfer-characteristics") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 0, 255, "transfer-characteristics");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.transfer_characteristics = *parsed;
+      continue;
+    }
+
+    if (lower == L"--matrix-coefficients") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 0, 255, "matrix-coefficients");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.matrix_coefficients = *parsed;
+      continue;
+    }
+
+    if (lower == L"--color-range") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 0, 1, "color-range");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.color_range = *parsed;
+      continue;
+    }
+
+    if (lower == L"--mastering-display") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      if (auto valid = config_detail::validate_svtav1hdr_text(*value, "mastering-display"); !valid) {
+        return std::unexpected{valid.error()};
+      }
+      cfg.mastering_display = *value;
+      continue;
+    }
+
+    if (lower == L"--content-light") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      if (auto valid = config_detail::validate_svtav1hdr_text(*value, "content-light"); !valid) {
+        return std::unexpected{valid.error()};
+      }
+      cfg.content_light = *value;
       continue;
     }
 
@@ -862,7 +1085,7 @@ std::expected<ParseResult, std::string> parse_arguments(
     }
 
     if (lower == L"--define") {
-      return std::unexpected{"--define 是旧 Magick 选项，内置 Magick 已移除；当前版本不再接收 Magick define。"};
+      return std::unexpected{"--define 是旧外部后端选项，当前版本仅支持 native 编码。"};
     }
 
     if (lower == L"--collision") {
