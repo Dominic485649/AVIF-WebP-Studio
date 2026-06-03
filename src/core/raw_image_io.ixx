@@ -1,5 +1,9 @@
 module;
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -9,12 +13,20 @@ module;
 #include <fstream>
 #include <format>
 #include <limits>
+#include <memory>
+#include <new>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
+#include <windows.h>
 
 export module awj.raw_image_io;
 
+import awj.core;
+import awj.encoding_defaults;
 import awj.image;
+import awj.large_image_plan;
 
 export namespace awj {
 
@@ -61,102 +73,319 @@ AlphaMode alpha_from_raw(std::uint32_t value) noexcept {
   }
 }
 
+bool alpha_mode_is_valid(std::uint32_t value) noexcept {
+  return value == alpha_none || value == alpha_straight || value == alpha_premultiplied;
+}
+
+struct FileHandleDeleter {
+  using pointer = HANDLE;
+  void operator()(HANDLE value) const noexcept {
+    if (value != nullptr && value != INVALID_HANDLE_VALUE) {
+      CloseHandle(value);
+    }
+  }
+};
+
+using UniqueFileHandle = std::unique_ptr<void, FileHandleDeleter>;
+
+class OutputFileCleanup {
+ public:
+  explicit OutputFileCleanup(const fs::path& path) noexcept : path_{&path} {}
+  ~OutputFileCleanup() { cleanup(); }
+  OutputFileCleanup(const OutputFileCleanup&) = delete;
+  OutputFileCleanup& operator=(const OutputFileCleanup&) = delete;
+
+  void release() noexcept { active_ = false; }
+
+ private:
+  void cleanup() noexcept {
+    if (!active_) {
+      return;
+    }
+    try {
+      std::error_code ec;
+      fs::remove(*path_, ec);
+    } catch (...) {
+    }
+  }
+
+  const fs::path* path_{};
+  bool active_{true};
+};
+
+std::expected<void, std::string> write_all(HANDLE file,
+                                           const void* data,
+                                           std::uint64_t size,
+                                           const fs::path& path) {
+  auto remaining = size;
+  const auto* cursor = static_cast<const std::byte*>(data);
+  while (remaining > 0) {
+    const auto chunk = static_cast<DWORD>(
+        std::min<std::uint64_t>(remaining, std::numeric_limits<DWORD>::max()));
+    DWORD written = 0;
+    if (!WriteFile(file, cursor, chunk, &written, nullptr)) {
+      return std::unexpected{std::format("写入 raw 图像文件失败: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         win32_error_message(GetLastError()))};
+    }
+    if (written == 0) {
+      return std::unexpected{std::format("写入 raw 图像文件失败: {}", display_path_for_user(path))};
+    }
+    cursor += written;
+    remaining -= written;
+  }
+  return {};
+}
+
 }  // namespace raw_image_detail
 
 export std::expected<void, std::string> write_raw_image_file(
     const fs::path& path,
     const ImageBuffer& image) {
-  if (image.pixel_format != PixelFormat::rgba || image.planes.empty()) {
-    return std::unexpected{"raw image writer requires RGBA ImageBuffer."};
-  }
-  const auto& plane = image.planes.front();
-  if (image.width == 0 || image.height == 0 || plane.stride == 0 ||
-      plane.bytes.empty()) {
-    return std::unexpected{"raw image writer received an empty image."};
-  }
-  if (image.width > std::numeric_limits<std::uint32_t>::max() ||
-      image.height > std::numeric_limits<std::uint32_t>::max() ||
-      plane.stride > std::numeric_limits<std::uint32_t>::max() ||
-      plane.stride > std::numeric_limits<std::uint64_t>::max() / image.height) {
-    return std::unexpected{"raw image dimensions exceed file format limits."};
-  }
-  const auto min_bytes = static_cast<std::uint64_t>(plane.stride) * image.height;
-  if (plane.bytes.size() < min_bytes) {
-    return std::unexpected{"raw image payload is smaller than its dimensions."};
-  }
-  raw_image_detail::Header header{};
-  std::ranges::copy(raw_image_detail::magic, header.magic);
-  header.width = static_cast<std::uint32_t>(image.width);
-  header.height = static_cast<std::uint32_t>(image.height);
-  header.pixel_format = raw_image_detail::pixel_format_rgba;
-  header.alpha_mode = raw_image_detail::alpha_to_raw(image.alpha_mode);
-  header.bit_depth = static_cast<std::uint32_t>(image.bit_depth);
-  header.stride = static_cast<std::uint32_t>(plane.stride);
-  header.byte_count = static_cast<std::uint64_t>(plane.bytes.size());
+  try {
+    if (image.pixel_format != PixelFormat::rgba || image.planes.empty()) {
+      return std::unexpected{"raw 图像写入需要 RGBA ImageBuffer。"};
+    }
+    const auto& plane = image.planes.front();
+    if (image.width == 0 || image.height == 0 || plane.stride == 0 ||
+        plane.bytes.empty()) {
+      return std::unexpected{"raw 图像写入收到空图像。"};
+    }
+    if (image.width > std::numeric_limits<std::uint32_t>::max() ||
+        image.height > std::numeric_limits<std::uint32_t>::max() ||
+        plane.stride > std::numeric_limits<std::uint32_t>::max() ||
+        plane.stride > std::numeric_limits<std::uint64_t>::max() / image.height) {
+      return std::unexpected{"raw 图像尺寸超过文件格式限制。"};
+    }
+    if (image.bit_depth != 8 && image.bit_depth != 10 && image.bit_depth != 12 &&
+        image.bit_depth != 16) {
+      return std::unexpected{"raw 图像写入收到不支持的位深。"};
+    }
+    const auto bytes_per_sample = image.bit_depth > 8 ? 2ull : 1ull;
+    if (image.width > std::numeric_limits<std::uint64_t>::max() / 4ull / bytes_per_sample) {
+      return std::unexpected{"raw 图像尺寸超过文件格式限制。"};
+    }
+    const auto min_stride = static_cast<std::uint64_t>(image.width) * 4ull * bytes_per_sample;
+    if (plane.stride < min_stride) {
+      return std::unexpected{"raw 图像 stride 小于像素格式要求。"};
+    }
+    const auto min_bytes = static_cast<std::uint64_t>(plane.stride) * image.height;
+    if (plane.bytes.size() < min_bytes) {
+      return std::unexpected{"raw 图像 payload 小于尺寸要求。"};
+    }
+    if (min_bytes > encoding_defaults::max_input_file_bytes - sizeof(raw_image_detail::Header)) {
+      return std::unexpected{"raw 图像输出超过 20 GiB 运行时上限。"};
+    }
+    raw_image_detail::Header header{};
+    std::ranges::copy(raw_image_detail::magic, header.magic);
+    header.width = static_cast<std::uint32_t>(image.width);
+    header.height = static_cast<std::uint32_t>(image.height);
+    header.pixel_format = raw_image_detail::pixel_format_rgba;
+    header.alpha_mode = raw_image_detail::alpha_to_raw(image.alpha_mode);
+    header.bit_depth = static_cast<std::uint32_t>(image.bit_depth);
+    header.stride = static_cast<std::uint32_t>(plane.stride);
+    header.byte_count = min_bytes;
 
-  std::error_code ec;
-  fs::create_directories(path.parent_path(), ec);
-  if (ec) {
-    return std::unexpected{std::format("cannot create raw image directory: {}", ec.message())};
+    const auto parent = path.parent_path();
+    std::error_code ec;
+    if (!parent.empty()) {
+      fs::create_directories(parent, ec);
+      if (ec) {
+        return std::unexpected{std::format("无法创建 raw 图像目录: {}；系统错误：{}",
+                                           display_path_for_user(parent), ec.message())};
+      }
+    }
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+      const auto error = GetLastError();
+      if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+        return std::unexpected{std::format("raw 图像文件已存在: {}", display_path_for_user(path))};
+      }
+      return std::unexpected{std::format("无法创建 raw 图像文件: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         win32_error_message(error))};
+    }
+    raw_image_detail::OutputFileCleanup cleanup{path};
+    raw_image_detail::UniqueFileHandle output{file};
+    if (auto written = raw_image_detail::write_all(output.get(), &header, sizeof(header), path); !written) {
+      return std::unexpected{written.error()};
+    }
+    if (auto written = raw_image_detail::write_all(output.get(), plane.bytes.data(), min_bytes, path); !written) {
+      return std::unexpected{written.error()};
+    }
+    if (!FlushFileBuffers(output.get())) {
+      return std::unexpected{std::format("刷新 raw 图像文件失败: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         win32_error_message(GetLastError()))};
+    }
+    const HANDLE output_handle = output.get();
+    if (!CloseHandle(output_handle)) {
+      return std::unexpected{std::format("关闭 raw 图像文件失败: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         win32_error_message(GetLastError()))};
+    }
+    output.release();
+    cleanup.release();
+    return {};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"raw 图像写入内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"raw 图像写入数据超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"raw 图像写入文件系统访问失败。"};
   }
-  std::ofstream output{path, std::ios::binary};
-  if (!output) {
-    return std::unexpected{std::format("cannot write raw image file: {}", path.string())};
+}
+
+export std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs::path& path) {
+  try {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+      return std::unexpected{std::format("无法读取 raw 图像文件: {}", display_path_for_user(path))};
+    }
+    raw_image_detail::Header header{};
+    input.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!input || std::memcmp(header.magic, raw_image_detail::magic, sizeof(header.magic)) != 0) {
+      return std::unexpected{"raw 图像文件头无效。"};
+    }
+    if (header.pixel_format != raw_image_detail::pixel_format_rgba ||
+        (header.bit_depth != 8 && header.bit_depth != 10 && header.bit_depth != 12 &&
+         header.bit_depth != 16) ||
+        !raw_image_detail::alpha_mode_is_valid(header.alpha_mode)) {
+      return std::unexpected{"raw 图像格式不受支持。"};
+    }
+    if (header.width == 0 || header.height == 0 || header.stride == 0 ||
+        header.width > std::numeric_limits<std::uint64_t>::max() / 4ull /
+                           (header.bit_depth > 8 ? 2ull : 1ull)) {
+      return std::unexpected{"raw 图像尺寸无效。"};
+    }
+    const auto expected_min_stride = static_cast<std::uint64_t>(header.width) * 4ull *
+                                     (header.bit_depth > 8 ? 2ull : 1ull);
+    if (header.stride < expected_min_stride ||
+        header.height > std::numeric_limits<std::uint64_t>::max() / header.stride) {
+      return std::unexpected{"raw 图像尺寸无效。"};
+    }
+    const auto min_bytes = static_cast<std::uint64_t>(header.stride) * header.height;
+    if (header.byte_count != min_bytes) {
+      return std::unexpected{"raw 图像 byte count 无效。"};
+    }
+    input.seekg(0, std::ios::end);
+    if (!input) {
+      return std::unexpected{"读取 raw 图像文件大小失败。"};
+    }
+    const auto file_size = input.tellg();
+    if (file_size < 0) {
+      return std::unexpected{"读取 raw 图像文件大小失败。"};
+    }
+    const auto file_size_bytes = static_cast<std::uint64_t>(file_size);
+    if (file_size_bytes > encoding_defaults::max_input_file_bytes) {
+      return std::unexpected{std::format("raw 图像文件超过 20 GiB 输入上限: {}",
+                                         display_path_for_user(path))};
+    }
+    if (file_size_bytes < sizeof(raw_image_detail::Header) ||
+        file_size_bytes - sizeof(raw_image_detail::Header) != header.byte_count) {
+      return std::unexpected{"raw 图像文件大小与 header 不一致。"};
+    }
+    return make_image_dimensions(header.width, header.height);
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"raw 图像尺寸探测内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"raw 图像尺寸探测数据超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"raw 图像尺寸探测文件系统访问失败。"};
   }
-  output.write(reinterpret_cast<const char*>(&header), sizeof(header));
-  output.write(reinterpret_cast<const char*>(plane.bytes.data()),
-               static_cast<std::streamsize>(plane.bytes.size()));
-  if (!output) {
-    return std::unexpected{std::format("failed writing raw image file: {}", path.string())};
-  }
-  return {};
 }
 
 export std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path) {
-  std::ifstream input{path, std::ios::binary};
-  if (!input) {
-    return std::unexpected{std::format("cannot read raw image file: {}", path.string())};
+  try {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+      return std::unexpected{std::format("无法读取 raw 图像文件: {}", display_path_for_user(path))};
+    }
+    raw_image_detail::Header header{};
+    input.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!input || std::memcmp(header.magic, raw_image_detail::magic, sizeof(header.magic)) != 0) {
+      return std::unexpected{"raw 图像文件头无效。"};
+    }
+    if (header.pixel_format != raw_image_detail::pixel_format_rgba ||
+        (header.bit_depth != 8 && header.bit_depth != 10 && header.bit_depth != 12 &&
+         header.bit_depth != 16) ||
+        !raw_image_detail::alpha_mode_is_valid(header.alpha_mode)) {
+      return std::unexpected{"raw 图像格式不受支持。"};
+    }
+    if (header.width == 0 || header.height == 0 || header.stride == 0 ||
+        header.width > std::numeric_limits<std::uint64_t>::max() / 4ull /
+                           (header.bit_depth > 8 ? 2ull : 1ull)) {
+      return std::unexpected{"raw 图像尺寸无效。"};
+    }
+    const auto expected_min_stride = static_cast<std::uint64_t>(header.width) * 4ull *
+                                     (header.bit_depth > 8 ? 2ull : 1ull);
+    if (header.width == 0 || header.height == 0 || header.stride < expected_min_stride ||
+        header.height > std::numeric_limits<std::uint64_t>::max() / header.stride) {
+      return std::unexpected{"raw 图像尺寸无效。"};
+    }
+    const auto min_bytes = static_cast<std::uint64_t>(header.stride) * header.height;
+    if (header.byte_count < min_bytes || header.byte_count != min_bytes ||
+        header.byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
+        header.byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+      return std::unexpected{"raw 图像 byte count 无效。"};
+    }
+    input.seekg(0, std::ios::end);
+    if (!input) {
+      return std::unexpected{"读取 raw 图像文件大小失败。"};
+    }
+    const auto file_size = input.tellg();
+    if (file_size < 0) {
+      return std::unexpected{"读取 raw 图像文件大小失败。"};
+    }
+    const auto file_size_bytes = static_cast<std::uint64_t>(file_size);
+    if (file_size_bytes > encoding_defaults::max_input_file_bytes) {
+      return std::unexpected{std::format("raw 图像文件超过 20 GiB 输入上限: {}",
+                                         display_path_for_user(path))};
+    }
+    if (file_size_bytes < sizeof(raw_image_detail::Header) ||
+        file_size_bytes - sizeof(raw_image_detail::Header) != header.byte_count) {
+      return std::unexpected{"raw 图像文件大小与 header 不一致。"};
+    }
+    input.seekg(static_cast<std::streamoff>(sizeof(raw_image_detail::Header)), std::ios::beg);
+    if (!input) {
+      return std::unexpected{"定位 raw 图像 payload 失败。"};
+    }
+    ImagePlane plane{.stride = header.stride};
+    try {
+      plane.bytes.resize(static_cast<std::size_t>(header.byte_count));
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"raw 图像读取 payload 内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"raw 图像读取 payload 尺寸超过运行时限制。"};
+    }
+    input.read(reinterpret_cast<char*>(plane.bytes.data()),
+               static_cast<std::streamsize>(plane.bytes.size()));
+    if (!input) {
+      return std::unexpected{"读取 raw 图像 payload 失败。"};
+    }
+    ImageBuffer image{.width = header.width,
+                      .height = header.height,
+                      .pixel_format = PixelFormat::rgba,
+                      .alpha_mode = raw_image_detail::alpha_from_raw(header.alpha_mode),
+                      .bit_depth = static_cast<int>(header.bit_depth),
+                      .source_info = ImageSourceInfo{.pixel_format = PixelFormat::rgba,
+                                                     .bit_depth = static_cast<int>(header.bit_depth)}};
+    try {
+      image.planes.push_back(std::move(plane));
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"raw 图像读取 plane list 内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"raw 图像读取 plane list 尺寸超过运行时限制。"};
+    }
+    return image;
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"raw 图像读取内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"raw 图像读取数据超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"raw 图像读取文件系统访问失败。"};
   }
-  raw_image_detail::Header header{};
-  input.read(reinterpret_cast<char*>(&header), sizeof(header));
-  if (!input || std::memcmp(header.magic, raw_image_detail::magic, sizeof(header.magic)) != 0) {
-    return std::unexpected{"raw image header is invalid."};
-  }
-  if (header.pixel_format != raw_image_detail::pixel_format_rgba ||
-      (header.bit_depth != 8 && header.bit_depth != 10 && header.bit_depth != 12 &&
-       header.bit_depth != 16)) {
-    return std::unexpected{"raw image format is unsupported."};
-  }
-  if (header.width == 0 || header.height == 0 || header.stride == 0 ||
-      header.width > std::numeric_limits<std::uint64_t>::max() / 4ull /
-                         (header.bit_depth > 8 ? 2ull : 1ull)) {
-    return std::unexpected{"raw image dimensions are invalid."};
-  }
-  const auto expected_min_stride = static_cast<std::uint64_t>(header.width) * 4ull *
-                                   (header.bit_depth > 8 ? 2ull : 1ull);
-  if (header.width == 0 || header.height == 0 || header.stride < expected_min_stride ||
-      header.height > std::numeric_limits<std::uint64_t>::max() / header.stride) {
-    return std::unexpected{"raw image dimensions are invalid."};
-  }
-  const auto min_bytes = static_cast<std::uint64_t>(header.stride) * header.height;
-  if (header.byte_count < min_bytes || header.byte_count != min_bytes ||
-      header.byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-    return std::unexpected{"raw image byte count is invalid."};
-  }
-  ImagePlane plane{.stride = header.stride};
-  plane.bytes.resize(static_cast<std::size_t>(header.byte_count));
-  input.read(reinterpret_cast<char*>(plane.bytes.data()),
-             static_cast<std::streamsize>(plane.bytes.size()));
-  if (!input) {
-    return std::unexpected{"failed reading raw image payload."};
-  }
-  ImageBuffer image{.width = header.width,
-                    .height = header.height,
-                    .pixel_format = PixelFormat::rgba,
-                    .alpha_mode = raw_image_detail::alpha_from_raw(header.alpha_mode),
-                    .bit_depth = static_cast<int>(header.bit_depth)};
-  image.planes.push_back(std::move(plane));
-  return image;
 }
 
 }  // namespace awj

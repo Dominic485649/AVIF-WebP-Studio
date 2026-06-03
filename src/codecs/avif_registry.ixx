@@ -97,21 +97,21 @@ AppliedBitDepth applied_bit_depth_for(const AvifEncoderCapability& capability,
   if (request.requested_bit_depth) {
     return AppliedBitDepth{.value = *request.requested_bit_depth,
                            .reason = request.requested_bit_depth_reason.empty()
-                                         ? "explicit bit-depth requested"
+                                         ? "用户明确请求 bit-depth"
                                          : request.requested_bit_depth_reason};
   }
   if (contains_bit_depth(capability, 10)) {
     return AppliedBitDepth{.value = 10,
-                           .reason = "auto selected preferred 10-bit output"};
+                           .reason = "auto 选择首选 10-bit 输出"};
   }
   if (contains_bit_depth(capability, 8)) {
     return AppliedBitDepth{.value = 8,
-                           .reason = "auto fell back to 8-bit because 10-bit is unsupported"};
+                           .reason = "auto 回退到 8-bit，因为当前编码器不支持 10-bit"};
   }
   return AppliedBitDepth{.value = capability.bit_depths.empty()
                                       ? std::optional<int>{}
                                       : std::optional<int>{capability.bit_depths.front()},
-                         .reason = "auto selected first supported bit-depth"};
+                         .reason = "auto 选择第一个受支持 bit-depth"};
 }
 
 bool capability_enabled_for_selection(const AvifEncoderCapability& capability) {
@@ -157,30 +157,30 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
     if (!capability.unavailable_reason.empty()) {
       return capability.unavailable_reason;
     }
-    return std::format("AVIF encoder {} is not available in this build.",
+    return std::format("AVIF encoder {} 在当前构建中不可用。",
                        capability.id);
   }
   if (capability.experimental && !capability.feature_enabled) {
-    return std::format("AVIF encoder {} is experimental and disabled in this build; enable the feature flag and review its license before use.",
+    return std::format("AVIF encoder {} 是实验性编码器，当前构建未启用；请启用对应 feature flag 并确认许可证后再使用。",
                        capability.id);
   }
   if (request.must_preserve_alpha && !capability.supports_alpha) {
     if (capability.mode == AvifEncoderMode::svt) {
-      return "svt-av1-hdr AVIF encoder does not support preserving alpha; use --alpha auto/off or --avif-encoder auto/aom.";
+      return "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha auto/off 或 --avif-encoder auto/aom。";
     }
-    return std::format("AVIF encoder {} does not support preserving alpha.", capability.id);
+    return std::format("AVIF encoder {} 不支持保留 alpha。", capability.id);
   }
   const auto chroma = applied_chroma_for(capability, request.requested_chroma);
   if (!contains_chroma(capability, chroma)) {
     if (capability.mode == AvifEncoderMode::svt) {
-      return "svt-av1-hdr AVIF encoder only supports 420 chroma; use --chroma 420/auto or --avif-encoder aom.";
+      return "svt-av1-hdr AVIF encoder 只支持 420 chroma；请使用 --chroma 420/auto 或 --avif-encoder aom。";
     }
-    return std::format("AVIF encoder {} does not support requested chroma {}.",
+    return std::format("AVIF encoder {} 不支持请求的 chroma {}。",
                        capability.id, chroma_mode_name(request.requested_chroma));
   }
   const auto bit_depth = applied_bit_depth_for(capability, request);
   if (bit_depth.value && !contains_bit_depth(capability, *bit_depth.value)) {
-    return std::format("AVIF encoder {} does not support requested {}-bit output.",
+    return std::format("AVIF encoder {} 不支持请求的 {}-bit 输出。",
                        capability.id, *bit_depth.value);
   }
   if (capability.max_single_image_width && request.width > *capability.max_single_image_width) {
@@ -188,7 +188,7 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
       return std::format("zenrav1e 是单图 AVIF 编码，输入边长超过 {}。",
                          *capability.max_single_image_width);
     }
-    return std::format("AVIF encoder {} does not support input width {} over {}.",
+    return std::format("AVIF encoder {} 不支持输入宽度 {} 超过 {}。",
                        capability.id, request.width, *capability.max_single_image_width);
   }
   if (capability.max_single_image_height && request.height > *capability.max_single_image_height) {
@@ -196,15 +196,15 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
       return std::format("zenrav1e 是单图 AVIF 编码，输入边长超过 {}。",
                          *capability.max_single_image_height);
     }
-    return std::format("AVIF encoder {} does not support input height {} over {}.",
+    return std::format("AVIF encoder {} 不支持输入高度 {} 超过 {}。",
                        capability.id, request.height, *capability.max_single_image_height);
   }
   if (capability.mode == AvifEncoderMode::svt &&
       request.pixel_count > encoding_defaults::svt_safe_max_pixels) {
-    return std::format("svt-av1-hdr AVIF encoder is disabled for images over {} pixels; use --avif-encoder auto/aom.",
+    return std::format("svt-av1-hdr AVIF encoder 已对超过 {} 像素的图像禁用；请使用 --avif-encoder auto/aom。",
                        encoding_defaults::svt_safe_max_pixels);
   }
-  return std::format("AVIF encoder {} is not available for this request.", capability.id);
+  return std::format("AVIF encoder {} 不适用于当前请求。", capability.id);
 }
 
 AvifEncoderSelection make_selection(const AvifEncoderCapability& capability,
@@ -248,7 +248,7 @@ std::expected<AvifEncoderSelection, std::string> select_auto_capability(
     const AvifEncoderSelectionRequest& request,
     std::span<const AvifEncoderCapability> capabilities) {
   if (request.requested_bit_depth && *request.requested_bit_depth > 12) {
-    return std::unexpected{std::format("AVIF auto does not support requested {}-bit output.",
+    return std::unexpected{std::format("AVIF auto 不支持请求的 {}-bit 输出。",
                                        *request.requested_bit_depth)};
   }
 
@@ -256,7 +256,13 @@ std::expected<AvifEncoderSelection, std::string> select_auto_capability(
                           std::string fallback_reason) -> std::expected<AvifEncoderSelection, std::string> {
     const auto* capability = find_capability(capabilities, mode);
     if (capability == nullptr) {
-      return std::unexpected{"Requested AVIF encoder is not registered."};
+      return std::unexpected{"请求的 AVIF encoder 未注册。"};
+    }
+    if (!capability_enabled_for_auto(*capability)) {
+      if (!capability_enabled_for_selection(*capability)) {
+        return std::unexpected{explicit_rejection_reason(*capability, request)};
+      }
+      return std::unexpected{std::format("AVIF encoder {} 当前未参与 auto 选择。", capability->id)};
     }
     if (!capability_matches(*capability, request)) {
       return std::unexpected{explicit_rejection_reason(*capability, request)};
@@ -269,24 +275,24 @@ std::expected<AvifEncoderSelection, std::string> select_auto_capability(
     if (request.allow_zenrav1e_alpha && zenrav1e != nullptr && zenrav1e->auto_alpha_selectable &&
         capability_matches(*zenrav1e, request)) {
       return make_selection(*zenrav1e, request,
-                            "auto selected zenrav1e for alpha after verified round-trip support.");
+                            "auto 选择 zenrav1e，因为 alpha 已通过 round-trip 支持验证。");
     }
-    return select(AvifEncoderMode::aom, "auto fell back to AOM because alpha must be preserved.");
+    return select(AvifEncoderMode::aom, "auto 回退到 AOM，因为必须保留 alpha。");
   }
 
   if (is_explicit_non_420(request.requested_chroma)) {
-    return select(AvifEncoderMode::aom, "auto fell back to AOM because chroma was explicitly requested above 420.");
+    return select(AvifEncoderMode::aom, "auto 回退到 AOM，因为用户明确请求高于 420 的 chroma。");
   }
 
   if (requested_bit_depth_above_10(request)) {
-    return select(AvifEncoderMode::aom, "auto fell back to AOM because bit-depth above 10 was explicitly requested.");
+    return select(AvifEncoderMode::aom, "auto 回退到 AOM，因为用户明确请求高于 10-bit 的 bit-depth。");
   }
 
   auto svt = select(AvifEncoderMode::svt, {});
   if (svt) {
     return svt;
   }
-  return select(AvifEncoderMode::aom, std::format("auto fell back to AOM because SVT was unavailable: {}", svt.error()));
+  return select(AvifEncoderMode::aom, std::format("auto 回退到 AOM，因为 SVT 不可用: {}", svt.error()));
 }
 
 }  // namespace awj_registry_detail
@@ -302,7 +308,7 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experime
                             .supports_avif_grid = false,
                             .enabled = false,
                             .auto_selectable = false,
-                            .unavailable_reason = "AVIF encoder svt-av1-hdr is not available in this build; the static libavif/SVT backend was not built.",
+                            .unavailable_reason = "AVIF encoder svt-av1-hdr 在当前构建中不可用；未构建静态 libavif/SVT 后端。",
                             .license = "BSD-3-Clause",
                             .default_speed = encoding_defaults::default_svtav1hdr_preset},
       AvifEncoderCapability{.mode = AvifEncoderMode::aom,
@@ -326,7 +332,7 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experime
                             .enabled = false,
                             .feature_enabled = enable_experimental,
                             .auto_selectable = false,
-                            .unavailable_reason = "AVIF encoder zenrav1e is not available in this build; the zenravif bridge was not built.",
+                            .unavailable_reason = "AVIF encoder zenrav1e 在当前构建中不可用；未构建 zenravif bridge。",
                             .license = "AGPL-3.0-only OR LicenseRef-Imazen-Commercial",
                             .default_speed = encoding_defaults::default_zenrav1e_preset},
   };
@@ -343,7 +349,7 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_build(
       case AvifEncoderMode::aom:
         capability.enabled = aom_available;
         if (!aom_available) {
-          capability.unavailable_reason = "AVIF encoder aom is not available in this libavif build.";
+          capability.unavailable_reason = "AVIF encoder aom 在当前 libavif 构建中不可用。";
         }
         break;
       case AvifEncoderMode::svt:
@@ -377,14 +383,14 @@ export std::expected<AvifEncoderSelection, std::string> select_avif_encoder_from
     const AvifEncoderSelectionRequest& request,
     std::span<const AvifEncoderCapability> capabilities) {
   if (request.requested_bit_depth && *request.requested_bit_depth > 12) {
-    return std::unexpected{std::format("AVIF encoder does not support requested {}-bit output.",
+    return std::unexpected{std::format("AVIF encoder 不支持请求的 {}-bit 输出。",
                                        *request.requested_bit_depth)};
   }
   if (request.requested_encoder != AvifEncoderMode::automatic) {
     const auto it = std::ranges::find(capabilities, request.requested_encoder,
                                       &AvifEncoderCapability::mode);
     if (it == capabilities.end()) {
-      return std::unexpected{"Requested AVIF encoder is not registered."};
+      return std::unexpected{"请求的 AVIF encoder 未注册。"};
     }
     if (!avif_registry_detail::capability_matches(*it, request)) {
       return std::unexpected{avif_registry_detail::explicit_rejection_reason(*it, request)};

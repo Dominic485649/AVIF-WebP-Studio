@@ -51,6 +51,7 @@ int main() {
           .requested_chroma = awj::ChromaMode::auto_keep,
           .requested_bit_depth = 8,
           .has_alpha = true,
+          .must_preserve_alpha = true,
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, true, true));
@@ -128,12 +129,12 @@ int main() {
           .requested_encoder = awj::AvifEncoderMode::automatic,
           .requested_chroma = awj::ChromaMode::auto_keep,
           .requested_bit_depth = 10,
-          .pixel_count = awj::encoding_defaults::large_image_threshold_pixels + 1,
+          .pixel_count = awj::encoding_defaults::ordinary_large_safe_max_pixels + 1,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, true, true));
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::zenrav1e ||
-      selected->fallback_reason.find("large") == std::string::npos) {
-    return fail("auto large opaque 420-compatible request did not select zenrav1e.");
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
+      selected->fallback_reason.find("SVT") == std::string::npos) {
+    return fail("auto over-SVT-limit opaque 420-compatible request did not fall back to AOM.");
   }
 
   rejected = awj::select_avif_encoder_from_capabilities(
@@ -142,6 +143,7 @@ int main() {
           .requested_chroma = awj::ChromaMode::auto_keep,
           .requested_bit_depth = 10,
           .has_alpha = true,
+          .must_preserve_alpha = true,
           .pixel_count = awj::encoding_defaults::large_image_threshold_pixels + 1,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(false, true, true, true));
@@ -261,6 +263,26 @@ int main() {
       auto_with_svt->speed != awj::encoding_defaults::default_svtav1hdr_preset) {
     return fail("auto should prefer svt-av1-hdr for ordinary opaque 420-compatible requests and use its default preset.");
   }
+
+  auto auto_disabled_svt_capabilities = awj::avif_encoder_capabilities_for_build(true, true, false, false);
+  for (auto& capability : auto_disabled_svt_capabilities) {
+    if (capability.mode == awj::AvifEncoderMode::svt) {
+      capability.auto_selectable = false;
+    }
+  }
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 8,
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      auto_disabled_svt_capabilities);
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
+      selected->fallback_reason.find("未参与 auto") == std::string::npos) {
+    return fail("auto should skip SVT when the capability is not auto-selectable.");
+  }
+
   selected = awj::select_avif_encoder_from_capabilities(
       awj::AvifEncoderSelectionRequest{
           .requested_encoder = awj::AvifEncoderMode::svt,

@@ -1,11 +1,13 @@
 module;
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <limits>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,6 +63,24 @@ struct SpeedMapping {
   std::string codec_key{};
 };
 
+struct EncodeTimingDiagnostics {
+  double decode_seconds{-1.0};
+  double prepare_seconds{-1.0};
+  double encode_seconds{-1.0};
+  double write_seconds{-1.0};
+  double visual_quality_search_seconds{-1.0};
+  double visual_quality_candidate_encode_seconds{-1.0};
+  double visual_quality_candidate_decode_seconds{-1.0};
+  double visual_quality_candidate_io_seconds{-1.0};
+  double visual_quality_luma_seconds{-1.0};
+  double gmsd_seconds{-1.0};
+  double ms_ssim_seconds{-1.0};
+  double visual_quality_metric_seconds{-1.0};
+  int visual_quality_candidate_count{};
+  int visual_quality_decode_memory_fallback_count{};
+  int visual_quality_gpu_fallback_count{};
+};
+
 struct SvtAv1HdrSettings {
   std::optional<int> crf{};
   int preset{encoding_defaults::default_svtav1hdr_preset};
@@ -101,6 +121,7 @@ struct EncodeDiagnostics {
   std::optional<int> source_transfer_characteristics{};
   std::optional<int> source_matrix_coefficients{};
   std::optional<int> source_color_range{};
+  std::optional<HdrContentLightMetadata> source_content_light{};
   std::optional<int> applied_color_primaries{};
   std::optional<int> applied_transfer_characteristics{};
   std::optional<int> applied_matrix_coefficients{};
@@ -126,6 +147,7 @@ struct EncodeDiagnostics {
   int encoder_threads{};
   std::uint64_t memory_budget_bytes{};
   bool used_decoder_fallback{};
+  EncodeTimingDiagnostics timing{};
 };
 
 struct NativeEncodeSettings {
@@ -159,6 +181,7 @@ struct NativeEncodeSettings {
   std::optional<int> source_transfer_characteristics{};
   std::optional<int> source_matrix_coefficients{};
   std::optional<int> source_color_range{};
+  std::optional<HdrContentLightMetadata> source_content_light{};
   std::optional<int> applied_color_primaries{};
   std::optional<int> applied_transfer_characteristics{};
   std::optional<int> applied_matrix_coefficients{};
@@ -173,11 +196,13 @@ struct NativeEncodeSettings {
   std::string encoder_fallback_reason{};
   bool strip_metadata{};
   bool visual_quality_fallback{};
+  bool visual_quality_gpu{true};
   bool jxl_jpeg_lossless_candidate{};
   bool avif_tune_iq{encoding_defaults::default_avif_tune_iq};
   SvtAv1HdrSettings svtav1hdr{};
   ResourcePlan resources{};
   std::optional<GridPlan> avif_grid_plan{};
+  std::span<const std::byte> jxl_rgb8_input{};
 };
 
 struct NativeEncodeResult {
@@ -185,6 +210,7 @@ struct NativeEncodeResult {
   EncodeDiagnostics diagnostics{};
   int final_quality{};
   bool lossless{};
+  bool visual_quality_target_met{true};
   int search_attempt_count{};
   std::optional<VisualScoreBreakdown> visual_score{};
   double raw_gmsd{};
@@ -210,6 +236,7 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .source_transfer_characteristics = settings.source_transfer_characteristics,
                            .source_matrix_coefficients = settings.source_matrix_coefficients,
                            .source_color_range = settings.source_color_range,
+                           .source_content_light = settings.source_content_light,
                            .applied_color_primaries = settings.applied_color_primaries,
                            .applied_transfer_characteristics = settings.applied_transfer_characteristics,
                            .applied_matrix_coefficients = settings.applied_matrix_coefficients,
@@ -241,7 +268,7 @@ class ImageDecoder {
     }
     if (decoded->image.width > std::numeric_limits<std::uint32_t>::max() ||
         decoded->image.height > std::numeric_limits<std::uint32_t>::max()) {
-      return std::unexpected{"图片尺寸超过当前大图调度上限。"};
+      return std::unexpected{"图片尺寸超过内部尺寸表示范围。"};
     }
     return make_image_dimensions(static_cast<std::uint32_t>(decoded->image.width),
                                  static_cast<std::uint32_t>(decoded->image.height));
@@ -255,7 +282,8 @@ class ImageEncoder {
   [[nodiscard]] virtual CodecCapabilities capabilities() const = 0;
   virtual std::expected<NativeEncodeResult, std::string> encode(
       const ImageBuffer& image,
-      const NativeEncodeSettings& settings) const = 0;
+      const NativeEncodeSettings& settings,
+      std::stop_token stop_token = {}) const = 0;
 };
 
 class CodecBackend {

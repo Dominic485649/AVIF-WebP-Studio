@@ -2,7 +2,8 @@ module;
 
 #include <expected>
 #include <filesystem>
-#include <limits>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -27,25 +28,27 @@ export class RawImageDecoder final : public ImageDecoder {
 
   std::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
-    auto decoded = read_raw_image_file(path);
-    if (!decoded) {
-      return std::unexpected{decoded.error()};
+    auto dimensions = probe_raw_image_dimensions(path);
+    if (!dimensions) {
+      return std::unexpected{dimensions.error()};
     }
-    if (decoded->width > std::numeric_limits<std::uint32_t>::max() ||
-        decoded->height > std::numeric_limits<std::uint32_t>::max()) {
-      return std::unexpected{"awj-raw 尺寸无效。"};
-    }
-    return decoder_common::make_image_dimensions_checked(static_cast<std::uint32_t>(decoded->width),
-                                                         static_cast<std::uint32_t>(decoded->height),
-                                                         "awj-raw");
+    return *dimensions;
   }
 
   std::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
-    auto image = read_raw_image_file(path);
-    if (!image) {
-      return std::unexpected{image.error()};
+    try {
+      auto image = read_raw_image_file(path);
+      if (!image) {
+        return std::unexpected{image.error()};
+      }
+      return ImageDecodeResult{.image = std::move(*image), .decoder_id = "awj-raw"};
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"raw 图像解码内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"raw 图像解码数据超过运行时限制。"};
+    } catch (const std::filesystem::filesystem_error&) {
+      return std::unexpected{"raw 图像解码文件系统访问失败。"};
     }
-    return ImageDecodeResult{.image = std::move(*image), .decoder_id = "awj-raw"};
   }
 };
 

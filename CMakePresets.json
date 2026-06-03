@@ -32,6 +32,7 @@
         "AVIF_STATIC_MSVC_RUNTIME": "ON",
         "AVIF_STATIC_SLINT": "ON",
         "AWJ_ENABLE_ZENRAVIF": "ON",
+        "AWJ_ENABLE_X64_V3": "ON",
         "AVIF_ENABLE_RELEASE_IPO": "OFF"
       }
     }

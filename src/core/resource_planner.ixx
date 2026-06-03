@@ -31,6 +31,7 @@ struct ResourcePlan {
   int encoder_threads_per_file{1};
   int global_thread_budget{1};
   std::uint64_t memory_limit_bytes{};
+  int memory_file_parallelism{1};
 };
 
 export std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
@@ -80,7 +81,8 @@ export ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
   return ResourcePlan{.file_parallelism = file_parallelism,
                       .encoder_threads_per_file = encoder_threads,
                       .global_thread_budget = budget,
-                      .memory_limit_bytes = memory_limit};
+                      .memory_limit_bytes = memory_limit,
+                      .memory_file_parallelism = memory_parallelism};
 }
 
 export ResourcePlan plan_large_deferred_resources(ResourcePlan base,
@@ -88,11 +90,14 @@ export ResourcePlan plan_large_deferred_resources(ResourcePlan base,
   const int budget = std::max(1, base.global_thread_budget);
   const int threads_per_file = std::max(1, std::min(8, budget));
   const int files = std::max(1, file_count);
-  const int file_parallelism = std::max(1, std::min(files, budget / threads_per_file));
+  const int memory_parallelism = std::max(1, base.memory_file_parallelism);
+  const int file_parallelism = std::max(
+      1, std::min({files, budget / threads_per_file, memory_parallelism}));
   return ResourcePlan{.file_parallelism = file_parallelism,
                       .encoder_threads_per_file = threads_per_file,
                       .global_thread_budget = budget,
-                      .memory_limit_bytes = base.memory_limit_bytes};
+                      .memory_limit_bytes = base.memory_limit_bytes,
+                      .memory_file_parallelism = memory_parallelism};
 }
 
 }  // namespace awj

@@ -16,7 +16,8 @@ $BuildDir = Join-Path $Repo "build\x64\Debug"
 if (-not $VcpkgRoot) {
     if ($env:VCPKG_ROOT) {
         $VcpkgRoot = $env:VCPKG_ROOT
-    } elseif (Test-Path "D:\Scoop\apps\vcpkg\current") {
+    }
+    elseif (Test-Path "D:\Scoop\apps\vcpkg\current") {
         $VcpkgRoot = "D:\Scoop\apps\vcpkg\current"
     }
 }
@@ -99,7 +100,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $OutputDir = Join-Path $Repo "bin\x64\Debug"
-$Keep = @("AWJ-cli.exe", "AWJ-studio.exe", "AWJ-cli.pdb", "AWJ-studio.pdb", "slint_cpp.dll")
+$Keep = @("AWJ-cli.exe", "AWJ-studio.exe", "AWJ-cli.pdb", "AWJ-studio.pdb", "AWJ-cli.exe.sha256", "AWJ-studio.exe.sha256", "slint_cpp.dll")
 if (Test-Path $OutputDir) {
     Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $Keep -notcontains $_.Name } | Remove-Item -Recurse -Force
     if (-not $SharedSlint) {

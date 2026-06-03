@@ -1,5 +1,18 @@
 # 更新日志
 
+## 0.6.1 - 2026-06-03
+
+0.6.1 是一次以 Visual Quality 默认体验、Studio 任务控制和批处理资源规划为核心的小版本更新。
+
+- 重构默认预设策略，Studio 默认从固定编码质量切换为 visual-quality 观感目标，平衡、快速、急速等预设更清楚地区分质量、体积与耗时取舍。
+- 完善 Visual Quality Search，补齐 GPU/CPU 切换、未达标候选兜底、候选复用、JXL RGB 输入缓存和更细的编码/解码/指标耗时诊断。
+- 强化取消与强制终止路径，CLI、Studio worker、批处理线程和候选搜索增加更细粒度 stop 检查，Studio 运行中支持强制终止并安全回收后台 worker。
+- 优化批处理资源规划，根据图像尺寸、输出格式、visual-quality 状态和内存预算区分普通任务、延后任务、内存超限任务与大图模式任务。
+- 改进 AVIF 大图提示，按当前构建能力识别 AOM grid 与实验 zenrav1e，队列、日志和 summary 中输出更明确的尺寸、原因与可用处理方式。
+- 扩展 summary.csv 与日志诊断字段，记录 visual-quality 分数、GMSD/MS-SSIM、候选次数、GPU/内存回退、速度参数、编码线程、内存预算和阶段耗时。
+- 调整 Studio 参数页与设置页说明，补充质量、视觉质量、内存、速度、WIC 兜底、GPU 加速和实验编码器等选项文案，并改用 HarmonyOS Sans SC 字体资源。
+- 更新构建版本到 0.6.1，同步 Debug/Release 脚本构建参数，继续保持 native codec 主线和 CLI/Studio 发布目标。
+
 ## 0.4.0-rc1 - 2026-05-25 (Pre-release)
 
 - 全面转向 Native 编码核心，彻底清理旧版依赖残留，重组为轻量高效的原生 codec 转换架构。

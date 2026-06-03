@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.4.1
+    VERSION 0.6.1
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -15,6 +15,7 @@ option(AVIF_STATIC_SLINT "Link Slint statically so AWJ-studio does not need slin
 option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bundles when all dependencies allow it" ON)
 option(AVIF_ENABLE_RELEASE_IPO "Enable interprocedural optimization for Release builds when the compiler supports it" OFF)
 option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targets" ON)
+option(AWJ_ENABLE_X64_V3 "Enable x64-v3/AVX2 code generation for project targets in Release builds" OFF)
 option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into the main executables" ON)
 option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into the main executables" ON)
 set(AWJ_SVTAV1HDR_GIT_REPOSITORY "https://github.com/juliobbv-p/svt-av1-hdr.git" CACHE STRING "svt-av1-hdr repository")
@@ -152,7 +153,8 @@ function(avif_enable_common_options target)
             $<$<CONFIG:Release>:/Ot>
             $<$<CONFIG:Release>:/Gy>
             $<$<CONFIG:Release>:/Gw>
-            $<$<CONFIG:Release>:/GF>)
+            $<$<CONFIG:Release>:/GF>
+            $<$<AND:$<CONFIG:Release>,$<BOOL:${AWJ_ENABLE_X64_V3}>>:/arch:AVX2>)
         target_compile_definitions(${target} PUBLIC
             NOMINMAX
             WIN32_LEAN_AND_MEAN)
@@ -312,7 +314,10 @@ endfunction()
 add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
 target_link_libraries(awj_base PUBLIC
-    scn::scn)
+    scn::scn
+    bcrypt
+    d3d11
+    d3dcompiler)
 target_sources(awj_base
     PUBLIC
         FILE_SET awj_base_modules TYPE CXX_MODULES FILES
@@ -321,6 +326,7 @@ target_sources(awj_base
             src/app/config.ixx
             src/core/visual_quality.ixx
             src/core/visual_metrics.ixx
+            src/core/visual_metrics_gpu.ixx
             src/core/image.ixx
             src/core/resource_planner.ixx
             src/core/codec.ixx
@@ -597,6 +603,7 @@ avif_enable_common_options(AWJ-studio)
 target_link_libraries(AWJ-studio PRIVATE
     awj_core
     Slint::Slint
+    dwmapi
     ole32
     shell32
     uxtheme

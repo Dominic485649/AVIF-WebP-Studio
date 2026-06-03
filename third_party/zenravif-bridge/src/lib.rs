@@ -49,6 +49,7 @@ pub extern "C" fn zenravif_bridge_encode_rgba8(
     speed: i32,
     bit_depth: i32,
     chroma: i32,
+    preserve_alpha: bool,
     threads: usize,
     keyint: i32,
     still_picture: bool,
@@ -64,9 +65,15 @@ pub extern "C" fn zenravif_bridge_encode_rgba8(
         if pixels.is_null() || out.is_null() {
             return Err("zenravif input/output pointer is null".to_string());
         }
-        if width == 0 || height == 0 || stride < width.saturating_mul(4) {
+        let row_bytes = width
+            .checked_mul(4)
+            .ok_or_else(|| "zenravif RGBA row byte count overflows".to_string())?;
+        if width == 0 || height == 0 || stride < row_bytes {
             return Err("zenravif RGBA buffer shape is invalid".to_string());
         }
+        let pixel_count = width
+            .checked_mul(height)
+            .ok_or_else(|| "zenravif RGBA pixel count overflows".to_string())?;
         let bit_depth = bit_depth_from_i32(bit_depth).map_err(str::to_string)?;
         let chroma = chroma_from_i32(chroma).map_err(str::to_string)?;
         let quality = quality.clamp(1, 100) as f32;
@@ -77,11 +84,20 @@ pub extern "C" fn zenravif_bridge_encode_rgba8(
         if !still_picture {
             return Err("zenravif bridge currently supports still_picture=true only".to_string());
         }
-        let mut rgba = Vec::<RGBA8>::with_capacity(width.saturating_mul(height));
+        let mut rgba = Vec::<RGBA8>::new();
+        rgba.try_reserve_exact(pixel_count)
+            .map_err(|_| "zenravif RGBA buffer allocation failed".to_string())?;
         for y in 0..height {
-            let row = slice::from_raw_parts(pixels.add(y.saturating_mul(stride)), width.saturating_mul(4));
+            let offset = y
+                .checked_mul(stride)
+                .ok_or_else(|| "zenravif RGBA row offset overflows".to_string())?;
+            offset
+                .checked_add(row_bytes)
+                .ok_or_else(|| "zenravif RGBA row range overflows".to_string())?;
+            let row = slice::from_raw_parts(pixels.add(offset), row_bytes);
             for px in row.chunks_exact(4) {
-                rgba.push(RGBA8::new(px[0], px[1], px[2], px[3]));
+                let alpha = if preserve_alpha { px[3] } else { 255 };
+                rgba.push(RGBA8::new(px[0], px[1], px[2], alpha));
             }
         }
         let image = Img::new(rgba.as_slice(), width, height);

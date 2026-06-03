@@ -6,6 +6,7 @@ export struct TaskRow {
     format: string,
     status: string,
     log: string,
+    warning: bool,
 }
 
 export struct LargeImageRow {
@@ -14,6 +15,8 @@ export struct LargeImageRow {
     reason: string,
     actions: string,
     status: string,
+    grid-available: bool,
+    zenrav1e-available: bool,
 }
 
 export struct ComboOption {
@@ -268,10 +271,11 @@ export component AwjStudio inherits Window {
     min-width: 820px;
     min-height: 560px;
 
-    in-out property <string> input-path: "input";
-    in-out property <int> input-mode-index: 1;
+    in-out property <string> input-path: "";
+    in-out property <int> input-mode-index: 0;
     in-out property <string> output-dir: "";
     in-out property <int> format-index: 0;
+    in-out property <int> preset-index: 2;
     in-out property <int> avif-encoder-index: 0;
     in property <[ComboOption]> avif-encoder-options: [{ text: "auto", enabled: true }, { text: "svt-av1-hdr", enabled: true }, { text: "aom", enabled: true }, { text: "zenrav1e", enabled: false }];
     in-out property <bool> experimental-encoders: true;
@@ -281,6 +285,8 @@ export component AwjStudio inherits Window {
     in-out property <string> webp-bit-depth-default: "";
     in-out property <string> quality-text: "";
     in-out property <string> visual-quality-text: "";
+    in-out property <bool> visual-quality-gpu: true;
+    in-out property <bool> visual-quality-fallback: false;
     in-out property <bool> allow-wic-fallback: true;
     in-out property <bool> quality-follows-format: true;
     in-out property <string> bit-depth-text: "";
@@ -296,6 +302,7 @@ export component AwjStudio inherits Window {
     in-out property <bool> template-time-selected: false;
     in-out property <bool> template-rand-selected: false;
     in-out property <bool> template-hash8-selected: false;
+    in-out property <bool> template-sha2568-selected: false;
     in-out property <int> collision-index: 0;
     in-out property <int> theme-index: 0;
     in-out property <bool> system-dark-mode: false;
@@ -308,8 +315,15 @@ export component AwjStudio inherits Window {
     in property <[TaskRow]> task-rows;
     in property <[LargeImageRow]> large-image-rows;
     in-out property <int> selected-large-image-index: -1;
+    in-out property <int> selected-large-image-action-index: 0;
+    in-out property <length> import-drop-zone-x: 0px;
+    in-out property <length> import-drop-zone-y: 0px;
+    in-out property <length> import-drop-zone-width: 0px;
+    in-out property <length> import-drop-zone-height: 0px;
+    property <length> parameter-control-width: 230px;
+    property <length> parameter-control-height: 38px;
 
-    property <int> selected-page: 0;
+    in-out property <int> selected-page: 1;
     property <int> chroma-index-before-forced: 0;
     property <bool> chroma-forced-by-avif-encoder: false;
     property <bool> dark-mode: root.theme-index == 2 || (root.theme-index == 0 && root.system-dark-mode);
@@ -350,16 +364,22 @@ export component AwjStudio inherits Window {
     callback start-conversion();
     callback cancel-conversion();
     callback clear-tasks();
+    callback browse-large-image-file();
+    callback browse-large-image-folder();
     callback large-image-action-requested(int, string);
     callback format-defaults-requested(int);
+    callback preset-defaults-requested(int);
     callback toggle-template-token(string);
+    callback title-bar-theme-requested(bool);
 
     init => {
         Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+        root.title-bar-theme-requested(root.dark-mode);
     }
 
     changed dark-mode => {
         Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+        root.title-bar-theme-requested(root.dark-mode);
     }
 
     changed format-index => {
@@ -377,6 +397,10 @@ export component AwjStudio inherits Window {
 
     changed experimental-encoders => {
         root.format-defaults-requested(root.format-index);
+    }
+
+    changed preset-index => {
+        root.preset-defaults-requested(root.preset-index);
     }
 
     changed avif-encoder-index => {
@@ -489,8 +513,10 @@ export component AwjStudio inherits Window {
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 0; }
                     }
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+
                     NavItem {
-                        label: "大图模式";
+                        label: "设置";
                         selected: root.selected-page == 2;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -498,19 +524,6 @@ export component AwjStudio inherits Window {
                         normal-text: root.text-body;
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 2; }
-                    }
-
-                    Rectangle { vertical-stretch: 1; background: transparent; }
-
-                    NavItem {
-                        label: "设置";
-                        selected: root.selected-page == 3;
-                        normal-background: transparent;
-                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
-                        selected-background: root.dark-mode ? #188697 : #0f7c8c;
-                        normal-text: root.text-body;
-                        selected-text: #ffffff;
-                        clicked => { root.selected-page = 3; }
                     }
                 }
             }
@@ -521,17 +534,19 @@ export component AwjStudio inherits Window {
                 background: transparent;
 
                 if root.selected-page == 0: ScrollView {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
                     VerticalLayout {
                         padding-left: 4px;
                         padding-right: 4px;
-                        spacing: 14px;
+                        spacing: 8px;
 
                         HorizontalLayout {
                             spacing: 14px;
 
                             Rectangle {
                                 horizontal-stretch: 1;
-                                min-height: 440px;
+                                min-height: 690px;
                                 border-radius: 18px;
                                 background: root.panel-bg;
                                 border-color: root.panel-border;
@@ -539,106 +554,118 @@ export component AwjStudio inherits Window {
                                 animate background, border-color { duration: 180ms; easing: ease-out; }
 
                                 VerticalLayout {
-                                    padding: 22px;
-                                    spacing: 18px;
+                                    padding: 16px;
+                                    spacing: 8px;
 
-                                    HorizontalLayout {
-                                        spacing: 22px;
+                                    VerticalLayout {
+                                        spacing: 6px;
 
-                                        VerticalLayout {
-                                            spacing: 18px;
-                                            horizontal-stretch: 1;
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                Text { text: "后端"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                Rectangle {
-                                                    horizontal-stretch: 1;
-                                                    height: 38px;
-                                                    border-radius: 6px;
-                                                    border-width: 1px;
-                                                    border-color: root.field-border;
-                                                    background: root.field-bg;
-                                                    animate background, border-color { duration: 180ms; easing: ease-out; }
-                                                    Text { x: 11px; width: parent.width - 22px; text: "原生 native"; color: root.text-body; font-size: 13px; vertical-alignment: center; overflow: elide; }
-                                                }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                Text { text: "格式"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                SoftComboBox { model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                opacity: root.format-index == 0 ? 1.0 : 0.56;
-                                                animate opacity { duration: 140ms; easing: ease-out; }
-                                                Text { text: "编码器"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                SoftComboBox { model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running && root.format-index == 0; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                Text { text: "线程"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                LineEdit { text <=> root.threads-text; placeholder-text: "自动/按需填线程数"; input-type: number; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                Text { text: "内存"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                LineEdit { text <=> root.memory-limit-text; placeholder-text: "自动/按需填内存上限，单位是GiB"; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
-                                            }
-
-                                            Rectangle {}
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "预设"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "视觉无损", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            Text { text: "默认平衡；自定义不改质量字段。无损=q100；视觉无损=vq75；平衡=vq50；快速=vq25；急速=vq17。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                                         }
 
-                                        VerticalLayout {
-                                            spacing: 18px;
-                                            horizontal-stretch: 1;
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                Text { text: "质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                LineEdit { text <=> root.quality-text; placeholder-text: root.visual-quality-text.is-empty ? "1-100" : "由视觉质量自动控制"; enabled: !root.running && root.visual-quality-text.is-empty; horizontal-stretch: 1; opacity: root.visual-quality-text.is-empty ? 1.0 : 0.56; animate opacity { duration: 140ms; easing: ease-out; } height: 38px; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                Text { text: "视觉质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                LineEdit { text <=> root.visual-quality-text; placeholder-text: "空由质量决定，1-100"; input-type: number; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                Text { text: "速度"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                LineEdit { text <=> root.speed-text; placeholder-text: "默认/可选0-10"; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                opacity: root.format-index == 1 || root.format-index == 2 ? 0.56 : 1.0;
-                                                animate opacity { duration: 140ms; easing: ease-out; }
-                                                Text { text: "位深"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                LineEdit { text <=> root.bit-depth-text; placeholder-text: root.format-index == 1 ? "8 bit" : (root.format-index == 2 ? "JXL 不支持手动位深" : "保持原片"); enabled: !root.running && root.format-index == 0; horizontal-stretch: 1; height: 38px; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                opacity: root.format-index == 0 && root.avif-encoder-index != 1 ? 1.0 : 0.56;
-                                                animate opacity { duration: 140ms; easing: ease-out; }
-                                                Text { text: "色度采样"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                SoftComboBox { model: [{ text: "auto", enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running && root.format-index == 0 && root.avif-encoder-index != 1; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                            }
-
-                                            HorizontalLayout {
-                                                spacing: 12px;
-                                                opacity: root.format-index == 0 ? 1.0 : 0.56;
-                                                animate opacity { duration: 140ms; easing: ease-out; }
-                                                Text { text: "透明通道"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                                SoftComboBox { model: [{ text: "强制开启", enabled: true }, { text: "自动", enabled: true }, { text: "关闭", enabled: true }]; current-index <=> root.alpha-policy-index; enabled: !root.running && root.format-index == 0; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                            }
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "格式"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            Text { text: "输出格式：AVIF 体积优先、适合归档；WebP 兼容优先、适合网页；JXL 偏高保真与再编辑。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                                         }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            opacity: root.format-index == 0 ? 1.0 : 0.56;
+                                            animate opacity { duration: 140ms; easing: ease-out; }
+                                            Text { text: "编码器"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running && root.format-index == 0; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            Text { text: "仅 AVIF：auto 按资源自动选择；svt-av1-hdr 偏高吞吐；aom 支持 grid；zenrav1e 为实验项，需在设置中启用。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "线程"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { text <=> root.threads-text; placeholder-text: "自动/auto/线程数"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            Text { text: "范围：auto 或正整数；留空等同自动。线程越多不一定越快，程序会结合任务数与内存预算规划并发。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "内存"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { text <=> root.memory-limit-text; placeholder-text: "例如 4（单位 GiB）"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            Text { text: "重点：只能填写数字，单位固定 GiB；例如 4 表示 4 GiB。留空时按系统可用内存自动规划，避免过量并发。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { text <=> root.quality-text; placeholder-text: root.visual-quality-text.is-empty ? "1-100/q90/0.9" : "由视觉质量自动控制"; enabled: !root.running && root.visual-quality-text.is-empty; width: root.parameter-control-width; opacity: root.visual-quality-text.is-empty ? 1.0 : 0.56; animate opacity { duration: 140ms; easing: ease-out; } height: root.parameter-control-height; }
+                                            Text { text: "范围：1-100、q90 或 0.9 等写法；数值越高质量越好、体积越大。填写视觉质量后，此项会由搜索流程接管。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "视觉质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { text <=> root.visual-quality-text; placeholder-text: "空由质量决定，1-100"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            Text { text: "重点：留空=关闭；填写 1-100 后会搜索多个候选，并以 GMSD/MS-SSIM 等指标判断是否达到目标质量。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "速度"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { text <=> root.speed-text; placeholder-text: "默认/可选0-10"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            Text { text: "范围：通常 0-10；数值越低通常越慢但压缩率更高。留空使用当前预设与编码器默认速度。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            opacity: root.format-index == 1 || root.format-index == 2 ? 0.56 : 1.0;
+                                            animate opacity { duration: 140ms; easing: ease-out; }
+                                            Text { text: "位深"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { text <=> root.bit-depth-text; placeholder-text: root.format-index == 1 ? "8 bit" : (root.format-index == 2 ? "JXL 不支持手动位深" : "保持原片"); enabled: !root.running && root.format-index == 0; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            Text { text: "仅 AVIF 可手动设置；留空=保持原片。常用 8/10/12 bit；WebP 固定走格式默认，JXL 不支持这里手动位深。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            opacity: root.format-index == 0 && root.avif-encoder-index != 1 ? 1.0 : 0.56;
+                                            animate opacity { duration: 140ms; easing: ease-out; }
+                                            Text { text: "色度采样"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { model: [{ text: "auto", enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running && root.format-index == 0 && root.avif-encoder-index != 1; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            Text { text: "AVIF aom/auto 可用：auto 保持推荐采样；444 保留更多颜色细节；420 体积更小但色彩采样更强。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            opacity: root.format-index == 0 ? 1.0 : 0.56;
+                                            animate opacity { duration: 140ms; easing: ease-out; }
+                                            Text { text: "透明通道"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { model: [{ text: "强制开启", enabled: true }, { text: "自动", enabled: true }, { text: "关闭", enabled: true }]; current-index <=> root.alpha-policy-index; enabled: !root.running && root.format-index == 0; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            Text { text: "仅 AVIF：自动会按源图是否含透明决定；强制开启保留 alpha 通道；关闭会丢弃透明信息以减小体积。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            opacity: root.format-index == 0 ? 1.0 : 0.56;
+                                            animate opacity { duration: 140ms; easing: ease-out; }
+                                            Text { text: "大图处理"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { model: [{ text: "zenrav1e", enabled: true }, { text: "grid", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running && root.format-index == 0; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            Text { text: "超大图处理方式：>2000万像素时自动进入大图路径；可选择 zenrav1e 或 grid。1000万-2000万像素会等待小图完成后，继续使用 aom/svt 等普通编码器多线程执行。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                        }
+
                                     }
 
                                 }
@@ -658,6 +685,30 @@ export component AwjStudio inherits Window {
                         border-width: 1px;
                         animate background, border-color { duration: 180ms; easing: ease-out; }
 
+                        import-drop-zone-probe := Rectangle {
+                            width: parent.width;
+                            height: parent.height;
+                            background: transparent;
+                            init => {
+                                root.import-drop-zone-x = self.absolute-position.x;
+                                root.import-drop-zone-y = self.absolute-position.y;
+                                root.import-drop-zone-width = self.width;
+                                root.import-drop-zone-height = self.height;
+                            }
+                            changed width => {
+                                root.import-drop-zone-x = self.absolute-position.x;
+                                root.import-drop-zone-y = self.absolute-position.y;
+                                root.import-drop-zone-width = self.width;
+                                root.import-drop-zone-height = self.height;
+                            }
+                            changed height => {
+                                root.import-drop-zone-x = self.absolute-position.x;
+                                root.import-drop-zone-y = self.absolute-position.y;
+                                root.import-drop-zone-width = self.width;
+                                root.import-drop-zone-height = self.height;
+                            }
+                        }
+
                         VerticalLayout {
                             padding: 22px;
                             spacing: 14px;
@@ -670,40 +721,66 @@ export component AwjStudio inherits Window {
                                     spacing: 10px;
                                     Text { text: "输入路径"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                                     LineEdit { text <=> root.input-path; placeholder-text: "输入图片文件或文件夹路径"; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
-                                    SoftComboBox { model: [{ text: "文件", enabled: true }, { text: "文件夹", enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: 100px; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                    SoftButton { dark-mode: root.dark-mode; text: "选择"; width: 68px; height: 38px; enabled: !root.running; clicked => { root.browse-input(); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "打开"; width: 68px; height: 38px; clicked => { root.open-input(); } }
+                                    Rectangle {
+                                        width: 302px;
+                                        height: 38px;
+                                        background: transparent;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                                            SoftComboBox { model: [{ text: "文件", enabled: true }, { text: "文件夹", enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: 126px; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            SoftButton { dark-mode: root.dark-mode; text: "选择"; width: 68px; height: 38px; enabled: !root.running; clicked => { root.browse-input(); } }
+                                            SoftButton { dark-mode: root.dark-mode; text: "打开"; width: 68px; height: 38px; clicked => { root.open-input(); } }
+                                        }
+                                    }
                                 }
 
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "输出目录"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                                     LineEdit { text <=> root.output-dir; placeholder-text: "默认与输入同目录"; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
-                                    Rectangle { width: 100px; background: transparent; }
-                                    SoftButton { dark-mode: root.dark-mode; text: "选择"; width: 68px; height: 38px; enabled: !root.running; clicked => { root.browse-output(); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "打开"; width: 68px; height: 38px; clicked => { root.open-output(); } }
+                                    Rectangle {
+                                        width: 302px;
+                                        height: 38px;
+                                        background: transparent;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                                            SoftButton { dark-mode: root.dark-mode; text: "选择"; width: 68px; height: 38px; enabled: !root.running; clicked => { root.browse-output(); } }
+                                            SoftButton { dark-mode: root.dark-mode; text: "打开"; width: 68px; height: 38px; clicked => { root.open-output(); } }
+                                        }
+                                    }
                                 }
 
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "命名规则"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                                     LineEdit { text <=> root.template-text; placeholder-text: "例：{name}_{date}"; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
-                                    Text { text: "重复处理"; width: 68px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox {
-                                        model: [{ text: "覆盖", enabled: true }, { text: "跳过", enabled: true }, { text: "追加时间", enabled: true }, { text: "追加随机", enabled: true }];
-                                        current-index <=> root.collision-index;
-                                        enabled: !root.running;
-                                        width: 178px;
-                                        normal-background: root.combo-bg;
-                                        hover-background: root.combo-bg-hover;
-                                        disabled-background: root.combo-bg-disabled;
-                                        selected-background: root.combo-selected-bg;
-                                        normal-border: root.combo-border;
-                                        hover-border: root.combo-border-hover;
-                                        normal-text: root.text-body;
-                                        disabled-text: root.text-soft;
-                                        muted-text: root.text-muted;
-                                        selected-text: root.accent-strong;
+                                    Rectangle {
+                                        width: 302px;
+                                        height: 38px;
+                                        background: transparent;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                                            Text { text: "重复处理"; width: 68px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox {
+                                                model: [{ text: "覆盖", enabled: true }, { text: "跳过", enabled: true }, { text: "追加时间", enabled: true }, { text: "追加随机", enabled: true }];
+                                                current-index <=> root.collision-index;
+                                                enabled: !root.running;
+                                                width: 178px;
+                                                normal-background: root.combo-bg;
+                                                hover-background: root.combo-bg-hover;
+                                                disabled-background: root.combo-bg-disabled;
+                                                selected-background: root.combo-selected-bg;
+                                                normal-border: root.combo-border;
+                                                hover-border: root.combo-border-hover;
+                                                normal-text: root.text-body;
+                                                disabled-text: root.text-soft;
+                                                muted-text: root.text-muted;
+                                                selected-text: root.accent-strong;
+                                            }
+                                        }
                                     }
                                 }
 
@@ -715,6 +792,7 @@ export component AwjStudio inherits Window {
                                     SoftButton { dark-mode: root.dark-mode; text: "时间"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
                                     SoftButton { dark-mode: root.dark-mode; text: "随机"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
                                     SoftButton { dark-mode: root.dark-mode; text: "哈希"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
                             }
@@ -728,11 +806,12 @@ export component AwjStudio inherits Window {
 
                             HorizontalLayout {
                                 spacing: 12px;
-                                SoftButton { dark-mode: root.dark-mode; text: root.running ? "停止后重启" : "开始转换"; variant: "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
+                                SoftButton { dark-mode: root.dark-mode; text: root.running ? "强制终止" : "开始转换"; variant: "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
                                 SoftButton { dark-mode: root.dark-mode; text: "取消"; variant: "danger"; height: 42px; enabled: root.running; horizontal-stretch: 1; clicked => { root.cancel-conversion(); } }
                                 SoftButton { dark-mode: root.dark-mode; text: "清空"; height: 42px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
                                 SoftButton { dark-mode: root.dark-mode; text: "打开输出目录"; height: 42px; horizontal-stretch: 1; clicked => { root.open-output(); } }
                             }
+
                         }
                     }
 
@@ -759,10 +838,10 @@ export component AwjStudio inherits Window {
                                     padding-left: 10px;
                                     padding-right: 10px;
                                     spacing: 10px;
-                                    Text { text: "文件名"; width: 260px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "文件名"; width: 220px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
                                     Text { text: "格式"; width: 72px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
                                     Text { text: "状态"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "日志"; width: 340px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: "日志"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
                                 }
                             }
 
@@ -792,10 +871,10 @@ export component AwjStudio inherits Window {
                                              padding-left: 10px;
                                              padding-right: 10px;
                                              spacing: 10px;
-                                             Text { text: row.filename; width: 260px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                             Text { text: row.filename; width: 220px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                              Text { text: row.format; width: 72px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                             Text { text: row.status; horizontal-stretch: 1; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                             Text { text: row.log; width: 340px; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                             Text { text: row.status; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                             Text { text: row.log; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                          }
                                      }
                                  }
@@ -829,154 +908,6 @@ export component AwjStudio inherits Window {
                         spacing: 14px;
 
                         Rectangle {
-                            height: 120px;
-                            border-radius: 18px;
-                            background: root.chrome-bg;
-                            border-color: root.panel-border;
-                            border-width: 1px;
-                            animate background, border-color { duration: 180ms; easing: ease-out; }
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: 6px;
-                                Text { text: "大图模式"; color: root.text-strong; font-size: 30px; font-weight: 800; }
-                                Text { text: "超出普通 AVIF 硬编码队列限制的图片会进入这里，可选择 grid 或 zenrav1e 单独处理。"; color: root.text-muted; font-size: 14px; }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 14px;
-
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                min-height: 520px;
-                                border-radius: 18px;
-                                background: root.panel-bg;
-                                border-color: root.panel-border;
-                                border-width: 1px;
-                                animate background, border-color { duration: 180ms; easing: ease-out; }
-                                VerticalLayout {
-                                    padding: 18px;
-                                    spacing: 10px;
-                                    Text { text: "大图队列"; color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                    Text { text: root.large-image-rows.length == 0 ? "暂无大图任务。开始 AVIF 转换后，>=30M 像素或任一边超过 65536 的图片会自动移入这里。" : "选择一项后使用右侧操作继续处理。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
-
-                                    Rectangle {
-                                        height: 32px;
-                                        border-radius: 9px;
-                                        background: root.field-bg;
-                                        border-color: root.field-border;
-                                        border-width: 1px;
-                                        animate background, border-color { duration: 180ms; easing: ease-out; }
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 10px;
-                                            spacing: 10px;
-                                            Text { text: "文件名"; width: 240px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: "尺寸"; width: 150px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: "原因"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: "状态"; width: 170px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        vertical-stretch: 1;
-                                        border-radius: 12px;
-                                        background: root.dark-mode ? #151b25 : #ffffff;
-                                        border-color: root.panel-border;
-                                        border-width: 1px;
-                                        clip: true;
-                                        animate background, border-color { duration: 180ms; easing: ease-out; }
-
-                                        if root.large-image-rows.length == 0: Text {
-                                            text: "暂无大图任务";
-                                            color: root.text-muted;
-                                            font-size: 13px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-
-                                        if root.large-image-rows.length > 0: ListView {
-                                            for row[index] in root.large-image-rows: Rectangle {
-                                                background: index == root.selected-large-image-index ? root.accent-soft : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent);
-                                                border-radius: 6px;
-                                                height: 40px;
-                                                animate background { duration: 120ms; easing: ease-out; }
-                                                HorizontalLayout {
-                                                    padding-left: 10px;
-                                                    padding-right: 10px;
-                                                    spacing: 10px;
-                                                    Text { text: row.filename; width: 240px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                    Text { text: row.dimensions; width: 150px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                                    Text { text: row.reason; horizontal-stretch: 1; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                    Text { text: row.status; width: 170px; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                }
-                                                TouchArea { clicked => { root.selected-large-image-index = index; } }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: 360px;
-                                min-height: 520px;
-                                border-radius: 18px;
-                                background: root.panel-bg;
-                                border-color: root.panel-border;
-                                border-width: 1px;
-                                animate background, border-color { duration: 180ms; easing: ease-out; }
-                                VerticalLayout {
-                                    padding: 22px;
-                                    spacing: 14px;
-                                    Text { text: "处理方式"; color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].filename : "未选择大图任务"; color: root.text-body; font-size: 14px; font-weight: 700; overflow: elide; }
-                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].dimensions : ""; color: root.text-muted; font-size: 13px; }
-                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].actions : "请先在左侧选择一项。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
-                                    SoftButton { dark-mode: root.dark-mode; text: "使用 AVIF grid"; variant: "action"; height: 42px; enabled: !root.running && root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length; clicked => { root.large-image-action-requested(root.selected-large-image-index, "grid"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "使用 zenrav1e"; height: 42px; enabled: !root.running && root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length; clicked => { root.large-image-action-requested(root.selected-large-image-index, "zenrav1e"); } }
-
-                                    Rectangle {
-                                        border-radius: 12px;
-                                        background: root.panel-bg-soft;
-                                        border-color: root.field-border;
-                                        border-width: 1px;
-                                        animate background, border-color { duration: 180ms; easing: ease-out; }
-                                        VerticalLayout {
-                                            padding: 14px;
-                                            spacing: 8px;
-                                            Text { text: "规则"; color: root.text-strong; font-size: 15px; font-weight: 800; }
-                                            Text { text: "• grid 使用 libavif + AOM 的 AVIF grid，不是 AV1 tile。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
-                                            Text { text: "• zenrav1e 仅生成单图 AVIF，不支持 grid，边长必须 <= 65536。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
-                                            Text { text: "• 自动 grid 默认 16384 x 8704 tile，优先寻找可整除分块；若必须 padding，当前会拒绝编码以避免输出尺寸扩大。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if root.selected-page == 3: ScrollView {
-                    VerticalLayout {
-                        padding-left: 4px;
-                        padding-right: 4px;
-                        spacing: 20px;
-
-                        Rectangle {
-                            height: 120px;
-                            border-radius: 18px;
-                            background: root.chrome-bg;
-                            border-color: root.panel-border;
-                            border-width: 1px;
-                            animate background, border-color { duration: 180ms; easing: ease-out; }
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: 6px;
-                                Text { text: "设置"; color: root.text-strong; font-size: 30px; font-weight: 800; }
-                            }
-                        }
-
-                        Rectangle {
                             border-radius: 18px;
                             background: root.panel-bg;
                             border-color: root.panel-border;
@@ -989,8 +920,7 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 12px;
                                     Text { text: "主题"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox { model: [{ text: "跟随系统", enabled: true }, { text: "浅色", enabled: true }, { text: "深色", enabled: true }]; current-index <=> root.theme-index; width: 250px; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                    Rectangle { background: transparent; }
+                                    SoftComboBox { model: [{ text: "跟随系统", enabled: true }, { text: "浅色", enabled: true }, { text: "深色", enabled: true }]; current-index <=> root.theme-index; horizontal-stretch: 1; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
                                 }
                             }
                         }
@@ -1012,8 +942,18 @@ export component AwjStudio inherits Window {
                                 }
                                 VerticalLayout {
                                     spacing: 8px;
+                                    CheckBox { text: "GPU 加速视觉质量"; checked <=> root.visual-quality-gpu; enabled: !root.running; }
+                                    Text { text: "默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM；关闭后使用 CPU 路径，便于兼容性排查和结果对比。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                }
+                                VerticalLayout {
+                                    spacing: 8px;
+                                    CheckBox { text: "视觉质量未达标时兜底输出"; checked <=> root.visual-quality-fallback; enabled: !root.running && !root.visual-quality-text.is-empty; }
+                                    Text { text: "填写视觉质量后生效。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
+                                }
+                                VerticalLayout {
+                                    spacing: 8px;
                                     CheckBox { text: "启用实验性编码器（zenrav1e）"; checked <=> root.experimental-encoders; enabled: !root.running; }
-                                    Text { text: "启用后，构建支持时可显式选择 zenrav1e；auto 仅在大图 opaque 420 <=10-bit fallback 路径中使用它。不可用时选项会置灰。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: "启用后，构建支持时可显式选择 zenrav1e；普通队列 auto 不会选择实验编码器；大图模式中可手动选择 zenrav1e。不可用时选项会置灰。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
                                 }
                             }
                         }

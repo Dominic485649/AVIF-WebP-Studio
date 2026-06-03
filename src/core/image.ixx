@@ -48,6 +48,11 @@ struct ImagePlane {
   std::size_t stride{};
 };
 
+struct HdrContentLightMetadata {
+  std::uint16_t max_cll{};
+  std::uint16_t max_pall{};
+};
+
 struct ImageSourceInfo {
   PixelFormat pixel_format{PixelFormat::unknown};
   int bit_depth{};
@@ -55,6 +60,7 @@ struct ImageSourceInfo {
   std::optional<int> transfer_characteristics{};
   std::optional<int> matrix_coefficients{};
   std::optional<int> color_range{};
+  std::optional<HdrContentLightMetadata> content_light{};
   bool has_hdr_metadata{};
   std::string color_metadata_source{};
 };

@@ -4,6 +4,7 @@ module;
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,46 @@ export ImageDimensions make_image_dimensions(std::uint32_t width,
                          .height = height,
                          .pixel_count = static_cast<std::uint64_t>(width) *
                                         static_cast<std::uint64_t>(height)};
+}
+
+export std::uint64_t decoded_rgba_bytes_for_dimensions(ImageDimensions dimensions) noexcept {
+  constexpr std::uint64_t channels = 4;
+  constexpr auto max_value = std::numeric_limits<std::uint64_t>::max();
+  const auto width = static_cast<std::uint64_t>(dimensions.width);
+  const auto height = static_cast<std::uint64_t>(dimensions.height);
+  if (width == 0 || height == 0) {
+    return 1;
+  }
+  if (width > max_value / height) {
+    return max_value;
+  }
+  const auto pixels = width * height;
+  if (pixels > max_value / channels) {
+    return max_value;
+  }
+  return std::max<std::uint64_t>(1, pixels * channels);
+}
+
+export std::uint64_t visual_quality_working_set_bytes_for_dimensions(
+    ImageDimensions dimensions) noexcept {
+  constexpr std::uint64_t multiplier = 7;
+  const auto decoded_rgba_bytes = decoded_rgba_bytes_for_dimensions(dimensions);
+  const auto max_value = std::numeric_limits<std::uint64_t>::max();
+  if (decoded_rgba_bytes > max_value / multiplier) {
+    return max_value;
+  }
+  return std::max<std::uint64_t>(1, decoded_rgba_bytes * multiplier);
+}
+
+export std::uint64_t avif_encode_working_set_bytes_for_dimensions(
+    ImageDimensions dimensions) noexcept {
+  constexpr std::uint64_t multiplier = 3;
+  const auto decoded_rgba_bytes = decoded_rgba_bytes_for_dimensions(dimensions);
+  const auto max_value = std::numeric_limits<std::uint64_t>::max();
+  if (decoded_rgba_bytes > max_value / multiplier) {
+    return max_value;
+  }
+  return std::max<std::uint64_t>(1, decoded_rgba_bytes * multiplier);
 }
 
 export LargeImageDecision classify_large_image(ImageDimensions dimensions,
@@ -119,7 +160,7 @@ export std::string large_image_reason_name(LargeImageReason reason) {
 namespace large_image_plan_detail {
 
 std::uint32_t ceil_div(std::uint32_t value, std::uint32_t divisor) noexcept {
-  return divisor == 0 ? 0u : (value + divisor - 1u) / divisor;
+  return divisor == 0 ? 0u : value / divisor + (value % divisor == 0 ? 0u : 1u);
 }
 
 std::expected<std::uint32_t, std::string> next_divisible_partition(
@@ -189,6 +230,10 @@ std::expected<GridPlan, std::string> make_plan(std::uint32_t width,
   }
   const auto tile_width = padding ? ceil_div(width, cols) : width / cols;
   const auto tile_height = padding ? ceil_div(height, rows) : height / rows;
+  const auto max_uint32 = std::numeric_limits<std::uint32_t>::max();
+  if (tile_width > max_uint32 / cols || tile_height > max_uint32 / rows) {
+    return std::unexpected{"grid padding 后尺寸超过运行时限制。"};
+  }
   const auto padded_width = tile_width * cols;
   const auto padded_height = tile_height * rows;
   return GridPlan{.cols = cols,

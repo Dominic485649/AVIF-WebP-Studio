@@ -13,15 +13,15 @@ export module awj.visual_quality;
 export namespace awj {
 
 inline constexpr double GMSD_BEST = 0.0025;
-inline constexpr double GMSD_WORST = 0.22;
-inline constexpr double GMSD_CURVE_GAMMA = 0.82;
+inline constexpr double GMSD_WORST = 0.60;
+inline constexpr double GMSD_CURVE_GAMMA = 0.70;
 
 inline constexpr double MSSSIM_BEST = 0.9998;
-inline constexpr double MSSSIM_WORST = 0.82;
-inline constexpr double MSSSIM_CURVE_GAMMA = 0.70;
+inline constexpr double MSSSIM_WORST = 0.995;
+inline constexpr double MSSSIM_CURVE_GAMMA = 1.0;
 
-inline constexpr double GMSD_WEIGHT = 0.45;
-inline constexpr double MSSSIM_WEIGHT = 0.55;
+inline constexpr double GMSD_WEIGHT = 0.90;
+inline constexpr double MSSSIM_WEIGHT = 0.10;
 
 inline constexpr int ENCODER_QUALITY_MIN = 1;
 inline constexpr int ENCODER_QUALITY_MAX = 100;
@@ -112,16 +112,15 @@ export double normalize_msssim_to_quality_score(double ms_ssim) noexcept {
   if (denominator <= 0.0 || !std::isfinite(denominator)) {
     return 1.0;
   }
-  double t = std::log(worst_error / error) / denominator;
-  t = std::pow(visual_quality_detail::clamp01(t), MSSSIM_CURVE_GAMMA);
-  return std::clamp(1.0 + 98.0 * t, 1.0, 99.0);
+  double penalty = std::log(error / best_error) / denominator;
+  penalty = std::pow(visual_quality_detail::clamp01(penalty), MSSSIM_CURVE_GAMMA);
+  return std::clamp(99.0 - 98.0 * penalty, 1.0, 99.0);
 }
 
 export VisualScoreBreakdown calculate_visual_score(double gmsd,
                                                    double ms_ssim) noexcept {
   const double qg = normalize_gmsd_to_quality_score(gmsd);
   const double qm = normalize_msssim_to_quality_score(ms_ssim);
-  // visual_score 是项目内置视觉质量估计，用于自动搜索编码参数，并非人类主观 MOS 分数。
   return VisualScoreBreakdown{.visual_score = GMSD_WEIGHT * qg + MSSSIM_WEIGHT * qm,
                               .gmsd_quality_score = qg,
                               .msssim_quality_score = qm};

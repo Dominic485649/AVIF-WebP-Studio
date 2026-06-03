@@ -17,7 +17,8 @@ $BuildDir = Join-Path $Repo "build\x64\Release"
 if (-not $VcpkgRoot) {
     if ($env:VCPKG_ROOT) {
         $VcpkgRoot = $env:VCPKG_ROOT
-    } elseif (Test-Path "D:\Scoop\apps\vcpkg\current") {
+    }
+    elseif (Test-Path "D:\Scoop\apps\vcpkg\current") {
         $VcpkgRoot = "D:\Scoop\apps\vcpkg\current"
     }
 }
@@ -81,6 +82,8 @@ $ConfigureArgs = @(
 if ($VcpkgRoot) {
     $ConfigureArgs += "-DVCPKG_ROOT=$VcpkgRoot"
     $ConfigureArgs += "-DVCPKG_TRIPLET=$VcpkgTriplet"
+    $ToolchainPath = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+    $ConfigureArgs += "-DCMAKE_TOOLCHAIN_FILE=$ToolchainPath"
 }
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON' })"
@@ -99,7 +102,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $OutputDir = Join-Path $Repo "bin\x64\Release"
-$Keep = @("AWJ-cli.exe", "AWJ-studio.exe", "AWJ-cli.pdb", "AWJ-studio.pdb", "slint_cpp.dll")
+$Keep = @("AWJ-cli.exe", "AWJ-studio.exe", "AWJ-cli.pdb", "AWJ-studio.pdb", "AWJ-cli.exe.sha256", "AWJ-studio.exe.sha256", "slint_cpp.dll")
 if (Test-Path $OutputDir) {
     Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $Keep -notcontains $_.Name } | Remove-Item -Recurse -Force
     if (-not $SharedSlint) {

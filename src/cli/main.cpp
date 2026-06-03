@@ -2,12 +2,14 @@
 #define NOMINMAX
 #endif
 #include <algorithm>
-#include <cstdio>
+#include <atomic>
+#include <print>
 #include <cstdlib>
 #include <exception>
 #include <expected>
 #include <format>
 #include <functional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,19 +20,42 @@ import awj.config;
 import awj.core;
 import awj.pipeline;
 
+namespace {
+
+std::stop_source g_cli_stop_source;
+std::atomic_bool g_cli_stop_requested{false};
+
+BOOL WINAPI console_control_handler(DWORD event) {
+  switch (event) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+      if (g_cli_stop_requested.exchange(true)) {
+        return FALSE;
+      }
+      g_cli_stop_source.request_stop();
+      return TRUE;
+    default:
+      return FALSE;
+  }
+}
+
+}  // namespace
+
 void print_line(std::string_view text) {
-  std::fwrite(text.data(), 1, text.size(), stdout);
-  std::fputc('\n', stdout);
+  std::println("{}", text);
 }
 
 template <class Value, class Function>
 std::expected<Value, std::string> capture_expected(Function&& fn) noexcept {
   try {
     return std::invoke(std::forward<Function>(fn));
-  } catch (const std::exception& ex) {
-    return std::unexpected{std::string{ex.what()}};
+  } catch (const std::exception&) {
+    return std::unexpected{std::string{}};
   } catch (...) {
-    return std::unexpected{std::string{"未知异常"}};
+    return std::unexpected{std::string{}};
   }
 }
 
@@ -38,6 +63,9 @@ int run_cli(int argc, wchar_t* argv[]) {
   // Windows 控制台默认代码页不是 UTF-8，先切换再输出中文日志。
   SetConsoleOutputCP(CP_UTF8);
   SetConsoleCP(CP_UTF8);
+  if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) {
+    print_line("[WARN] Ctrl+C 取消处理注册失败，继续运行。");
+  }
 
   try {
     std::vector<std::wstring> args;
@@ -59,15 +87,19 @@ int run_cli(int argc, wchar_t* argv[]) {
     if (parsed->should_exit) {
       return parsed->exit_code;
     }
-    const auto exit_code =
-        capture_expected<int>([&] { return awj::run_pipeline(parsed->config); });
+    const auto exit_code = capture_expected<int>(
+        [&] { return awj::run_pipeline(parsed->config, g_cli_stop_source.get_token()); });
     if (!exit_code) {
-      print_line(std::format("[FAIL] {}", exit_code.error()));
+      if (exit_code.error().empty()) {
+        print_line("[FAIL] 运行时异常，程序已安全退出。");
+      } else {
+        print_line(std::format("[FAIL] {}", exit_code.error()));
+      }
       return 1;
     }
     return *exit_code;
-  } catch (const std::exception& ex) {
-    print_line(std::format("[FAIL] {}", ex.what()));
+  } catch (const std::exception&) {
+    print_line("[FAIL] 运行时异常，程序已安全退出。");
     return 1;
   } catch (...) {
     print_line("[FAIL] 未知异常，程序已安全退出。");

@@ -47,6 +47,44 @@ export namespace awj {
 
 namespace native_backend_detail {
 
+using Clock = std::chrono::steady_clock;
+
+double elapsed_seconds(Clock::time_point started) {
+  return std::chrono::duration<double>(Clock::now() - started).count();
+}
+
+std::string format_timing_seconds(double seconds) {
+  return seconds >= 0.0 ? std::format("{:.3f}", seconds) : std::string{""};
+}
+
+std::string format_timing_share(double part, double total) {
+  return part >= 0.0 && total > 0.0 ? std::format("{:.1f}", part * 100.0 / total) : std::string{""};
+}
+
+template <class Function>
+void log_info_noexcept(FileLogger& logger, Function&& message) noexcept {
+  try {
+    logger.info(message());
+  } catch (...) {
+  }
+}
+
+void merge_stage_timing(NativeEncodeResult& native, const EncodeResult& result) {
+  auto& timing = native.diagnostics.timing;
+  if (result.decode_seconds >= 0.0) {
+    timing.decode_seconds = result.decode_seconds;
+  }
+  if (result.prepare_seconds >= 0.0) {
+    timing.prepare_seconds = result.prepare_seconds;
+  }
+  if (timing.encode_seconds < 0.0 && result.encode_seconds >= 0.0) {
+    timing.encode_seconds = result.encode_seconds;
+  }
+  if (result.write_seconds >= 0.0) {
+    timing.write_seconds = result.write_seconds;
+  }
+}
+
 class UnsupportedDecoder final : public ImageDecoder {
  public:
   explicit UnsupportedDecoder(std::string id) : id_{std::move(id)} {}
@@ -61,14 +99,15 @@ class UnsupportedDecoder final : public ImageDecoder {
   std::string id_;
 };
 
-std::unique_ptr<ImageDecoder> decoder_for_output_format(OutputFormat format) {
+std::unique_ptr<ImageDecoder> decoder_for_output_format(OutputFormat format, int decode_threads) {
+  const auto clamped_decode_threads = std::max(1, decode_threads);
   switch (format) {
     case OutputFormat::webp:
       return std::make_unique<WebPImageDecoder>();
     case OutputFormat::jxl:
-      return std::make_unique<JXLImageDecoder>();
+      return std::make_unique<JXLImageDecoder>(clamped_decode_threads);
     case OutputFormat::avif:
-      return std::make_unique<AvifImageDecoder>();
+      return std::make_unique<AvifImageDecoder>(clamped_decode_threads);
     default:
       return std::make_unique<UnsupportedDecoder>("avif");
   }
@@ -105,21 +144,134 @@ struct HandleDeleter {
 
 using UniqueHandle = std::unique_ptr<void, HandleDeleter>;
 
-std::string sanitize_stderr_message(std::string text) {
+class ProcThreadAttributeListGuard {
+ public:
+  explicit ProcThreadAttributeListGuard(LPPROC_THREAD_ATTRIBUTE_LIST list) noexcept
+      : list_{list} {}
+  ~ProcThreadAttributeListGuard() {
+    if (list_ != nullptr) {
+      DeleteProcThreadAttributeList(list_);
+    }
+  }
+  ProcThreadAttributeListGuard(const ProcThreadAttributeListGuard&) = delete;
+  ProcThreadAttributeListGuard& operator=(const ProcThreadAttributeListGuard&) = delete;
+
+ private:
+  LPPROC_THREAD_ATTRIBUTE_LIST list_{};
+};
+
+std::expected<void, std::string> initialize_helper_handle_list(
+    LPPROC_THREAD_ATTRIBUTE_LIST attribute_list,
+    SIZE_T attribute_list_size,
+    std::span<HANDLE> handles) {
+  if (!InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_list_size)) {
+    return std::unexpected{
+        std::format("初始化 AVIF helper 继承句柄列表失败: {}", win32_error_message(GetLastError()))};
+  }
+  if (!UpdateProcThreadAttribute(attribute_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                 handles.data(), handles.size_bytes(), nullptr, nullptr)) {
+    const auto message = win32_error_message(GetLastError());
+    DeleteProcThreadAttributeList(attribute_list);
+    return std::unexpected{
+        std::format("配置 AVIF helper 继承句柄列表失败: {}", message)};
+  }
+  return {};
+}
+
+struct HeapAllocationDeleter {
+  using pointer = void*;
+  void operator()(void* value) const noexcept {
+    if (value != nullptr) {
+      HeapFree(GetProcessHeap(), 0, value);
+    }
+  }
+};
+
+using UniqueHeapAllocation = std::unique_ptr<void, HeapAllocationDeleter>;
+
+struct ProcThreadAttributeListAllocation {
+  UniqueHeapAllocation storage;
+  SIZE_T size{};
+};
+
+std::expected<ProcThreadAttributeListAllocation, std::string> allocate_helper_handle_list() {
+  SIZE_T attribute_list_size = 0;
+  if (InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_list_size) ||
+      GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+    return std::unexpected{
+        std::format("计算 AVIF helper 继承句柄列表尺寸失败: {}", win32_error_message(GetLastError()))};
+  }
+  UniqueHeapAllocation storage{HeapAlloc(GetProcessHeap(), 0, attribute_list_size)};
+  if (!storage) {
+    return std::unexpected{"AVIF helper 继承句柄列表内存不足。"};
+  }
+  return ProcThreadAttributeListAllocation{.storage = std::move(storage), .size = attribute_list_size};
+}
+
+std::expected<UniqueHandle, std::string> create_helper_process_job() {
+  HANDLE raw_job = CreateJobObjectW(nullptr, nullptr);
+  if (raw_job == nullptr) {
+    return std::unexpected{
+        std::format("创建 AVIF helper 进程树管理对象失败: {}", win32_error_message(GetLastError()))};
+  }
+  UniqueHandle job{raw_job};
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
+                               &limits, sizeof(limits))) {
+    return std::unexpected{
+        std::format("配置 AVIF helper 进程树管理失败: {}", win32_error_message(GetLastError()))};
+  }
+  return std::move(job);
+}
+
+void terminate_helper_process_tree(HANDLE job, HANDLE process, UINT exit_code) noexcept {
+  bool terminated = false;
+  if (job != nullptr && job != INVALID_HANDLE_VALUE) {
+    terminated = TerminateJobObject(job, exit_code) != FALSE;
+  }
+  if (!terminated && process != nullptr && process != INVALID_HANDLE_VALUE) {
+    TerminateProcess(process, exit_code);
+  }
+  if (process != nullptr && process != INVALID_HANDLE_VALUE) {
+    WaitForSingleObject(process, 1000);
+  }
+}
+
+constexpr std::size_t kMaxHelperDiagnosticsBytes = 4096;
+
+std::string trim_helper_diagnostics(std::string text) {
   text.erase(std::ranges::remove(text, '\r').begin(), text.end());
   while (!text.empty() && (text.back() == '\n' || text.back() == ' ' || text.back() == '\t')) {
     text.pop_back();
   }
-  constexpr std::size_t max_length = 4096;
-  if (text.size() > max_length) {
-    text.resize(max_length);
-    text += "...";
+  return text;
+}
+
+std::string truncate_helper_diagnostics(std::string text) {
+  if (text.size() > kMaxHelperDiagnosticsBytes) {
+    constexpr std::string_view suffix{"..."};
+    const auto suffix_offset = kMaxHelperDiagnosticsBytes - suffix.size();
+    std::ranges::copy(suffix, text.begin() + static_cast<std::ptrdiff_t>(suffix_offset));
+    text.resize(kMaxHelperDiagnosticsBytes);
   }
   return text;
 }
 
-std::string read_pipe_available(HANDLE pipe) {
-  std::string text;
+std::string sanitize_stderr_message(std::string text) {
+  return truncate_helper_diagnostics(trim_helper_diagnostics(std::move(text)));
+}
+
+std::string sanitize_helper_diagnostics(std::string text,
+                                        std::span<const fs::path> private_paths) {
+  text = trim_helper_diagnostics(std::move(text));
+  for (const auto& path : private_paths) {
+    text = redact_path_for_user(std::move(text), path);
+  }
+  return truncate_helper_diagnostics(std::move(text));
+}
+
+void append_pipe_available(HANDLE pipe, std::string& text) noexcept {
   std::array<char, 4096> buffer{};
   while (true) {
     DWORD available = 0;
@@ -131,85 +283,236 @@ std::string read_pipe_available(HANDLE pipe) {
     if (!ReadFile(pipe, buffer.data(), to_read, &bytes_read, nullptr) || bytes_read == 0) {
       break;
     }
-    text.append(buffer.data(), bytes_read);
+    if (text.size() < kMaxHelperDiagnosticsBytes) {
+      const auto remaining = kMaxHelperDiagnosticsBytes - text.size();
+      try {
+        text.append(buffer.data(), std::min<std::size_t>(bytes_read, remaining));
+      } catch (...) {
+        text.clear();
+      }
+    }
   }
-  return text;
+}
+
+void remove_file_noexcept(const fs::path& path) noexcept {
+  try {
+    std::error_code ec;
+    fs::remove(path, ec);
+  } catch (...) {
+  }
+}
+
+void remove_directory_noexcept(const fs::path& path) noexcept {
+  try {
+    std::error_code ec;
+    fs::remove_all(path, ec);
+  } catch (...) {
+  }
 }
 
 class TempFileCleanup {
  public:
-  TempFileCleanup(fs::path input, fs::path output)
-      : input_{std::move(input)}, output_{std::move(output)} {}
+  TempFileCleanup(const fs::path& input, const fs::path& output, const fs::path& directory) noexcept
+      : input_{&input}, output_{&output}, directory_{&directory} {}
   ~TempFileCleanup() { cleanup(); }
   TempFileCleanup(const TempFileCleanup&) = delete;
   TempFileCleanup& operator=(const TempFileCleanup&) = delete;
   void cleanup() noexcept {
-    std::error_code ec;
-    if (!input_.empty()) {
-      fs::remove(input_, ec);
+    if (input_ != nullptr && !input_->empty()) {
+      remove_file_noexcept(*input_);
     }
-    ec.clear();
-    if (!output_.empty()) {
-      fs::remove(output_, ec);
+    if (output_ != nullptr && !output_->empty()) {
+      remove_file_noexcept(*output_);
+    }
+    if (directory_ != nullptr && !directory_->empty()) {
+      remove_directory_noexcept(*directory_);
     }
   }
 
  private:
-  fs::path input_;
-  fs::path output_;
+  const fs::path* input_{};
+  const fs::path* output_{};
+  const fs::path* directory_{};
 };
 
 class TempOutputFile {
  public:
-  explicit TempOutputFile(fs::path path) : path_{std::move(path)} {}
+  explicit TempOutputFile(const fs::path& path) noexcept : path_{&path} {}
   ~TempOutputFile() {
     if (active_) {
-      std::error_code ec;
-      fs::remove(path_, ec);
+      remove_file_noexcept(*path_);
     }
   }
   TempOutputFile(const TempOutputFile&) = delete;
   TempOutputFile& operator=(const TempOutputFile&) = delete;
-  [[nodiscard]] const fs::path& path() const noexcept { return path_; }
+  [[nodiscard]] const fs::path& path() const noexcept { return *path_; }
   void release() noexcept { active_ = false; }
 
  private:
-  fs::path path_;
+  const fs::path* path_{};
   bool active_{true};
 };
 
+std::expected<void, std::string> clear_transient_file_attributes(const fs::path& path,
+                                                                 std::string_view label) {
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  if (attributes == INVALID_FILE_ATTRIBUTES) {
+    const auto error = GetLastError();
+    return std::unexpected{std::format("无法读取{}属性 {}: {}",
+                                       label,
+                                       display_path_for_user(path),
+                                       win32_error_message(error))};
+  }
+  constexpr DWORD transient_attributes =
+      FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+  const DWORD final_attributes = attributes & ~transient_attributes;
+  const DWORD normalized_attributes =
+      final_attributes == 0 ? FILE_ATTRIBUTE_NORMAL : final_attributes;
+  if (normalized_attributes == attributes) {
+    return {};
+  }
+  if (!SetFileAttributesW(path.c_str(), normalized_attributes)) {
+    const auto error = GetLastError();
+    return std::unexpected{std::format("无法更新{}属性 {}: {}",
+                                       label,
+                                       display_path_for_user(path),
+                                       win32_error_message(error))};
+  }
+  return {};
+}
+
+struct TempOutputWriteFailure {
+  std::string message;
+  DWORD create_error{};
+};
+
+bool output_temp_name_collision(DWORD error) noexcept {
+  return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS;
+}
+
+std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs::path& path,
+                                                                         std::span<const std::byte> bytes) {
+  if (bytes.size() > encoding_defaults::max_input_file_bytes) {
+    return std::unexpected{TempOutputWriteFailure{
+        .message = std::format("临时输出文件内容超过 20 GiB 运行时上限: {}",
+                               display_path_for_user(path))}};
+  }
+  const auto raw_file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                   FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+                                   nullptr);
+  if (raw_file == INVALID_HANDLE_VALUE) {
+    const auto error = GetLastError();
+    return std::unexpected{TempOutputWriteFailure{
+        .message = std::format("无法创建临时输出文件 {}: {}",
+                               display_path_for_user(path),
+                               win32_error_message(error)),
+        .create_error = error}};
+  }
+  TempOutputFile cleanup{path};
+  UniqueHandle file{raw_file};
+
+  auto remaining = bytes.size();
+  const auto* cursor = reinterpret_cast<const std::uint8_t*>(bytes.data());
+  while (remaining > 0) {
+    const auto chunk = static_cast<DWORD>(
+        std::min<std::size_t>(remaining, std::numeric_limits<DWORD>::max()));
+    DWORD written = 0;
+    if (!WriteFile(file.get(), cursor, chunk, &written, nullptr)) {
+      return std::unexpected{TempOutputWriteFailure{
+          .message = std::format("写入临时输出文件失败 {}: {}",
+                                 display_path_for_user(path),
+                                 win32_error_message(GetLastError()))}};
+    }
+    if (written == 0) {
+      return std::unexpected{TempOutputWriteFailure{
+          .message = std::format("写入临时输出文件失败 {}", display_path_for_user(path))}};
+    }
+    cursor += written;
+    remaining -= written;
+  }
+  if (!FlushFileBuffers(file.get())) {
+    return std::unexpected{TempOutputWriteFailure{
+        .message = std::format("刷新临时输出文件失败 {}: {}",
+                               display_path_for_user(path),
+                               win32_error_message(GetLastError()))}};
+  }
+  const HANDLE file_handle = file.get();
+  if (!CloseHandle(file_handle)) {
+    return std::unexpected{TempOutputWriteFailure{
+        .message = std::format("关闭临时输出文件失败 {}: {}",
+                               display_path_for_user(path),
+                               win32_error_message(GetLastError()))}};
+  }
+  file.release();
+  cleanup.release();
+  return {};
+}
+
 std::expected<std::vector<std::byte>, std::string> read_file_bytes(const fs::path& path) {
-  std::ifstream input{path, std::ios::binary};
-  if (!input) {
-    return std::unexpected{std::format("无法读取 helper 输出文件: {}", path_to_utf8(path))};
+  try {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+      return std::unexpected{std::format("无法读取 helper 输出文件: {}", display_path_for_user(path))};
+    }
+    input.seekg(0, std::ios::end);
+    if (!input) {
+      return std::unexpected{std::format("读取 helper 输出文件大小失败: {}", display_path_for_user(path))};
+    }
+    const auto size = input.tellg();
+    if (size < 0) {
+      return std::unexpected{std::format("读取 helper 输出文件大小失败: {}", display_path_for_user(path))};
+    }
+    if (size == 0) {
+      return std::unexpected{std::format("helper 输出文件为空: {}", display_path_for_user(path))};
+    }
+    const auto file_size = static_cast<std::uint64_t>(size);
+    if (file_size > encoding_defaults::max_input_file_bytes) {
+      return std::unexpected{std::format("helper 输出文件超过 20 GiB 输入上限: {}", display_path_for_user(path))};
+    }
+    if (file_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+      return std::unexpected{std::format("helper 输出文件超过流读取 API 限制: {}", display_path_for_user(path))};
+    }
+    input.seekg(0, std::ios::beg);
+    if (!input) {
+      return std::unexpected{std::format("读取 helper 输出文件失败: {}", display_path_for_user(path))};
+    }
+    auto bytes = decoder_common::make_byte_buffer(static_cast<std::size_t>(file_size),
+                                                  "helper 输出文件");
+    if (!bytes) {
+      return std::unexpected{bytes.error()};
+    }
+    input.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(bytes->size()));
+    if (!input) {
+      return std::unexpected{std::format("读取 helper 输出文件失败: {}", display_path_for_user(path))};
+    }
+    return std::move(*bytes);
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"读取 helper 输出文件时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"读取 helper 输出文件时数据超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"读取 helper 输出文件时文件系统访问失败。"};
   }
-  input.seekg(0, std::ios::end);
-  const auto size = input.tellg();
-  if (size <= 0) {
-    return std::unexpected{std::format("helper 输出文件为空: {}", path_to_utf8(path))};
-  }
-  const auto file_size = static_cast<std::uint64_t>(size);
-  if (file_size > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("helper 输出文件超过 20 GiB 输入上限: {}", path_to_utf8(path))};
-  }
-  input.seekg(0, std::ios::beg);
-  std::vector<std::byte> bytes(static_cast<std::size_t>(file_size));
-  input.read(reinterpret_cast<char*>(bytes.data()), size);
-  if (!input) {
-    return std::unexpected{std::format("读取 helper 输出文件失败: {}", path_to_utf8(path))};
-  }
-  return bytes;
 }
 
 std::wstring quote_process_argument(std::wstring_view value) {
   std::wstring quoted{L"\""};
+  std::size_t backslashes = 0;
   for (const wchar_t ch : value) {
+    if (ch == L'\\') {
+      ++backslashes;
+      continue;
+    }
     if (ch == L'\"') {
-      quoted += L"\\\"";
+      quoted.append(backslashes * 2 + 1, L'\\');
+      quoted.push_back(ch);
     } else {
+      quoted.append(backslashes, L'\\');
       quoted.push_back(ch);
     }
+    backslashes = 0;
   }
+  quoted.append(backslashes * 2, L'\\');
   quoted += L"\"";
   return quoted;
 }
@@ -222,18 +525,171 @@ std::wstring helper_chroma_argument(ChromaMode mode) {
   return wide_from_utf8(chroma_mode_name(mode));
 }
 
+int avif_helper_thread_count(int requested_threads) noexcept {
+  return std::clamp(requested_threads, 1, encoding_defaults::default_av1_encoder_thread_cap);
+}
+
+int avif_helper_quality(int quality) noexcept {
+  return std::clamp(quality, 1, 100);
+}
+
+int avif_helper_speed(int speed) noexcept {
+  return std::clamp(speed, 0, 10);
+}
+
+bool effective_lossless_requested(int quality, std::optional<int> visual_quality) noexcept {
+  return visual_quality ? *visual_quality >= 100 : quality >= 100;
+}
+
 bool avif_lossless_requested(const AppConfig& cfg) noexcept {
   return cfg.output_format == OutputFormat::avif &&
-         (cfg.quality >= 100 || cfg.visual_quality == 100);
+         effective_lossless_requested(cfg.quality, cfg.visual_quality);
+}
+
+bool jxl_lossless_requested(const AppConfig& cfg) noexcept {
+  return cfg.output_format == OutputFormat::jxl &&
+         effective_lossless_requested(cfg.quality, cfg.visual_quality);
 }
 
 bool encode_settings_lossless_requested(const NativeEncodeSettings& settings) noexcept {
-  return settings.quality >= 100 || settings.visual_quality == 100;
+  return effective_lossless_requested(settings.quality, settings.visual_quality);
+}
+
+int avif_helper_final_quality(const NativeEncodeSettings& settings) noexcept {
+  return encode_settings_lossless_requested(settings) ? 100 : avif_helper_quality(settings.quality);
 }
 
 bool avif_lossless_passthrough_source(const fs::path& path) {
   static constexpr std::wstring_view avif_extensions[] = {L".avif"};
   return decoder_common::extension_is_one_of(path, avif_extensions);
+}
+
+bool jxl_jpeg_bitstream_source(const fs::path& path) {
+  static constexpr std::wstring_view jpeg_extensions[] = {L".jpg", L".jpeg", L".jpe", L".jfif"};
+  return decoder_common::extension_is_one_of(path, jpeg_extensions);
+}
+
+std::uint16_t read_be_u16(std::span<const std::byte> bytes, std::size_t offset) noexcept {
+  return static_cast<std::uint16_t>(
+      (static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset])) << 8) |
+      static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset + 1])));
+}
+
+bool is_jpeg_sof_marker(std::uint8_t marker) noexcept {
+  switch (marker) {
+    case 0xC0:
+    case 0xC1:
+    case 0xC2:
+    case 0xC3:
+    case 0xC5:
+    case 0xC6:
+    case 0xC7:
+    case 0xC9:
+    case 0xCA:
+    case 0xCB:
+    case 0xCD:
+    case 0xCE:
+    case 0xCF:
+      return true;
+    default:
+      return false;
+  }
+}
+
+PixelFormat jpeg_pixel_format_from_sampling(std::uint8_t component_count,
+                                            std::uint8_t horizontal_factor,
+                                            std::uint8_t vertical_factor) noexcept {
+  if (component_count == 1) {
+    return PixelFormat::gray;
+  }
+  if (component_count != 3) {
+    return PixelFormat::unknown;
+  }
+  if (horizontal_factor == 1 && vertical_factor == 1) {
+    return PixelFormat::yuv444;
+  }
+  if (horizontal_factor == 2 && vertical_factor == 1) {
+    return PixelFormat::yuv422;
+  }
+  if (horizontal_factor == 2 && vertical_factor == 2) {
+    return PixelFormat::yuv420;
+  }
+  return PixelFormat::unknown;
+}
+
+struct JpegBitstreamSourceDiagnostics {
+  PixelFormat pixel_format{PixelFormat::unknown};
+  std::optional<int> bit_depth{};
+  bool has_icc{};
+};
+
+JpegBitstreamSourceDiagnostics inspect_jpeg_bitstream_source(
+    std::span<const std::byte> bytes) noexcept {
+  JpegBitstreamSourceDiagnostics diagnostics{};
+  if (bytes.size() < 4 || std::to_integer<std::uint8_t>(bytes[0]) != 0xFF ||
+      std::to_integer<std::uint8_t>(bytes[1]) != 0xD8) {
+    return diagnostics;
+  }
+
+  std::size_t offset = 2;
+  while (offset + 3 < bytes.size()) {
+    while (offset < bytes.size() && std::to_integer<std::uint8_t>(bytes[offset]) == 0xFF) {
+      ++offset;
+    }
+    if (offset >= bytes.size()) {
+      break;
+    }
+
+    const auto marker = std::to_integer<std::uint8_t>(bytes[offset++]);
+    if (marker == 0xD9 || marker == 0xDA) {
+      break;
+    }
+    if ((marker >= 0xD0 && marker <= 0xD7) || marker == 0x01) {
+      continue;
+    }
+    if (offset + 2 > bytes.size()) {
+      break;
+    }
+
+    const auto segment_size = read_be_u16(bytes, offset);
+    if (segment_size < 2) {
+      break;
+    }
+    const auto payload_offset = offset + 2;
+    const auto payload_size = static_cast<std::size_t>(segment_size - 2);
+    if (payload_offset > bytes.size() || payload_size > bytes.size() - payload_offset) {
+      break;
+    }
+
+    if (marker == 0xE2 && payload_size >= sizeof("ICC_PROFILE") + 2) {
+      static constexpr char signature[] = "ICC_PROFILE";
+      bool matches = true;
+      for (std::size_t i = 0; i < sizeof(signature); ++i) {
+        if (std::to_integer<std::uint8_t>(bytes[payload_offset + i]) !=
+            static_cast<std::uint8_t>(signature[i])) {
+          matches = false;
+          break;
+        }
+      }
+      diagnostics.has_icc = diagnostics.has_icc || matches;
+    }
+
+    if (is_jpeg_sof_marker(marker) && payload_size >= 6) {
+      const auto precision = std::to_integer<std::uint8_t>(bytes[payload_offset]);
+      const auto component_count = std::to_integer<std::uint8_t>(bytes[payload_offset + 5]);
+      if (payload_size >= 6 + static_cast<std::size_t>(component_count) * 3 && component_count > 0) {
+        const auto sampling = std::to_integer<std::uint8_t>(bytes[payload_offset + 7]);
+        diagnostics.bit_depth = static_cast<int>(precision);
+        diagnostics.pixel_format = jpeg_pixel_format_from_sampling(
+            component_count,
+            static_cast<std::uint8_t>(sampling >> 4),
+            static_cast<std::uint8_t>(sampling & 0x0F));
+      }
+    }
+
+    offset = payload_offset + payload_size;
+  }
+  return diagnostics;
 }
 
 ChromaMode chroma_from_source_pixel_format(PixelFormat pixel_format) noexcept {
@@ -267,16 +723,20 @@ std::string alpha_mode_name(AlphaMode mode) {
 
 bool image_has_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
   return std::ranges::find_if(image.metadata, [kind](const MetadataBlock& block) {
-           return block.kind == kind;
+           return block.kind == kind && !block.bytes.empty();
          }) != image.metadata.end();
+}
+
+std::string chroma_name_from_pixel_format(PixelFormat pixel_format) {
+  const auto chroma = chroma_from_source_pixel_format(pixel_format);
+  return chroma == ChromaMode::auto_keep ? "unknown" : chroma_mode_name(chroma);
 }
 
 std::string source_chroma_name(const ImageBuffer& image) {
   if (!image.source_info) {
     return "unknown";
   }
-  const auto chroma = chroma_from_source_pixel_format(image.source_info->pixel_format);
-  return chroma == ChromaMode::auto_keep ? "unknown" : chroma_mode_name(chroma);
+  return chroma_name_from_pixel_format(image.source_info->pixel_format);
 }
 
 ChromaMode lossless_source_chroma(const ImageBuffer& image) noexcept {
@@ -288,9 +748,17 @@ ChromaMode lossless_source_chroma(const ImageBuffer& image) noexcept {
 
 std::optional<int> lossless_source_bit_depth(const ImageBuffer& image) noexcept {
   if (image.source_info && image.source_info->bit_depth > 0) {
+    if (image.source_info->bit_depth < 8 && image.bit_depth >= 8) {
+      return image.bit_depth;
+    }
     return image.source_info->bit_depth;
   }
-  return image.bit_depth;
+  return image.bit_depth > 0 ? std::optional<int>{image.bit_depth} : std::nullopt;
+}
+
+bool lossless_uses_decoded_bit_depth(const ImageBuffer& image) noexcept {
+  return image.source_info && image.source_info->bit_depth > 0 &&
+         image.source_info->bit_depth < 8 && image.bit_depth >= 8;
 }
 
 std::optional<int> source_bit_depth(const ImageBuffer& image) noexcept {
@@ -305,18 +773,54 @@ std::optional<int> choose_color_value(std::optional<int> user_value,
   return user_value ? user_value : source_value;
 }
 
-bool has_user_color_settings(const AppConfig& cfg) noexcept {
+std::optional<int> non_unspecified_color_value(std::optional<int> value, int unspecified) noexcept {
+  if (!value || *value == unspecified) {
+    return {};
+  }
+  return value;
+}
+
+bool has_user_cicp_settings(const AppConfig& cfg) noexcept {
   return cfg.color_primaries || cfg.transfer_characteristics || cfg.matrix_coefficients ||
-         cfg.color_range || !cfg.mastering_display.empty() || !cfg.content_light.empty();
+         cfg.color_range;
+}
+
+bool has_user_hdr_settings(const AppConfig& cfg) noexcept {
+  return !cfg.mastering_display.empty() || !cfg.content_light.empty();
+}
+
+bool has_user_color_settings(const AppConfig& cfg) noexcept {
+  return has_user_cicp_settings(cfg) || has_user_hdr_settings(cfg);
+}
+
+bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
+                                       const fs::path& path) {
+  return avif_lossless_requested(cfg) && avif_lossless_passthrough_source(path) &&
+         cfg.avif_encoder == AvifEncoderMode::automatic && cfg.chroma_mode == ChromaMode::auto_keep &&
+         !cfg.bit_depth && cfg.alpha_policy != AlphaModePolicy::off && !cfg.strip_metadata &&
+         !has_user_color_settings(cfg);
+}
+
+bool jxl_jpeg_bitstream_transcode_allowed(const AppConfig& cfg,
+                                          const fs::path& path) {
+  return jxl_lossless_requested(cfg) && jxl_jpeg_bitstream_source(path) &&
+         !cfg.strip_metadata && !has_user_color_settings(cfg);
 }
 
 bool encoder_supports_alpha(AvifEncoderMode mode) noexcept {
   return mode == AvifEncoderMode::aom || mode == AvifEncoderMode::zenrav1e;
 }
 
+bool encoder_supports_alpha(OutputFormat format) noexcept {
+  return format == OutputFormat::jxl || format == OutputFormat::webp;
+}
+
 bool alpha_must_be_preserved(AlphaModePolicy policy,
-                             bool source_has_alpha_channel) noexcept {
-  return policy == AlphaModePolicy::force && source_has_alpha_channel;
+                             bool source_has_alpha_channel,
+                             bool has_non_opaque_alpha) noexcept {
+  return source_has_alpha_channel &&
+         (policy == AlphaModePolicy::force ||
+          (policy == AlphaModePolicy::automatic && has_non_opaque_alpha));
 }
 
 std::string applied_alpha_name(bool source_has_alpha_channel,
@@ -331,11 +835,44 @@ std::string applied_alpha_name(bool source_has_alpha_channel,
   return "stripped";
 }
 
-void populate_source_diagnostics(NativeEncodeSettings& settings,
-                                 const ImageBuffer& image,
-                                 AvifEncoderMode user_encoder) {
-  settings.user_encoder_id = avif_encoder_mode_name(user_encoder);
-  settings.user_chroma = chroma_mode_name(settings.requested_chroma_mode);
+std::expected<void, std::string> populate_regular_alpha_decision(
+    NativeEncodeSettings& settings,
+    const ImageBuffer& image,
+    const AppConfig& cfg) {
+  const auto has_non_opaque_alpha = decoder_common::has_non_opaque_alpha(image,
+                                                                         "native encoder");
+  if (!has_non_opaque_alpha) {
+    return std::unexpected{has_non_opaque_alpha.error()};
+  }
+  settings.has_non_opaque_alpha = *has_non_opaque_alpha;
+  settings.encoder_supports_alpha = encoder_supports_alpha(cfg.output_format);
+  const bool preserve_alpha = settings.source_has_alpha_channel && settings.encoder_supports_alpha &&
+                              (cfg.alpha_policy == AlphaModePolicy::force ||
+                               (cfg.alpha_policy == AlphaModePolicy::automatic &&
+                                *has_non_opaque_alpha));
+  settings.applied_alpha = applied_alpha_name(settings.source_has_alpha_channel,
+                                              preserve_alpha,
+                                              settings.encoder_supports_alpha);
+  if (!settings.source_has_alpha_channel) {
+    settings.alpha_reason = "源图没有 alpha 通道";
+  } else if (cfg.alpha_policy == AlphaModePolicy::off) {
+    settings.alpha_reason = "用户请求移除 alpha";
+  } else if (cfg.alpha_policy == AlphaModePolicy::automatic && !*has_non_opaque_alpha) {
+    settings.alpha_reason = "auto 移除全不透明 alpha";
+  } else if (cfg.alpha_policy == AlphaModePolicy::automatic && settings.encoder_supports_alpha) {
+    settings.alpha_reason = "auto 保留非不透明 alpha，因为当前编码器支持 alpha";
+  } else if (cfg.alpha_policy == AlphaModePolicy::automatic) {
+    settings.alpha_reason = "auto 移除 alpha，因为当前编码器不支持 alpha";
+  } else if (settings.encoder_supports_alpha) {
+    settings.alpha_reason = "force 保留源图 alpha 通道";
+  } else {
+    settings.alpha_reason = "force 请求保留 alpha，但当前编码器不支持 alpha";
+  }
+  return {};
+}
+
+void populate_source_image_diagnostics(NativeEncodeSettings& settings,
+                                       const ImageBuffer& image) {
   settings.source_chroma = source_chroma_name(image);
   settings.source_bit_depth = source_bit_depth(image);
   settings.alpha_policy_name = alpha_mode_policy_name(settings.requested_alpha_policy);
@@ -348,13 +885,155 @@ void populate_source_diagnostics(NativeEncodeSettings& settings,
     settings.source_transfer_characteristics = image.source_info->transfer_characteristics;
     settings.source_matrix_coefficients = image.source_info->matrix_coefficients;
     settings.source_color_range = image.source_info->color_range;
+    settings.source_content_light = image.source_info->content_light;
     if (!image.source_info->color_metadata_source.empty()) {
       settings.color_metadata_source = image.source_info->color_metadata_source;
     }
   }
 }
 
+void populate_regular_color_decision(NativeEncodeSettings& settings, const AppConfig& cfg) {
+  if (cfg.strip_metadata) {
+    settings.applied_icc = settings.source_has_icc ? "stripped" : "none";
+    settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "stripped" : "none";
+    settings.color_metadata_source = "stripped";
+    settings.color_reason = "用户请求移除元数据";
+    return;
+  }
+
+  settings.applied_icc = settings.source_has_icc ? "kept" : "none";
+  settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "not-written" : "none";
+  if (settings.source_has_icc) {
+    settings.color_metadata_source = "source-icc";
+    settings.color_reason = "使用源图 ICC profile 写入编码器元数据";
+  } else {
+    settings.color_metadata_source = "encoder-default";
+    settings.color_reason = settings.source_has_hdr_metadata || settings.source_color_primaries ||
+                                    settings.source_transfer_characteristics ||
+                                    settings.source_matrix_coefficients || settings.source_color_range
+                                ? "当前编码器未写入源图 CICP/HDR 元数据，使用编码器默认值"
+                                : "源图色彩元数据未知，使用编码器默认值";
+  }
+}
+
+void populate_jxl_jpeg_bitstream_source_diagnostics(NativeEncodeSettings& settings,
+                                                    std::span<const std::byte> jpeg_bytes,
+                                                    const AppConfig& cfg) {
+  const auto source = inspect_jpeg_bitstream_source(jpeg_bytes);
+  settings.source_chroma = chroma_name_from_pixel_format(source.pixel_format);
+  settings.source_bit_depth = source.bit_depth;
+  settings.alpha_policy_name = alpha_mode_policy_name(settings.requested_alpha_policy);
+  settings.source_has_alpha_channel = false;
+  settings.source_alpha_mode = alpha_mode_name(AlphaMode::none);
+  settings.has_non_opaque_alpha = false;
+  settings.encoder_supports_alpha = encoder_supports_alpha(cfg.output_format);
+  settings.applied_alpha = applied_alpha_name(false, false, settings.encoder_supports_alpha);
+  settings.alpha_reason = "源图没有 alpha 通道";
+  settings.source_has_icc = source.has_icc;
+  settings.source_has_hdr_metadata = false;
+  populate_regular_color_decision(settings, cfg);
+  settings.chroma_reason = "无损转封装保留 JPEG 码流 chroma";
+  settings.bit_depth_reason = "无损转封装保留 JPEG 码流 bit-depth";
+  settings.color_metadata_source = settings.source_has_icc ? "source-icc" : "jpeg-bitstream";
+  settings.color_reason = settings.source_has_icc
+                              ? "无损转封装保留 JPEG 码流 ICC profile"
+                              : "无损转封装保留 JPEG 码流元数据";
+}
+
+void populate_source_diagnostics(NativeEncodeSettings& settings,
+                                 const ImageBuffer& image,
+                                 AvifEncoderMode user_encoder) {
+  settings.user_encoder_id = avif_encoder_mode_name(user_encoder);
+  settings.user_chroma = chroma_mode_name(settings.requested_chroma_mode);
+  populate_source_image_diagnostics(settings, image);
+}
+
+bool source_hdr_content_light_kept(const NativeEncodeSettings& settings,
+                                   bool strip_metadata,
+                                   bool user_color_settings) noexcept {
+  return settings.source_content_light && !strip_metadata && !user_color_settings;
+}
+
+bool source_hdr_cicp_kept(const NativeEncodeSettings& settings,
+                          bool strip_metadata,
+                          bool user_color_settings) noexcept {
+  return !strip_metadata && !user_color_settings &&
+         (settings.source_color_primaries || settings.source_transfer_characteristics ||
+          settings.source_matrix_coefficients || settings.source_color_range);
+}
+
+std::string applied_hdr_metadata_name(const NativeEncodeSettings& settings,
+                                      bool strip_metadata,
+                                      bool user_color_settings) {
+  if (!settings.source_has_hdr_metadata) {
+    return "none";
+  }
+  if (strip_metadata) {
+    return "stripped";
+  }
+  if (source_hdr_content_light_kept(settings, strip_metadata, user_color_settings) ||
+      source_hdr_cicp_kept(settings, strip_metadata, user_color_settings)) {
+    return "kept";
+  }
+  return "not-written";
+}
+
+std::string applied_hdr_metadata_name(const NativeEncodeSettings& settings,
+                                      const AppConfig& cfg) {
+  return applied_hdr_metadata_name(settings, cfg.strip_metadata, has_user_color_settings(cfg));
+}
+
+void ignore_svt_only_hdr_for_non_svt_encoder(NativeEncodeSettings& settings,
+                                             const AppConfig& cfg) {
+  if (!has_user_hdr_settings(cfg) || has_user_cicp_settings(cfg)) {
+    return;
+  }
+
+  settings.applied_icc = settings.source_has_icc
+                             ? (cfg.strip_metadata ? "stripped" : "kept")
+                             : "none";
+  settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg.strip_metadata, false);
+  if (cfg.strip_metadata) {
+    settings.color_metadata_source = "stripped";
+    settings.color_reason = "用户请求移除元数据";
+  } else if (settings.source_has_icc) {
+    settings.color_metadata_source = "source-icc";
+    settings.color_reason = "使用源图 ICC profile 写入编码器元数据";
+  } else if (settings.applied_color_primaries || settings.applied_transfer_characteristics ||
+             settings.applied_matrix_coefficients || settings.applied_color_range) {
+    if (settings.color_metadata_source.empty() ||
+        settings.color_metadata_source == "user-svt-settings") {
+      settings.color_metadata_source = "source-cicp";
+    }
+    settings.color_reason = "使用源图 CICP 字段写入编码器设置";
+  } else {
+    settings.color_metadata_source = "encoder-default";
+    settings.color_reason = "源图色彩元数据未知，使用编码器默认值";
+  }
+}
+
 void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cfg) {
+  if (cfg.strip_metadata) {
+    settings.applied_color_primaries = cfg.color_primaries;
+    settings.applied_transfer_characteristics = cfg.transfer_characteristics;
+    settings.applied_matrix_coefficients = cfg.matrix_coefficients;
+    settings.applied_color_range = cfg.color_range;
+    settings.svtav1hdr.color_primaries = cfg.color_primaries;
+    settings.svtav1hdr.transfer_characteristics = cfg.transfer_characteristics;
+    settings.svtav1hdr.matrix_coefficients = cfg.matrix_coefficients;
+    settings.svtav1hdr.color_range = cfg.color_range;
+    settings.applied_icc = settings.source_has_icc ? "stripped" : "none";
+    settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg);
+    if (has_user_color_settings(cfg)) {
+      settings.color_metadata_source = "user-svt-settings";
+      settings.color_reason = "已移除源图元数据，并使用用户 color/HDR 设置";
+    } else {
+      settings.color_metadata_source = "stripped";
+      settings.color_reason = "用户请求移除元数据";
+    }
+    return;
+  }
+
   settings.applied_color_primaries = choose_color_value(cfg.color_primaries,
                                                         settings.source_color_primaries);
   settings.applied_transfer_characteristics = choose_color_value(cfg.transfer_characteristics,
@@ -368,30 +1047,115 @@ void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cf
   settings.svtav1hdr.matrix_coefficients = settings.applied_matrix_coefficients;
   settings.svtav1hdr.color_range = settings.applied_color_range;
 
-  if (cfg.strip_metadata) {
-    settings.applied_icc = settings.source_has_icc ? "stripped" : "none";
-    settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "stripped" : "none";
-    settings.color_metadata_source = "stripped";
-    settings.color_reason = "metadata stripped by user request";
-    return;
-  }
-  settings.applied_icc = settings.source_has_icc ? "not-written" : "none";
-  settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "not-written" : "none";
-  if (has_user_color_settings(cfg)) {
+  const bool user_color_settings = has_user_color_settings(cfg);
+  settings.applied_icc = settings.source_has_icc
+                             ? (user_color_settings ? "not-written" : "kept")
+                             : "none";
+  settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg);
+  if (user_color_settings) {
     settings.color_metadata_source = "user-svt-settings";
-    settings.color_reason = "user color/HDR settings override source metadata";
+    settings.color_reason = "用户 color/HDR 设置覆盖源图元数据";
+  } else if (settings.source_has_icc) {
+    settings.color_metadata_source = "source-icc";
+    settings.color_reason = "使用源图 ICC profile 写入编码器元数据";
   } else if (settings.applied_color_primaries || settings.applied_transfer_characteristics ||
              settings.applied_matrix_coefficients || settings.applied_color_range) {
     if (settings.color_metadata_source.empty()) {
       settings.color_metadata_source = "source-cicp";
     }
-    settings.color_reason = "source CICP fields selected for encoder settings";
-  } else if (settings.source_has_icc) {
-    settings.color_metadata_source = "source-icc";
-    settings.color_reason = "source ICC detected but current AVIF path does not write ICC yet";
+    settings.color_reason = "使用源图 CICP 字段写入编码器设置";
   } else {
     settings.color_metadata_source = "encoder-default";
-    settings.color_reason = "source color metadata unknown; encoder defaults apply";
+    settings.color_reason = "源图色彩元数据未知，使用编码器默认值";
+  }
+}
+
+void populate_applied_avif_color_diagnostics(NativeEncodeSettings& settings,
+                                             const AppConfig& cfg,
+                                             AvifEncoderMode encoder,
+                                             ChromaMode chroma,
+                                             bool lossless) {
+  if (encoder == AvifEncoderMode::zenrav1e) {
+    if (settings.applied_icc == "kept") {
+      settings.applied_icc = settings.source_has_icc ? "not-written" : "none";
+    }
+    if (settings.applied_hdr_metadata == "kept") {
+      settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "not-written" : "none";
+    }
+    settings.color_metadata_source = "zenravif-bridge-default";
+    settings.color_reason = "zenravif bridge 未暴露 CICP/HDR 元数据控制";
+    return;
+  }
+
+  if (encoder == AvifEncoderMode::svt) {
+    settings.applied_color_primaries = settings.svtav1hdr.color_primaries.value_or(1);
+    settings.applied_transfer_characteristics = settings.svtav1hdr.transfer_characteristics.value_or(13);
+    settings.applied_matrix_coefficients = settings.svtav1hdr.matrix_coefficients.value_or(1);
+    settings.applied_color_range = settings.svtav1hdr.color_range.value_or(1);
+    if (has_user_hdr_settings(cfg)) {
+      settings.applied_hdr_metadata = "user-svt-settings";
+    }
+    if (settings.color_metadata_source == "stripped") {
+      settings.color_metadata_source = "svt-encoder-default";
+      settings.color_reason = "已移除源图元数据，并使用 svt-av1-hdr 默认值";
+    } else if (settings.color_metadata_source == "encoder-default") {
+      settings.color_metadata_source = "svt-encoder-default";
+      settings.color_reason = "源图色彩元数据未知，使用 svt-av1-hdr 默认值";
+    }
+    return;
+  }
+
+  const bool user_cicp_settings = has_user_cicp_settings(cfg);
+  ignore_svt_only_hdr_for_non_svt_encoder(settings, cfg);
+  if (user_cicp_settings && settings.color_metadata_source == "user-svt-settings") {
+    settings.color_metadata_source = "user-cicp-settings";
+    settings.color_reason = cfg.strip_metadata
+                                ? "已移除源图元数据，并使用用户 CICP 设置"
+                                : "用户 CICP 设置覆盖源图元数据";
+  }
+
+  settings.applied_color_primaries = cfg.color_primaries
+                                          ? cfg.color_primaries
+                                          : non_unspecified_color_value(
+                                                settings.applied_color_primaries, 2);
+  settings.applied_transfer_characteristics = cfg.transfer_characteristics
+                                                 ? cfg.transfer_characteristics
+                                                 : non_unspecified_color_value(
+                                                       settings.applied_transfer_characteristics, 2);
+  settings.applied_matrix_coefficients = cfg.matrix_coefficients
+                                            ? cfg.matrix_coefficients
+                                            : non_unspecified_color_value(
+                                                  settings.applied_matrix_coefficients, 2);
+  settings.applied_color_range = settings.applied_color_range.value_or(1);
+
+  if (!settings.applied_color_primaries && !lossless && settings.applied_icc != "kept") {
+    settings.applied_color_primaries = 1;
+  }
+  if (!settings.applied_transfer_characteristics && !lossless && settings.applied_icc != "kept") {
+    settings.applied_transfer_characteristics = 13;
+  }
+  if (!settings.applied_matrix_coefficients) {
+    if (lossless && chroma == ChromaMode::yuv444) {
+      settings.applied_matrix_coefficients = 0;
+    } else if (!lossless && settings.applied_icc != "kept") {
+      settings.applied_matrix_coefficients = 1;
+    }
+  }
+
+  if (lossless && chroma == ChromaMode::yuv444 && !cfg.matrix_coefficients &&
+      !settings.source_matrix_coefficients) {
+    settings.color_metadata_source = user_cicp_settings ? "user-cicp-settings" : "aom-lossless-transform";
+    settings.color_reason = "无损 yuv444 使用 identity matrix 执行 RGB/YUV 转换，因为源图 matrix 未指定";
+  } else if (settings.color_metadata_source == "stripped" &&
+             (settings.applied_color_primaries || settings.applied_transfer_characteristics ||
+              settings.applied_matrix_coefficients || settings.applied_color_range)) {
+    settings.color_metadata_source = user_cicp_settings ? "user-cicp-settings" : "aom-encoder-default";
+    settings.color_reason = user_cicp_settings
+                                ? "已移除源图元数据，并使用用户 CICP 设置"
+                                : "已移除源图元数据，并使用 AOM/libavif 默认值";
+  } else if (settings.color_metadata_source == "encoder-default") {
+    settings.color_metadata_source = "aom-encoder-default";
+    settings.color_reason = "源图色彩元数据未知，使用 AOM/libavif 默认值";
   }
 }
 
@@ -399,128 +1163,267 @@ bool avif_lossless_bit_depth_supported(int bit_depth) noexcept {
   return bit_depth == 8 || bit_depth == 10 || bit_depth == 12;
 }
 
-std::wstring make_helper_command_line(const fs::path& helper,
-                                      const fs::path& input,
-                                      const fs::path& output,
-                                      const NativeEncodeSettings& settings) {
-  std::wstring command = quote_process_argument(helper.native());
-  const auto append = [&](std::wstring_view value) {
-    command.push_back(L' ');
-    command += value;
-  };
-  append(L"--mode");
-  append(L"encode");
-  append(L"--encoder");
-  append(helper_encoder_argument(settings.avif_encoder));
-  append(L"--input");
-  append(quote_process_argument(input.native()));
-  append(L"--output");
-  append(quote_process_argument(output.native()));
-  append(L"--quality");
-  append(std::format(L"{}", settings.quality));
-  append(L"--speed");
-  append(std::format(L"{}", settings.speed));
-  if (!encode_settings_lossless_requested(settings)) {
-    append(L"--bit-depth");
-    append(std::format(L"{}", settings.bit_depth.value_or(8)));
-    append(L"--chroma");
-    append(helper_chroma_argument(settings.chroma_mode));
+std::expected<std::wstring, std::string> make_helper_command_line(
+    const fs::path& helper,
+    const fs::path& input,
+    const fs::path& output,
+    const NativeEncodeSettings& settings) {
+  try {
+    std::wstring command = quote_process_argument(helper.native());
+    const auto append = [&](std::wstring_view value) {
+      command.push_back(L' ');
+      command += value;
+    };
+    append(L"--mode");
+    append(L"encode");
+    append(L"--encoder");
+    append(helper_encoder_argument(settings.avif_encoder));
+    append(L"--input");
+    append(quote_process_argument(input.native()));
+    append(L"--output");
+    append(quote_process_argument(output.native()));
+    append(L"--quality");
+    append(std::format(L"{}", avif_helper_final_quality(settings)));
+    append(L"--speed");
+    append(std::format(L"{}", avif_helper_speed(settings.speed)));
+    if (!encode_settings_lossless_requested(settings)) {
+      append(L"--bit-depth");
+      append(std::format(L"{}", settings.bit_depth.value_or(8)));
+      append(L"--chroma");
+      append(helper_chroma_argument(settings.chroma_mode));
+    }
+    append(L"--threads");
+    append(std::format(L"{}", avif_helper_thread_count(settings.resources.encoder_threads_per_file)));
+    if (settings.applied_hdr_metadata == "kept" && settings.source_content_light) {
+      append(L"--source-content-light");
+      append(std::format(L"{}", settings.source_content_light->max_cll));
+      append(std::format(L"{}", settings.source_content_light->max_pall));
+    }
+    if (settings.avif_encoder == AvifEncoderMode::zenrav1e) {
+      append(L"--experimental-encoders");
+    }
+    return command;
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"构造 AVIF helper 命令行时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"构造 AVIF helper 命令行超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"构造 AVIF helper 命令行时文件系统访问失败。"};
   }
-  append(L"--threads");
-  append(std::format(L"{}", std::max(1, settings.resources.encoder_threads_per_file)));
-  if (settings.avif_encoder == AvifEncoderMode::zenrav1e) {
-    append(L"--experimental-encoders");
-  }
-  return command;
 }
 
-std::expected<void, std::string> run_helper_command(std::wstring command_line,
-                                                     std::chrono::minutes timeout,
-                                                     std::stop_token stop_token) {
-  SECURITY_ATTRIBUTES security{};
-  security.nLength = sizeof(security);
-  security.bInheritHandle = TRUE;
+std::expected<void, std::string> run_helper_command(
+    std::wstring command_line,
+    std::chrono::minutes timeout,
+    std::stop_token stop_token,
+    std::span<const fs::path> private_paths = {}) {
+  try {
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
 
-  HANDLE raw_read = nullptr;
-  HANDLE raw_write = nullptr;
-  if (!CreatePipe(&raw_read, &raw_write, &security, 0)) {
-    return std::unexpected{std::format("创建 AVIF helper 输出管道失败: {}", win32_error_message(GetLastError()))};
-  }
-  UniqueHandle read_pipe{raw_read};
-  UniqueHandle write_pipe{raw_write};
-  SetHandleInformation(read_pipe.get(), HANDLE_FLAG_INHERIT, 0);
-
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESTDHANDLES;
-  startup.hStdOutput = write_pipe.get();
-  startup.hStdError = write_pipe.get();
-  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-  PROCESS_INFORMATION process{};
-  if (!CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
-    return std::unexpected{std::format("启动 AVIF helper 失败: {}", win32_error_message(GetLastError()))};
-  }
-  UniqueHandle process_handle{process.hProcess};
-  UniqueHandle thread_handle{process.hThread};
-  write_pipe.reset();
-
-  const auto started = std::chrono::steady_clock::now();
-  std::string diagnostics;
-  while (true) {
-    diagnostics += read_pipe_available(read_pipe.get());
-    const DWORD wait = WaitForSingleObject(process_handle.get(), 50);
-    if (wait == WAIT_OBJECT_0) {
-      break;
+    HANDLE raw_read = nullptr;
+    HANDLE raw_write = nullptr;
+    if (!CreatePipe(&raw_read, &raw_write, &security, 0)) {
+      return std::unexpected{std::format("创建 AVIF helper 输出管道失败: {}", win32_error_message(GetLastError()))};
     }
-    if (wait != WAIT_TIMEOUT) {
-      return std::unexpected{std::format("等待 AVIF helper 失败: {}", win32_error_message(GetLastError()))};
+    UniqueHandle read_pipe{raw_read};
+    UniqueHandle write_pipe{raw_write};
+    if (!SetHandleInformation(read_pipe.get(), HANDLE_FLAG_INHERIT, 0)) {
+      return std::unexpected{std::format("配置 AVIF helper 输出管道失败: {}", win32_error_message(GetLastError()))};
     }
-    if (stop_token.stop_requested()) {
-      TerminateProcess(process_handle.get(), 130);
+
+    auto job = create_helper_process_job();
+    if (!job) {
+      return std::unexpected{job.error()};
+    }
+
+    HANDLE raw_null_input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                        &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (raw_null_input == INVALID_HANDLE_VALUE) {
+      return std::unexpected{std::format("创建 AVIF helper 标准输入失败: {}", win32_error_message(GetLastError()))};
+    }
+    UniqueHandle null_input{raw_null_input};
+
+    auto attribute_storage = allocate_helper_handle_list();
+    if (!attribute_storage) {
+      return std::unexpected{attribute_storage.error()};
+    }
+    auto* attribute_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_storage->storage.get());
+    std::array<HANDLE, 2> inherited_handles{null_input.get(), write_pipe.get()};
+    if (auto initialized = initialize_helper_handle_list(attribute_list, attribute_storage->size, inherited_handles); !initialized) {
+      return std::unexpected{initialized.error()};
+    }
+    ProcThreadAttributeListGuard attribute_guard{attribute_list};
+
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdOutput = write_pipe.get();
+    startup.StartupInfo.hStdError = write_pipe.get();
+    startup.StartupInfo.hStdInput = null_input.get();
+    startup.lpAttributeList = attribute_list;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                        nullptr, nullptr, &startup.StartupInfo, &process)) {
+      return std::unexpected{std::format("启动 AVIF helper 失败: {}", win32_error_message(GetLastError()))};
+    }
+    UniqueHandle process_handle{process.hProcess};
+    UniqueHandle thread_handle{process.hThread};
+    write_pipe.reset();
+    if (!AssignProcessToJobObject(job->get(), process_handle.get())) {
+      const auto message = win32_error_message(GetLastError());
+      TerminateProcess(process_handle.get(), 127);
       WaitForSingleObject(process_handle.get(), 1000);
-      diagnostics += read_pipe_available(read_pipe.get());
-      const auto message = sanitize_stderr_message(std::move(diagnostics));
-      return std::unexpected{message.empty() ? "AVIF helper 已取消。" : std::format("AVIF helper 已取消: {}", message)};
+      return std::unexpected{std::format("将 AVIF helper 加入进程树管理失败: {}", message)};
     }
-    if (timeout.count() > 0 && std::chrono::steady_clock::now() - started > timeout) {
-      TerminateProcess(process_handle.get(), 124);
-      WaitForSingleObject(process_handle.get(), 1000);
-      diagnostics += read_pipe_available(read_pipe.get());
-      const auto message = sanitize_stderr_message(std::move(diagnostics));
-      return std::unexpected{message.empty() ? std::format("AVIF helper 超时（{} 分钟）。", timeout.count())
-                                            : std::format("AVIF helper 超时（{} 分钟）: {}", timeout.count(), message)};
+    if (ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
+      const auto message = win32_error_message(GetLastError());
+      terminate_helper_process_tree(job->get(), process_handle.get(), 127);
+      return std::unexpected{std::format("恢复 AVIF helper 执行失败: {}", message)};
     }
-  }
 
-  diagnostics += read_pipe_available(read_pipe.get());
-  DWORD exit_code = 1;
-  if (!GetExitCodeProcess(process_handle.get(), &exit_code)) {
-    return std::unexpected{std::format("读取 AVIF helper 退出码失败: {}", win32_error_message(GetLastError()))};
+    const auto started = std::chrono::steady_clock::now();
+    std::string diagnostics;
+    while (true) {
+      append_pipe_available(read_pipe.get(), diagnostics);
+      const DWORD wait = WaitForSingleObject(process_handle.get(), 50);
+      if (wait == WAIT_OBJECT_0) {
+        break;
+      }
+      if (wait != WAIT_TIMEOUT) {
+        const auto message = win32_error_message(GetLastError());
+        terminate_helper_process_tree(job->get(), process_handle.get(), 127);
+        return std::unexpected{std::format("等待 AVIF helper 失败: {}", message)};
+      }
+      if (stop_token.stop_requested()) {
+        terminate_helper_process_tree(job->get(), process_handle.get(), 130);
+        append_pipe_available(read_pipe.get(), diagnostics);
+        const auto message = sanitize_helper_diagnostics(std::move(diagnostics), private_paths);
+        return std::unexpected{message.empty() ? "AVIF helper 已取消。" : std::format("AVIF helper 已取消: {}", message)};
+      }
+      if (timeout.count() > 0 && std::chrono::steady_clock::now() - started > timeout) {
+        terminate_helper_process_tree(job->get(), process_handle.get(), 124);
+        append_pipe_available(read_pipe.get(), diagnostics);
+        const auto message = sanitize_helper_diagnostics(std::move(diagnostics), private_paths);
+        return std::unexpected{message.empty() ? std::format("AVIF helper 超时（{} 分钟）。", timeout.count())
+                                              : std::format("AVIF helper 超时（{} 分钟）: {}", timeout.count(), message)};
+      }
+    }
+
+    append_pipe_available(read_pipe.get(), diagnostics);
+    DWORD exit_code = 1;
+    if (!GetExitCodeProcess(process_handle.get(), &exit_code)) {
+      return std::unexpected{std::format("读取 AVIF helper 退出码失败: {}", win32_error_message(GetLastError()))};
+    }
+    if (exit_code != 0) {
+      const auto message = sanitize_helper_diagnostics(std::move(diagnostics), private_paths);
+      return std::unexpected{message.empty() ? std::format("AVIF helper 编码失败，退出码 {}。", exit_code)
+                                            : std::format("AVIF helper 编码失败，退出码 {}: {}", exit_code, message)};
+    }
+    return {};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"运行 AVIF helper 时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"运行 AVIF helper 时数据超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"运行 AVIF helper 时文件系统访问失败。"};
   }
-  if (exit_code != 0) {
-    const auto message = sanitize_stderr_message(std::move(diagnostics));
-    return std::unexpected{message.empty() ? std::format("AVIF helper 编码失败，退出码 {}。", exit_code)
-                                          : std::format("AVIF helper 编码失败，退出码 {}: {}", exit_code, message)};
-  }
-  return {};
 }
 
 std::atomic<std::uint64_t> helper_counter{};
+std::atomic<std::uint64_t> output_temp_counter{};
+constexpr int kMaxOutputTempPathAttempts = 1000;
 
-fs::path helper_executable_path() {
-  const auto exe_dir = executable_directory();
-  const auto colocated = exe_dir / L"AWJ-native-avif-helper.exe";
-  std::error_code ec;
-  if (fs::exists(colocated, ec) && !ec) {
+fs::path make_output_temp_path(const fs::path& target) {
+  const auto parent = target.parent_path();
+  const auto id = output_temp_counter.fetch_add(1, std::memory_order_relaxed);
+  return parent / std::format(L".awj-output-{}-{}.tmp", GetCurrentProcessId(), id);
+}
+
+std::expected<fs::path, std::string> helper_executable_path() {
+  try {
+    const auto exe_dir = executable_directory();
+    if (!exe_dir) {
+      return std::unexpected{exe_dir.error()};
+    }
+    const auto colocated = *exe_dir / L"AWJ-native-avif-helper.exe";
+    std::error_code ec;
+    const auto colocated_is_file = fs::is_regular_file(colocated, ec);
+    if (ec) {
+      return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
+                                         display_path_for_user(colocated), ec.message())};
+    }
+    if (colocated_is_file) {
+      return colocated;
+    }
+    const auto internal = exe_dir->parent_path() / L"internal" / exe_dir->filename() /
+                          L"AWJ-native-avif-helper.exe";
+    const auto internal_is_file = fs::is_regular_file(internal, ec);
+    if (ec) {
+      return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
+                                         display_path_for_user(internal), ec.message())};
+    }
+    if (internal_is_file) {
+      return internal;
+    }
     return colocated;
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"定位 AVIF helper 路径时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"定位 AVIF helper 路径超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"定位 AVIF helper 路径时文件系统访问失败。"};
   }
-  const auto internal = exe_dir.parent_path() / L"internal" / exe_dir.filename() /
-                        L"AWJ-native-avif-helper.exe";
-  if (fs::exists(internal, ec) && !ec) {
-    return internal;
+}
+
+struct HelperTempFiles {
+  fs::path directory;
+  fs::path input;
+  fs::path output;
+};
+
+std::expected<HelperTempFiles, std::string> create_helper_temp_files() {
+  try {
+    std::error_code ec;
+    const auto temp_base = fs::temp_directory_path(ec);
+    if (ec) {
+      return std::unexpected{std::format("无法获取 AVIF helper 临时目录: {}", ec.message())};
+    }
+    const auto temp_root = temp_base / L"awjimage-avif-helper";
+    fs::create_directories(temp_root, ec);
+    if (ec) {
+      return std::unexpected{std::format("无法创建 AVIF helper 临时目录 {}: {}",
+                                         display_path_for_user(temp_root),
+                                         ec.message())};
+    }
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+      const auto id = helper_counter.fetch_add(1);
+      auto directory = temp_root / std::format(L"job-{}-{}", GetCurrentProcessId(), id);
+      auto input = directory / L"input.awsraw";
+      auto output = directory / L"output.avif";
+      if (fs::create_directory(directory, ec)) {
+        return HelperTempFiles{.directory = std::move(directory),
+                               .input = std::move(input),
+                               .output = std::move(output)};
+      }
+      if (ec && ec != std::errc::file_exists) {
+        return std::unexpected{std::format("无法创建 AVIF helper 临时目录 {}: {}",
+                                           display_path_for_user(directory),
+                                           ec.message())};
+      }
+      ec.clear();
+    }
+    return std::unexpected{std::format("无法创建唯一 AVIF helper 临时目录: {}",
+                                       display_path_for_user(temp_root))};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"创建 AVIF helper 临时路径时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"创建 AVIF helper 临时路径超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"创建 AVIF helper 临时路径时文件系统访问失败。"};
   }
-  return colocated;
 }
 
 std::expected<NativeEncodeResult, std::string> encode_with_helper_process(
@@ -528,141 +1431,330 @@ std::expected<NativeEncodeResult, std::string> encode_with_helper_process(
     const NativeEncodeSettings& settings,
     std::chrono::minutes timeout,
     std::stop_token stop_token) {
-  if (encode_settings_lossless_requested(settings)) {
-    return std::unexpected{
-        "AVIF helper/raw RGBA 无损编码不能保证继承全部源图参数；请使用内置 AOM 无损路径。"};
-  }
-  if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 || image.planes.empty()) {
-    return std::unexpected{"AVIF helper 当前需要 8-bit RGBA ImageBuffer。"};
-  }
-  const auto temp_root = fs::temp_directory_path() / L"awjimage-avif-helper";
-  std::error_code ec;
-  fs::create_directories(temp_root, ec);
-  if (ec) {
-    return std::unexpected{std::format("无法创建 AVIF helper 临时目录: {}", ec.message())};
-  }
-  const auto id = helper_counter.fetch_add(1);
-  const auto input_path = temp_root / std::format(L"input-{}-{}.awsraw", GetCurrentProcessId(), id);
-  const auto output_path = temp_root / std::format(L"output-{}-{}.avif", GetCurrentProcessId(), id);
-  TempFileCleanup cleanup{input_path, output_path};
-  if (auto written = write_raw_image_file(input_path, image); !written) {
-    return std::unexpected{written.error()};
-  }
-  const auto helper = helper_executable_path();
-  if (!fs::exists(helper, ec) || ec) {
-    return std::unexpected{"AVIF helper 缺失；请重新安装或重新构建 AWJimage。"};
-  }
-  auto command_line = make_helper_command_line(helper, input_path, output_path, settings);
-  if (auto ran = run_helper_command(std::move(command_line), timeout, stop_token); !ran) {
-    return std::unexpected{ran.error()};
-  }
-  auto bytes = read_file_bytes(output_path);
-  if (!bytes) {
-    return std::unexpected{bytes.error()};
-  }
-
-  const auto speed_mapping = avif_speed_mapping_for(AvifEncoderSelection{
-      .applied_encoder = settings.avif_encoder,
-      .speed = settings.speed});
-  return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(*bytes),
-                                                    .codec_name = avif_encoder_mode_name(settings.avif_encoder)},
-                            .diagnostics = EncodeDiagnostics{
-                                .encoder_id = avif_encoder_mode_name(settings.avif_encoder),
-                                .requested_encoder_id = avif_encoder_mode_name(settings.requested_avif_encoder),
-                                .requested_chroma = chroma_mode_name(settings.requested_chroma_mode),
-                                .applied_chroma = chroma_mode_name(settings.chroma_mode),
-                                .requested_bit_depth = settings.requested_bit_depth,
-                                .applied_bit_depth = settings.bit_depth,
-                                .bit_depth_reason = settings.bit_depth_reason,
-                                .fallback_reason = settings.encoder_fallback_reason,
-                                .encoder_experimental = settings.avif_encoder == AvifEncoderMode::zenrav1e,
-                                .encoder_license = settings.avif_encoder == AvifEncoderMode::zenrav1e
-                                                       ? "AGPL-3.0-only OR LicenseRef-Imazen-Commercial"
-                                                       : "BSD-2-Clause",
-                                .speed_mapping = speed_mapping,
-                                .encoder_threads = settings.resources.encoder_threads_per_file,
-                                .memory_budget_bytes = settings.resources.memory_limit_bytes},
-                            .final_quality = settings.quality,
-                            .lossless = settings.quality >= 100,
-                            .search_attempt_count = 1};
-}
-
-std::wstring collision_suffix(CollisionMode mode) {
-  const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-  switch (mode) {
-    case CollisionMode::suffix_time:
-      return std::format(L"-{:%Y%m%d-%H%M%S}", now);
-    case CollisionMode::suffix_random: {
-      const auto value = helper_counter.fetch_add(1);
-      return std::format(L"-{:08x}", static_cast<unsigned int>((value ^ GetTickCount64()) & 0xffffffffu));
+  try {
+    if (encode_settings_lossless_requested(settings)) {
+      return std::unexpected{
+          "AVIF helper/raw RGBA 无损编码不能保证继承全部源图参数；请使用内置 AOM 无损路径。"};
     }
-    case CollisionMode::overwrite:
-    case CollisionMode::skip:
-    default:
-      return {};
-  }
-}
+    if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 || image.planes.empty()) {
+      return std::unexpected{"AVIF helper 当前需要 8-bit RGBA ImageBuffer。"};
+    }
+    auto temp_files = create_helper_temp_files();
+    if (!temp_files) {
+      return std::unexpected{temp_files.error()};
+    }
+    TempFileCleanup cleanup{temp_files->input, temp_files->output, temp_files->directory};
+    if (auto written = write_raw_image_file(temp_files->input, image); !written) {
+      return std::unexpected{written.error()};
+    }
+    auto helper = helper_executable_path();
+    if (!helper) {
+      return std::unexpected{helper.error()};
+    }
+    std::error_code ec;
+    const auto helper_is_file = fs::is_regular_file(*helper, ec);
+    if (ec) {
+      return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
+                                         display_path_for_user(*helper), ec.message())};
+    }
+    if (!helper_is_file) {
+      const auto helper_exists = fs::exists(*helper, ec);
+      if (ec) {
+        return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
+                                           display_path_for_user(*helper), ec.message())};
+      }
+      if (helper_exists) {
+        return std::unexpected{std::format("AVIF helper 路径不是普通文件: {}；请重新安装或重新构建 AWJimage。",
+                                           display_path_for_user(*helper))};
+      }
+      return std::unexpected{std::format("AVIF helper 缺失: {}；请重新安装或重新构建 AWJimage。",
+                                         display_path_for_user(*helper))};
+    }
+    auto command_line = make_helper_command_line(*helper, temp_files->input, temp_files->output, settings);
+    if (!command_line) {
+      return std::unexpected{command_line.error()};
+    }
+    const std::array private_paths{temp_files->directory, temp_files->input, temp_files->output};
+    if (auto ran = run_helper_command(std::move(*command_line), timeout, stop_token,
+                                      std::span<const fs::path>{private_paths}); !ran) {
+      return std::unexpected{ran.error()};
+    }
+    auto bytes = read_file_bytes(temp_files->output);
+    if (!bytes) {
+      return std::unexpected{bytes.error()};
+    }
 
-fs::path resolve_collision_output_path(const fs::path& planned,
-                                       CollisionMode mode) {
-  if (mode != CollisionMode::suffix_time && mode != CollisionMode::suffix_random) {
-    return planned;
+    const int final_speed = avif_helper_speed(settings.speed);
+    const auto speed_mapping = avif_speed_mapping_for(AvifEncoderSelection{
+        .applied_encoder = settings.avif_encoder,
+        .speed = final_speed});
+    auto diagnostics = diagnostics_from_settings(settings);
+    diagnostics.encoder_id = avif_encoder_mode_name(settings.avif_encoder);
+    diagnostics.requested_encoder_id = avif_encoder_mode_name(settings.requested_avif_encoder);
+    diagnostics.requested_chroma = chroma_mode_name(settings.requested_chroma_mode);
+    diagnostics.applied_chroma = chroma_mode_name(settings.chroma_mode);
+    diagnostics.requested_bit_depth = settings.requested_bit_depth;
+    diagnostics.applied_bit_depth = settings.bit_depth;
+    diagnostics.bit_depth_reason = settings.bit_depth_reason;
+    diagnostics.fallback_reason = settings.encoder_fallback_reason;
+    diagnostics.encoder_experimental = settings.avif_encoder == AvifEncoderMode::zenrav1e;
+    diagnostics.encoder_license = settings.avif_encoder == AvifEncoderMode::zenrav1e
+                                      ? "AGPL-3.0-only OR LicenseRef-Imazen-Commercial"
+                                      : "BSD-2-Clause";
+    diagnostics.speed_mapping = speed_mapping;
+    diagnostics.encoder_threads = avif_helper_thread_count(settings.resources.encoder_threads_per_file);
+    diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
+    return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(*bytes),
+                                                      .codec_name = avif_encoder_mode_name(settings.avif_encoder)},
+                              .diagnostics = std::move(diagnostics),
+                              .final_quality = avif_helper_final_quality(settings),
+                              .lossless = encode_settings_lossless_requested(settings),
+                              .search_attempt_count = 1};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"AVIF helper 编码内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"AVIF helper 编码数据超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"AVIF helper 编码文件系统访问失败。"};
   }
-  std::error_code ec;
-  if (!fs::exists(planned, ec) && !ec) {
-    return planned;
-  }
-  const auto parent = planned.parent_path();
-  const auto stem = planned.stem().wstring();
-  const auto extension = planned.extension().wstring();
-  const auto suffix = collision_suffix(mode);
-  const auto planned_key = normalized_lower_path_key(planned);
-  for (int attempt = 0; attempt < 1000; ++attempt) {
-    auto candidate = parent / (stem + suffix + (attempt == 0 ? std::wstring{} : std::format(L"-{}", attempt)) + extension);
-    if (normalized_lower_path_key(candidate) == planned_key) {
-      continue;
-    }
-    if (!fs::exists(candidate, ec) && !ec) {
-      return candidate;
-    }
-    ec.clear();
-  }
-  return parent / (stem + suffix + std::format(L"-{}", GetCurrentProcessId()) + extension);
 }
 
 std::expected<void, std::string> write_output_bytes(const fs::path& path,
-                                                    std::span<const std::byte> bytes) {
-  std::error_code ec;
-  fs::create_directories(path.parent_path(), ec);
-  if (ec) {
-    return std::unexpected{std::format("无法创建输出目录 {}: {}",
-                                       path_to_utf8(path.parent_path()), ec.message())};
-  }
-  const auto temp_path = path.parent_path() /
-                         std::format(L"{}.tmp-{}-{}", path.filename().wstring(),
-                                     GetCurrentProcessId(), helper_counter.fetch_add(1));
-  if (normalized_lower_path_key(temp_path) == normalized_lower_path_key(path)) {
-    return std::unexpected{std::format("临时输出路径与目标路径冲突: {}", path_to_utf8(path))};
-  }
-  TempOutputFile temp{temp_path};
-  {
-    std::ofstream output{temp.path(), std::ios::binary | std::ios::trunc};
-    if (!output) {
-      return std::unexpected{std::format("无法写入临时输出文件: {}", path_to_utf8(temp.path()))};
+                                                    std::span<const std::byte> bytes,
+                                                    bool replace_existing,
+                                                    std::stop_token stop_token = {}) {
+  try {
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
     }
-    output.write(reinterpret_cast<const char*>(bytes.data()),
-                 static_cast<std::streamsize>(bytes.size()));
-    if (!output) {
-      return std::unexpected{std::format("写入临时输出文件失败: {}", path_to_utf8(temp.path()))};
+    if (bytes.empty()) {
+      return std::unexpected{std::format("输出内容为空，无法写入输出文件: {}", display_path_for_user(path))};
     }
+    if (bytes.size() > encoding_defaults::max_input_file_bytes) {
+      return std::unexpected{std::format("输出内容超过 20 GiB 运行时上限，无法写入输出文件: {}",
+                                        display_path_for_user(path))};
+    }
+    const auto parent = path.parent_path();
+    std::error_code ec;
+    if (!parent.empty()) {
+      fs::create_directories(parent, ec);
+      if (ec) {
+        return std::unexpected{std::format("无法创建输出目录 {}: {}",
+                                           display_path_for_user(parent), ec.message())};
+      }
+    }
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
+    }
+    std::optional<fs::path> temp_path;
+    for (int attempt = 0; attempt < kMaxOutputTempPathAttempts; ++attempt) {
+      auto candidate = make_output_temp_path(path);
+      if (normalized_lower_path_key(candidate) == normalized_lower_path_key(path)) {
+        continue;
+      }
+      if (auto written = write_file_bytes_exclusive(candidate, bytes); written) {
+        temp_path = std::move(candidate);
+        break;
+      } else {
+        auto failure = std::move(written.error());
+        if (!output_temp_name_collision(failure.create_error)) {
+          return std::unexpected{std::move(failure.message)};
+        }
+      }
+    }
+    if (!temp_path) {
+      return std::unexpected{std::format("无法创建唯一临时输出路径: {}",
+                                         display_path_for_user(path))};
+    }
+    TempOutputFile temp{*temp_path};
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
+    }
+    if (auto attributes = clear_transient_file_attributes(*temp_path, "临时输出文件"); !attributes) {
+      return std::unexpected{attributes.error()};
+    }
+    const DWORD move_flags = replace_existing
+                                 ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+                                 : MOVEFILE_WRITE_THROUGH;
+    if (!MoveFileExW(temp_path->c_str(), path.c_str(), move_flags)) {
+      const auto error = GetLastError();
+      if (!replace_existing &&
+          (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)) {
+        return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
+      }
+      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+                                         win32_error_message(error))};
+    }
+    temp.release();
+    return {};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"写入输出文件时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"写入输出文件路径超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"写入输出文件时文件系统访问失败。"};
   }
-  if (!MoveFileExW(temp.path().c_str(), path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    return std::unexpected{std::format("替换输出文件失败 {}: {}", path_to_utf8(path),
-                                       win32_error_message(GetLastError()))};
+}
+
+std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& source,
+                                                               const fs::path& path,
+                                                               bool replace_existing,
+                                                               std::stop_token stop_token = {}) {
+  try {
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
+    }
+    std::error_code source_size_error;
+    const auto source_size = fs::file_size(source, source_size_error);
+    if (source_size_error) {
+      return std::unexpected{std::format("读取 AVIF 直通输入文件大小失败 {}: {}",
+                                         display_path_for_user(source),
+                                         source_size_error.message())};
+    }
+    if (source_size == 0) {
+      return std::unexpected{std::format("AVIF 直通输入文件为空: {}",
+                                         display_path_for_user(source))};
+    }
+    if (source_size > encoding_defaults::max_input_file_bytes) {
+      return std::unexpected{std::format("AVIF 直通输入超过 20 GiB 输入上限: {}",
+                                         display_path_for_user(source))};
+    }
+    const auto parent = path.parent_path();
+    std::error_code ec;
+    if (!parent.empty()) {
+      fs::create_directories(parent, ec);
+      if (ec) {
+        return std::unexpected{std::format("无法创建输出目录 {}: {}",
+                                           display_path_for_user(parent), ec.message())};
+      }
+    }
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
+    }
+    std::uintmax_t copied_bytes = 0;
+    std::optional<fs::path> temp_path;
+    std::optional<TempOutputFile> temp;
+    {
+      const HANDLE raw_source = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                           nullptr, OPEN_EXISTING,
+                                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                                           nullptr);
+      if (raw_source == INVALID_HANDLE_VALUE) {
+        return std::unexpected{std::format("无法读取 AVIF 直通输入文件 {}: {}",
+                                           display_path_for_user(source),
+                                           win32_error_message(GetLastError()))};
+      }
+      UniqueHandle source_file{raw_source};
+
+      UniqueHandle output_file;
+      for (int attempt = 0; attempt < kMaxOutputTempPathAttempts; ++attempt) {
+        auto candidate = make_output_temp_path(path);
+        if (normalized_lower_path_key(candidate) == normalized_lower_path_key(path)) {
+          continue;
+        }
+        const HANDLE raw_output = CreateFileW(candidate.c_str(), GENERIC_WRITE, 0, nullptr,
+                                             CREATE_NEW,
+                                             FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+                                             nullptr);
+        if (raw_output == INVALID_HANDLE_VALUE) {
+          const auto error = GetLastError();
+          if (output_temp_name_collision(error)) {
+            continue;
+          }
+          return std::unexpected{std::format("无法创建临时输出文件 {}: {}",
+                                             display_path_for_user(candidate),
+                                             win32_error_message(error))};
+        }
+        output_file.reset(raw_output);
+        temp_path = std::move(candidate);
+        temp.emplace(*temp_path);
+        break;
+      }
+      if (!temp_path || !output_file) {
+        return std::unexpected{std::format("无法创建唯一临时输出路径: {}",
+                                           display_path_for_user(path))};
+      }
+
+      std::vector<std::byte> buffer(1024 * 1024);
+      while (true) {
+        if (stop_token.stop_requested()) {
+          return std::unexpected{"任务已取消。"};
+        }
+        DWORD read = 0;
+        if (!ReadFile(source_file.get(), buffer.data(), static_cast<DWORD>(buffer.size()),
+                      &read, nullptr)) {
+          return std::unexpected{std::format("读取 AVIF 直通输入文件失败 {}: {}",
+                                             display_path_for_user(source),
+                                             win32_error_message(GetLastError()))};
+        }
+        if (read == 0) {
+          break;
+        }
+        if (copied_bytes > encoding_defaults::max_input_file_bytes - read) {
+          return std::unexpected{std::format("AVIF 直通输入超过 20 GiB 输入上限: {}",
+                                             display_path_for_user(source))};
+        }
+        const auto* cursor = reinterpret_cast<const std::uint8_t*>(buffer.data());
+        DWORD remaining = read;
+        while (remaining > 0) {
+          DWORD written = 0;
+          if (!WriteFile(output_file.get(), cursor, remaining, &written, nullptr)) {
+            return std::unexpected{std::format("写入临时输出文件失败 {}: {}",
+                                               display_path_for_user(*temp_path),
+                                               win32_error_message(GetLastError()))};
+          }
+          if (written == 0) {
+            return std::unexpected{std::format("写入临时输出文件失败 {}", display_path_for_user(*temp_path))};
+          }
+          cursor += written;
+          remaining -= written;
+        }
+        copied_bytes += read;
+      }
+      if (copied_bytes == 0) {
+        return std::unexpected{std::format("AVIF 直通输入文件为空: {}", display_path_for_user(source))};
+      }
+      if (!FlushFileBuffers(output_file.get())) {
+        return std::unexpected{std::format("刷新临时输出文件失败 {}: {}",
+                                           display_path_for_user(*temp_path),
+                                           win32_error_message(GetLastError()))};
+      }
+      const HANDLE output_handle = output_file.get();
+      if (!CloseHandle(output_handle)) {
+        return std::unexpected{std::format("关闭临时输出文件失败 {}: {}",
+                                           display_path_for_user(*temp_path),
+                                           win32_error_message(GetLastError()))};
+      }
+      output_file.release();
+    }
+
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
+    }
+    if (auto attributes = clear_transient_file_attributes(*temp_path, "临时输出文件"); !attributes) {
+      return std::unexpected{attributes.error()};
+    }
+    const DWORD move_flags = replace_existing
+                                 ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+                                 : MOVEFILE_WRITE_THROUGH;
+    if (!MoveFileExW(temp_path->c_str(), path.c_str(), move_flags)) {
+      const auto error = GetLastError();
+      if (!replace_existing &&
+          (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)) {
+        return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
+      }
+      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+                                         win32_error_message(error))};
+    }
+    temp->release();
+    return copied_bytes;
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"复制输出文件时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"复制输出文件路径超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"复制输出文件时文件系统访问失败。"};
   }
-  temp.release();
-  return {};
 }
 
 NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan resources) {
@@ -682,6 +1774,7 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
                               .requested_bit_depth = cfg.bit_depth,
                               .strip_metadata = cfg.strip_metadata,
                               .visual_quality_fallback = cfg.visual_quality_fallback,
+                              .visual_quality_gpu = cfg.visual_quality_gpu,
                               .jxl_jpeg_lossless_candidate = false,
                               .avif_tune_iq = encoding_defaults::default_avif_tune_iq,
                               .svtav1hdr = SvtAv1HdrSettings{.crf = cfg.svtav1hdr_crf,
@@ -702,6 +1795,7 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
 void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) {
   result.output_bytes = native.encoded.bytes.size();
   result.final_encoder_quality = native.final_quality;
+  result.visual_quality_target_met = native.visual_quality_target_met;
   result.search_attempt_count = native.search_attempt_count;
   result.lossless = native.lossless;
   result.speed = native.diagnostics.speed_mapping.user_speed;
@@ -755,6 +1849,21 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.applied_speed = native.diagnostics.speed_mapping.codec_value;
   result.encoder_threads = native.diagnostics.encoder_threads;
   result.memory_budget_bytes = native.diagnostics.memory_budget_bytes;
+  result.decode_seconds = native.diagnostics.timing.decode_seconds;
+  result.prepare_seconds = native.diagnostics.timing.prepare_seconds;
+  result.encode_seconds = native.diagnostics.timing.encode_seconds;
+  result.write_seconds = native.diagnostics.timing.write_seconds;
+  result.visual_quality_search_seconds = native.diagnostics.timing.visual_quality_search_seconds;
+  result.visual_quality_candidate_encode_seconds = native.diagnostics.timing.visual_quality_candidate_encode_seconds;
+  result.visual_quality_candidate_decode_seconds = native.diagnostics.timing.visual_quality_candidate_decode_seconds;
+  result.visual_quality_candidate_io_seconds = native.diagnostics.timing.visual_quality_candidate_io_seconds;
+  result.visual_quality_luma_seconds = native.diagnostics.timing.visual_quality_luma_seconds;
+  result.gmsd_seconds = native.diagnostics.timing.gmsd_seconds;
+  result.ms_ssim_seconds = native.diagnostics.timing.ms_ssim_seconds;
+  result.visual_quality_metric_seconds = native.diagnostics.timing.visual_quality_metric_seconds;
+  result.visual_quality_candidate_count = native.diagnostics.timing.visual_quality_candidate_count;
+  result.visual_quality_decode_memory_fallback_count = native.diagnostics.timing.visual_quality_decode_memory_fallback_count;
+  result.visual_quality_gpu_fallback_count = native.diagnostics.timing.visual_quality_gpu_fallback_count;
   if (native.visual_score) {
     result.visual_score = native.visual_score->visual_score;
     result.gmsd_quality_score = native.visual_score->gmsd_quality_score;
@@ -769,6 +1878,50 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
                                native.diagnostics.encoder_id,
                                native.final_quality,
                                native.diagnostics.speed_mapping.user_speed);
+}
+
+void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResult& result);
+
+void populate_avif_passthrough_diagnostics(const ImageBuffer& image,
+                                           AvifEncoderMode requested_encoder,
+                                           EncodeResult& result) {
+  NativeEncodeSettings settings{};
+  settings.requested_avif_encoder = requested_encoder;
+  settings.requested_chroma_mode = ChromaMode::auto_keep;
+  settings.chroma_mode = native_backend_detail::lossless_source_chroma(image);
+  settings.requested_alpha_policy = AlphaModePolicy::automatic;
+  settings.requested_bit_depth = source_bit_depth(image);
+  settings.bit_depth = settings.requested_bit_depth;
+  populate_source_diagnostics(settings, image, requested_encoder);
+  if (image.source_info && image.source_info->color_metadata_source == "source-icc") {
+    settings.source_has_icc = true;
+  }
+  settings.avif_encoder = AvifEncoderMode::aom;
+  settings.applied_icc = settings.source_has_icc ? "kept" : "none";
+  settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "kept" : "none";
+  settings.applied_color_primaries = settings.source_color_primaries;
+  settings.applied_transfer_characteristics = settings.source_transfer_characteristics;
+  settings.applied_matrix_coefficients = settings.source_matrix_coefficients;
+  settings.applied_color_range = settings.source_color_range;
+  settings.chroma_reason = "无损直通复制 AVIF 码流 chroma";
+  settings.bit_depth_reason = "无损直通复制 AVIF 码流 bit-depth";
+  settings.alpha_policy_name = alpha_mode_policy_name(settings.requested_alpha_policy);
+  settings.encoder_supports_alpha = true;
+  settings.applied_alpha = settings.source_has_alpha_channel ? "kept" : "none";
+  settings.alpha_reason = "无损直通复制 AVIF 码流 alpha";
+  settings.color_metadata_source = settings.source_has_icc
+                                       ? "source-icc"
+                                       : (settings.color_metadata_source.empty()
+                                              ? "avif-passthrough"
+                                              : settings.color_metadata_source);
+  settings.color_reason = "无损直通复制 AVIF 码流元数据";
+  copy_settings_diagnostics(settings, result);
+  result.encoder_id = "avif-passthrough";
+  result.requested_encoder_id = avif_encoder_mode_name(requested_encoder);
+  result.requested_chroma = chroma_mode_name(ChromaMode::auto_keep);
+  result.applied_chroma = settings.chroma_mode == ChromaMode::auto_keep
+                              ? "unknown"
+                              : chroma_mode_name(settings.chroma_mode);
 }
 
 void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResult& result) {
@@ -870,18 +2023,34 @@ export class NativeBackend final {
   }
 
   [[nodiscard]] EncodeResult initialize_result(const ImageFile& image) const {
+    const auto planned_output_path = output_path_for(cfg_, image);
+    auto output_path = image.output_path_resolved
+                           ? std::expected<fs::path, std::string>{planned_output_path}
+                           : resolve_collision_output_path(planned_output_path, cfg_.collision_mode);
+    auto result = EncodeResult{.index = image.index,
+                               .input_path = image.path,
+                               .output_path = output_path ? *output_path : planned_output_path,
+                               .original_bytes = image.bytes,
+                               .quality = cfg_.quality,
+                               .requested_visual_quality = cfg_.visual_quality,
+                               .gmsd_weight = GMSD_WEIGHT,
+                               .msssim_weight = MSSSIM_WEIGHT,
+                               .final_encoder_quality = cfg_.quality,
+                               .speed = cfg_.speed.value_or(default_speed_for(cfg_.output_format)),
+                               .quality_overridden_by_visual_quality = cfg_.visual_quality.has_value()};
+    if (!output_path) {
+      mark_failed(result, output_path.error());
+    }
+    return result;
+  }
+
+  static EncodeResult failed_encode_result(const ImageFile& image, std::string_view message) {
     return EncodeResult{.index = image.index,
                         .input_path = image.path,
-                        .output_path = native_backend_detail::resolve_collision_output_path(
-                            output_path_for(cfg_, image), cfg_.collision_mode),
                         .original_bytes = image.bytes,
-                        .quality = cfg_.quality,
-                        .requested_visual_quality = cfg_.visual_quality,
-                        .gmsd_weight = GMSD_WEIGHT,
-                        .msssim_weight = MSSSIM_WEIGHT,
-                        .final_encoder_quality = cfg_.quality,
-                        .speed = cfg_.speed.value_or(default_speed_for(cfg_.output_format)),
-                        .quality_overridden_by_visual_quality = cfg_.visual_quality.has_value()};
+                        .processed = true,
+                        .ok = false,
+                        .message = std::string{message}};
   }
 
   static void mark_failed(EncodeResult& result, std::string message) {
@@ -894,6 +2063,7 @@ export class NativeBackend final {
       return false;
     }
     result.canceled = true;
+    result.processed = true;
     result.message = "任务已取消。";
     return true;
   }
@@ -903,39 +2073,43 @@ export class NativeBackend final {
       const EncodeResult& base_result,
       EncodeStartedAt started,
       std::stop_token stop_token) const {
-    if (!native_backend_detail::avif_lossless_requested(cfg_) ||
-        !native_backend_detail::avif_lossless_passthrough_source(image.path)) {
+    if (!native_backend_detail::avif_lossless_passthrough_allowed(cfg_, image.path)) {
       return std::nullopt;
     }
 
     auto result = base_result;
-    auto probe = AvifImageDecoder{}.probe_dimensions(image.path);
-    if (!probe) {
-      mark_failed(result, probe.error());
-      return result;
-    }
-    auto bytes = decoder_common::read_file_bytes(image.path, "AVIF");
-    if (!bytes) {
-      mark_failed(result, bytes.error());
+    auto avif_decoder = AvifImageDecoder{};
+    auto container_info = avif_decoder.parse_container_info(image.path);
+    if (!container_info) {
+      mark_failed(result, redact_path_for_user(container_info.error(), image.path));
       return result;
     }
     if (cancel_if_requested(result, stop_token)) {
       return result;
     }
-    if (auto written = native_backend_detail::write_output_bytes(
-            result.output_path, std::span<const std::byte>{*bytes});
-        !written) {
-      mark_failed(result, written.error());
+    const auto write_started = native_backend_detail::Clock::now();
+    auto copied = native_backend_detail::copy_file_to_output(
+        image.path, result.output_path, cfg_.collision_mode == CollisionMode::overwrite,
+        stop_token);
+    result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
+    if (!copied) {
+      if (stop_token.stop_requested()) {
+        cancel_if_requested(result, stop_token);
+      } else {
+        mark_failed(result, redact_path_for_user(copied.error(), image.path));
+      }
       return result;
     }
 
-    result.output_bytes = bytes->size();
+    result.output_bytes = *copied;
     result.final_encoder_quality = 100;
     result.search_attempt_count = 1;
     result.lossless = true;
+    native_backend_detail::populate_avif_passthrough_diagnostics(*container_info,
+                                                                 cfg_.avif_encoder,
+                                                                 result);
     result.decoder_id = "libavif-parse";
     result.encoder_id = "avif-passthrough";
-    result.requested_encoder_id = avif_encoder_mode_name(cfg_.avif_encoder);
     result.integration_mode = "avif-lossless-passthrough";
     result.encoder_threads = 1;
     result.memory_budget_bytes = resources_.memory_limit_bytes;
@@ -945,26 +2119,105 @@ export class NativeBackend final {
     result.processed = true;
     result.ok = true;
     result.message = "OK";
-    logger_.info(std::format("native avif lossless passthrough ok: {} -> {}",
-                             path_to_utf8(result.input_path.filename()),
-                             path_to_utf8(result.output_path.filename())));
+    native_backend_detail::log_info_noexcept(logger_, [&] {
+      return std::format("native avif lossless passthrough ok: item={:04}",
+                         result.index + 1);
+    });
+    return result;
+  }
+
+  [[nodiscard]] std::optional<EncodeResult> try_jxl_jpeg_bitstream_transcode(
+      const ImageFile& image,
+      const EncodeResult& base_result,
+      EncodeStartedAt started,
+      std::stop_token stop_token) const {
+    if (!native_backend_detail::jxl_jpeg_bitstream_transcode_allowed(cfg_, image.path)) {
+      return std::nullopt;
+    }
+
+    auto result = base_result;
+    result.decoder_id = "jpeg-bitstream";
+    result.encoder_id = "libjxl";
+    result.integration_mode = "jxl-jpeg-bitstream-transcode";
+    result.final_encoder_quality = 100;
+    result.lossless = true;
+    result.encoder_threads = resources_.encoder_threads_per_file;
+    result.memory_budget_bytes = resources_.memory_limit_bytes;
+
+    auto settings = native_backend_detail::settings_from_config(cfg_, resources_);
+    settings.jxl_jpeg_lossless_candidate = true;
+
+    auto bytes = decoder_common::read_file_bytes(image.path, "JPEG");
+    if (!bytes) {
+      mark_failed(result, redact_path_for_user(bytes.error(), image.path));
+      return result;
+    }
+    if (cancel_if_requested(result, stop_token)) {
+      return result;
+    }
+
+    native_backend_detail::populate_jxl_jpeg_bitstream_source_diagnostics(
+        settings, std::span<const std::byte>{*bytes}, cfg_);
+
+    auto encoder = JXLImageEncoder{};
+    const auto encode_started = native_backend_detail::Clock::now();
+    auto encoded = encoder.encode_jpeg_bitstream(std::span<const std::byte>{*bytes},
+                                                 settings, stop_token);
+    result.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
+    if (!encoded) {
+      if (stop_token.stop_requested()) {
+        cancel_if_requested(result, stop_token);
+      } else {
+        mark_failed(result, encoded.error());
+      }
+      return result;
+    }
+
+    if (cancel_if_requested(result, stop_token)) {
+      return result;
+    }
+
+    const auto write_started = native_backend_detail::Clock::now();
+    if (auto written = native_backend_detail::write_output_bytes(
+            result.output_path, std::span<const std::byte>{encoded->encoded.bytes},
+            cfg_.collision_mode == CollisionMode::overwrite, stop_token);
+        !written) {
+      result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
+      if (stop_token.stop_requested()) {
+        cancel_if_requested(result, stop_token);
+      } else {
+        mark_failed(result, written.error());
+      }
+      return result;
+    }
+    result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
+
+    encoded->diagnostics.timing.encode_seconds = result.encode_seconds;
+    encoded->diagnostics.timing.write_seconds = result.write_seconds;
+    native_backend_detail::copy_native_result(*encoded, result);
+    const auto finished = std::chrono::steady_clock::now();
+    result.seconds = std::chrono::duration<double>(finished - started).count();
+    result.processed = true;
+    result.ok = true;
+    result.message = "OK";
+    native_backend_detail::log_info_noexcept(logger_, [&] {
+      return std::format("native jpeg bitstream transcode ok: item={:04}",
+                         result.index + 1);
+    });
     return result;
   }
 
   [[nodiscard]] std::expected<DecodedInput, std::string> decode_input(
       const ImageFile& image) const {
-    auto decoder_selection = select_decoder_for_path(
-        image.path, DecoderRegistryOptions{.allow_wic_fallback = cfg_.allow_wic_fallback});
-    if (!decoder_selection) {
-      return std::unexpected{decoder_selection.error()};
-    }
-
-    auto decoded = decoder_selection->decoder->decode(image.path);
+    auto decoded = decode_image_for_path(
+        image.path,
+        DecoderRegistryOptions{.allow_wic_fallback = cfg_.allow_wic_fallback,
+                               .decode_threads = resources_.encoder_threads_per_file});
     if (!decoded) {
-      return std::unexpected{decoded.error()};
+      return std::unexpected{redact_path_for_user(decoded.error(), image.path)};
     }
 
-    const auto decoder_used_fallback = decoded->used_fallback || decoder_selection->fallback;
+    const bool decoder_used_fallback = decoded->used_fallback;
     return DecodedInput{.decoded = std::move(*decoded),
                         .decoder_used_fallback = decoder_used_fallback};
   }
@@ -984,9 +2237,8 @@ export class NativeBackend final {
       prepared.settings.avif_grid_plan = std::move(overrides.avif_grid_plan);
     }
     if (cfg_.output_format == OutputFormat::jxl) {
-      static constexpr std::wstring_view jpeg_extensions[] = {L".jpg", L".jpeg"};
       prepared.settings.jxl_jpeg_lossless_candidate =
-          decoder_common::extension_is_one_of(image.path, jpeg_extensions);
+          native_backend_detail::jxl_jpeg_bitstream_transcode_allowed(cfg_, image.path);
     }
 
     if (cfg_.output_format == OutputFormat::avif) {
@@ -994,6 +2246,11 @@ export class NativeBackend final {
                                                          decoded.image,
                                                          requested_avif_encoder);
       native_backend_detail::populate_color_decision(prepared.settings, cfg_);
+      if (decoded.image.width == 0 || decoded.image.height == 0 ||
+          decoded.image.width > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
+          decoded.image.height > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+        return prepare_failed("AVIF encoder 输入尺寸超过 API 限制。", prepared.settings);
+      }
       if (decoded.image.width > std::numeric_limits<std::uint64_t>::max() / decoded.image.height) {
         return prepare_failed("AVIF encoder 输入尺寸过大。", prepared.settings);
       }
@@ -1009,48 +2266,65 @@ export class NativeBackend final {
       const bool avif_lossless = native_backend_detail::avif_lossless_requested(cfg_);
       const auto source_chroma = native_backend_detail::lossless_source_chroma(decoded.image);
       const bool explicit_svt = requested_avif_encoder == AvifEncoderMode::svt;
-      if (avif_lossless && explicit_svt) {
-        prepared.settings.avif_encoder = AvifEncoderMode::svt;
-        prepared.settings.chroma_mode = ChromaMode::yuv420;
-        prepared.settings.chroma_reason = "explicit SVT cannot preserve AVIF lossless source parameters";
-        prepared.settings.bit_depth_reason = "lossless requires source bit-depth preservation";
-        return prepare_failed(
-            "svt-av1-hdr 不能保证 AVIF 无损模式继承源图参数；请使用 --avif-encoder auto/aom。",
-            prepared.settings);
-      }
 
       const auto selection_requested_encoder =
           avif_lossless && requested_avif_encoder == AvifEncoderMode::automatic
               ? AvifEncoderMode::aom
               : requested_avif_encoder;
       ChromaMode selection_requested_chroma = ChromaMode::auto_keep;
-      if (avif_lossless) {
-        selection_requested_chroma = source_chroma;
-        prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
-                                             ? "lossless kept chroma auto because source YUV chroma is unknown"
-                                             : "lossless inherited source YUV chroma";
-      } else if (explicit_svt) {
+      if (explicit_svt) {
         selection_requested_chroma = ChromaMode::yuv420;
-        prepared.settings.chroma_reason = cfg_.chroma_mode == ChromaMode::yuv420
-                                             ? "explicit SVT uses 420 chroma"
-                                             : "explicit SVT lossy encoding forced chroma to 420";
+        if (avif_lossless) {
+          prepared.settings.chroma_reason =
+              "显式选择 SVT q100 使用非像素级无损/最高质量路径，强制使用 420 chroma";
+        } else {
+          prepared.settings.chroma_reason = cfg_.chroma_mode == ChromaMode::yuv420
+                                               ? "显式选择 SVT 使用 420 chroma"
+                                               : "显式选择 SVT 有损编码强制使用 420 chroma";
+        }
+      } else if (avif_lossless) {
+        selection_requested_chroma = source_chroma == ChromaMode::auto_keep
+                                         ? ChromaMode::yuv444
+                                         : source_chroma;
+        prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
+                                             ? "无损源图 YUV chroma 未知，使用 yuv444 避免 subsampling"
+                                             : "无损模式继承源图 YUV chroma";
       } else if (cfg_.chroma_mode != ChromaMode::auto_keep) {
         selection_requested_chroma = cfg_.chroma_mode;
-        prepared.settings.chroma_reason = "user requested chroma";
+        prepared.settings.chroma_reason = "用户请求 chroma";
       } else {
         selection_requested_chroma = source_chroma;
         prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
-                                             ? "chroma auto; source YUV chroma unknown"
-                                             : "chroma auto inherited source YUV chroma for encoder selection";
+                                             ? "chroma auto，源图 YUV chroma 未知"
+                                             : "chroma auto 继承源图 YUV chroma 用于 encoder selection";
       }
 
       std::optional<int> selection_requested_bit_depth{};
-      if (avif_lossless) {
+      if (explicit_svt) {
+        if (cfg_.bit_depth) {
+          selection_requested_bit_depth = cfg_.bit_depth;
+          prepared.settings.bit_depth_reason = "用户明确请求 bit-depth";
+        } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth > 10) {
+          selection_requested_bit_depth = 10;
+          prepared.settings.bit_depth_reason = std::format(
+              "显式选择 SVT 将源图 {}-bit 限制为 SVT 支持的 10-bit 输出",
+              *prepared.settings.source_bit_depth);
+        } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth >= 10) {
+          selection_requested_bit_depth = prepared.settings.source_bit_depth;
+          prepared.settings.bit_depth_reason = std::format(
+              "显式选择 SVT 继承源图 {}-bit 输出", *prepared.settings.source_bit_depth);
+        } else if (avif_lossless) {
+          prepared.settings.bit_depth_reason =
+              "显式选择 SVT q100 使用 SVT 支持的 8/10-bit auto 输出，不执行严格无损 bit-depth 继承";
+        }
+      } else if (avif_lossless) {
         selection_requested_bit_depth = native_backend_detail::lossless_source_bit_depth(decoded.image);
-        prepared.settings.bit_depth_reason = "lossless inherited source bit-depth";
+        prepared.settings.bit_depth_reason = native_backend_detail::lossless_uses_decoded_bit_depth(decoded.image)
+                                             ? "无损模式使用解码后的 8-bit buffer bit-depth"
+                                             : "无损模式继承源图 bit-depth";
       } else if (cfg_.bit_depth) {
         selection_requested_bit_depth = cfg_.bit_depth;
-        prepared.settings.bit_depth_reason = "explicit bit-depth requested";
+        prepared.settings.bit_depth_reason = "用户明确请求 bit-depth";
       } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth >= 10) {
         selection_requested_bit_depth = prepared.settings.source_bit_depth;
         prepared.settings.bit_depth_reason = std::format(
@@ -1058,9 +2332,9 @@ export class NativeBackend final {
       }
       if (!avif_lossless && !selection_requested_bit_depth &&
           prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth == 8) {
-        prepared.settings.bit_depth_reason = "lossy auto may upconvert 8-bit source to encoder preferred bit-depth";
+        prepared.settings.bit_depth_reason = "有损 auto 可能将 8-bit 源图升至编码器首选 bit-depth";
       }
-      if (avif_lossless && selection_requested_bit_depth &&
+      if (avif_lossless && !explicit_svt && selection_requested_bit_depth &&
           !native_backend_detail::avif_lossless_bit_depth_supported(*selection_requested_bit_depth)) {
         return prepare_failed(std::format(
                                   "AVIF 无损模式无法保持源图 {}-bit 位深；libavif AOM 当前仅支持 8、10、12-bit 输出。",
@@ -1069,7 +2343,7 @@ export class NativeBackend final {
       }
 
       const bool must_preserve_alpha = native_backend_detail::alpha_must_be_preserved(
-          cfg_.alpha_policy, prepared.settings.source_has_alpha_channel);
+          cfg_.alpha_policy, prepared.settings.source_has_alpha_channel, *has_non_opaque_alpha);
       const auto selection = select_avif_encoder_for_current_build(AvifEncoderSelectionRequest{
           .requested_encoder = selection_requested_encoder,
           .requested_chroma = selection_requested_chroma,
@@ -1095,7 +2369,7 @@ export class NativeBackend final {
             prepared.settings.source_has_alpha_channel, false, prepared.settings.encoder_supports_alpha);
         if (cfg_.alpha_policy == AlphaModePolicy::force &&
             prepared.settings.source_has_alpha_channel && !prepared.settings.encoder_supports_alpha) {
-          prepared.settings.alpha_reason = "force requested alpha preservation but selected encoder does not support alpha";
+          prepared.settings.alpha_reason = "force 请求保留 alpha，但当前编码器不支持 alpha";
         }
         return prepare_failed(selection.error(), prepared.settings);
       }
@@ -1122,48 +2396,65 @@ export class NativeBackend final {
           prepared.settings.source_has_alpha_channel, preserve_alpha,
           prepared.settings.encoder_supports_alpha);
       if (!prepared.settings.source_has_alpha_channel) {
-        prepared.settings.alpha_reason = "source has no alpha channel";
+        prepared.settings.alpha_reason = "源图没有 alpha 通道";
       } else if (cfg_.alpha_policy == AlphaModePolicy::off) {
-        prepared.settings.alpha_reason = "alpha stripped by user request";
+        prepared.settings.alpha_reason = "用户请求移除 alpha";
       } else if (cfg_.alpha_policy == AlphaModePolicy::automatic && !*has_non_opaque_alpha) {
-        prepared.settings.alpha_reason = "auto stripped fully opaque alpha";
+        prepared.settings.alpha_reason = "auto 移除全不透明 alpha";
       } else if (cfg_.alpha_policy == AlphaModePolicy::automatic &&
                  prepared.settings.encoder_supports_alpha) {
-        prepared.settings.alpha_reason = "auto kept non-opaque alpha because selected encoder supports alpha";
+        prepared.settings.alpha_reason = "auto 保留非不透明 alpha，因为当前编码器支持 alpha";
       } else if (cfg_.alpha_policy == AlphaModePolicy::automatic) {
-        prepared.settings.alpha_reason = "auto stripped alpha because selected encoder does not support alpha";
+        prepared.settings.alpha_reason = "auto 移除 alpha，因为当前编码器不支持 alpha";
       } else if (prepared.settings.encoder_supports_alpha) {
-        prepared.settings.alpha_reason = "force kept source alpha channel";
+        prepared.settings.alpha_reason = "force 保留源图 alpha 通道";
       } else {
-        prepared.settings.alpha_reason = "force requested alpha preservation but selected encoder does not support alpha";
+        prepared.settings.alpha_reason = "force 请求保留 alpha，但当前编码器不支持 alpha";
       }
+      native_backend_detail::populate_applied_avif_color_diagnostics(prepared.settings,
+                                                                     cfg_,
+                                                                     selection->applied_encoder,
+                                                                     selection->applied_chroma,
+                                                                     avif_lossless);
       prepared.avif_bit_depth_reason = prepared.settings.bit_depth_reason;
-      logger_.info(std::format(
-          "AVIF decision: input={} user_encoder={} user_chroma={} source_chroma={} source_bit_depth={} alpha_policy={} source_alpha={} non_opaque_alpha={} selected_encoder={} requested_chroma={} applied_chroma={} requested_bit_depth={} applied_bit_depth={} applied_alpha={} fallback={} chroma_reason={} alpha_reason={} bit_depth_reason={} color_source={}",
-          path_to_utf8(image.path.filename()),
-          prepared.settings.user_encoder_id,
-          prepared.settings.user_chroma,
-          prepared.settings.source_chroma,
-          prepared.settings.source_bit_depth ? std::format("{}", *prepared.settings.source_bit_depth) : std::string{""},
-          prepared.settings.alpha_policy_name,
-          prepared.settings.source_alpha_mode,
-          *has_non_opaque_alpha ? "true" : "false",
-          avif_encoder_mode_name(selection->applied_encoder),
-          chroma_mode_name(selection->requested_chroma),
-          chroma_mode_name(selection->applied_chroma),
-          selection->requested_bit_depth ? std::format("{}", *selection->requested_bit_depth) : std::string{""},
-          selection->applied_bit_depth ? std::format("{}", *selection->applied_bit_depth) : std::string{""},
-          prepared.settings.applied_alpha,
-          selection->fallback_reason,
-          prepared.settings.chroma_reason,
-          prepared.settings.alpha_reason,
-          prepared.settings.bit_depth_reason,
-          prepared.settings.color_metadata_source));
+      native_backend_detail::log_info_noexcept(logger_, [&] {
+        return std::format(
+            "AVIF decision: item={:04} user_encoder={} user_chroma={} source_chroma={} source_bit_depth={} alpha_policy={} source_alpha={} non_opaque_alpha={} selected_encoder={} requested_chroma={} applied_chroma={} requested_bit_depth={} applied_bit_depth={} applied_alpha={} fallback={} chroma_reason={} alpha_reason={} bit_depth_reason={} color_source={}",
+            image.index + 1,
+            prepared.settings.user_encoder_id,
+            prepared.settings.user_chroma,
+            prepared.settings.source_chroma,
+            prepared.settings.source_bit_depth ? std::format("{}", *prepared.settings.source_bit_depth) : std::string{""},
+            prepared.settings.alpha_policy_name,
+            prepared.settings.source_alpha_mode,
+            *has_non_opaque_alpha ? "true" : "false",
+            avif_encoder_mode_name(selection->applied_encoder),
+            chroma_mode_name(selection->requested_chroma),
+            chroma_mode_name(selection->applied_chroma),
+            selection->requested_bit_depth ? std::format("{}", *selection->requested_bit_depth) : std::string{""},
+            selection->applied_bit_depth ? std::format("{}", *selection->applied_bit_depth) : std::string{""},
+            prepared.settings.applied_alpha,
+            selection->fallback_reason,
+            prepared.settings.chroma_reason,
+            prepared.settings.alpha_reason,
+            prepared.settings.bit_depth_reason,
+            prepared.settings.color_metadata_source);
+      });
       if (selection->applied_encoder != AvifEncoderMode::svt) {
         prepared.encoder = native_backend_detail::encoder_for_output_format(
             cfg_.output_format, selection->applied_encoder);
       }
     } else {
+      if (cfg_.output_format == OutputFormat::jxl || cfg_.output_format == OutputFormat::webp) {
+        native_backend_detail::populate_source_image_diagnostics(prepared.settings,
+                                                                 decoded.image);
+        const auto alpha_decision = native_backend_detail::populate_regular_alpha_decision(
+            prepared.settings, decoded.image, cfg_);
+        if (!alpha_decision) {
+          return prepare_failed(alpha_decision.error(), prepared.settings);
+        }
+        native_backend_detail::populate_regular_color_decision(prepared.settings, cfg_);
+      }
       prepared.encoder = native_backend_detail::encoder_for_output_format(
           cfg_.output_format, requested_avif_encoder);
     }
@@ -1183,10 +2474,15 @@ export class NativeBackend final {
       const NativeEncodeSettings& settings,
       const fs::path& output_path,
       std::stop_token stop_token) const {
+    const auto encode_started = native_backend_detail::Clock::now();
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
+    }
     const bool use_svtav1hdr = cfg_.output_format == OutputFormat::avif &&
                                settings.avif_encoder == AvifEncoderMode::svt;
     if (cfg_.visual_quality) {
-      auto output_decoder = native_backend_detail::decoder_for_output_format(cfg_.output_format);
+      auto output_decoder = native_backend_detail::decoder_for_output_format(
+          cfg_.output_format, settings.resources.encoder_threads_per_file);
       const auto candidate_path = output_path.parent_path() /
                                   (output_path.filename().wstring() + L".candidate");
       if (use_svtav1hdr) {
@@ -1201,36 +2497,49 @@ export class NativeBackend final {
           }
           std::expected<NativeEncodeResult, std::string> encode(
               const ImageBuffer& image,
-              const NativeEncodeSettings& settings) const override {
-            return encode_svtav1hdr_in_process(image, settings);
+              const NativeEncodeSettings& settings,
+              std::stop_token stop_token = {}) const override {
+            return encode_svtav1hdr_in_process(image, settings, stop_token);
           }
         } svt_encoder;
         auto search = encode_with_native_visual_quality_search(decoded.image, svt_encoder,
                                                                *output_decoder, settings,
                                                                candidate_path, stop_token);
-        std::error_code ec;
-        fs::remove(candidate_path, ec);
         if (!search) {
           return std::unexpected{search.error()};
         }
+        search->encode_result.diagnostics.timing.encode_seconds =
+            search->encode_result.diagnostics.timing.visual_quality_candidate_encode_seconds;
+        search->encode_result.visual_quality_target_met = search->target_met;
         return std::move(search->encode_result);
       }
 
       auto search = encode_with_native_visual_quality_search(decoded.image, *encoder,
                                                              *output_decoder, settings,
                                                              candidate_path, stop_token);
-      std::error_code ec;
-      fs::remove(candidate_path, ec);
       if (!search) {
         return std::unexpected{search.error()};
       }
+      search->encode_result.diagnostics.timing.encode_seconds =
+          search->encode_result.diagnostics.timing.visual_quality_candidate_encode_seconds;
+      search->encode_result.visual_quality_target_met = search->target_met;
       return std::move(search->encode_result);
     }
 
     if (use_svtav1hdr) {
-      return encode_svtav1hdr_in_process(decoded.image, settings);
+      auto encoded = encode_svtav1hdr_in_process(decoded.image, settings, stop_token);
+      if (encoded) {
+        encoded->diagnostics.timing.encode_seconds =
+            native_backend_detail::elapsed_seconds(encode_started);
+      }
+      return encoded;
     }
-    return encoder->encode(decoded.image, settings);
+    auto encoded = encoder->encode(decoded.image, settings, stop_token);
+    if (encoded) {
+      encoded->diagnostics.timing.encode_seconds =
+          native_backend_detail::elapsed_seconds(encode_started);
+    }
+    return encoded;
   }
 
   [[nodiscard]] EncodeResult finalize_result(EncodeResult result,
@@ -1238,16 +2547,26 @@ export class NativeBackend final {
                                              const ImageDecodeResult& decoded,
                                              bool decoder_used_fallback,
                                              std::string avif_bit_depth_reason,
-                                             EncodeStartedAt started) const {
+                                             EncodeStartedAt started,
+                                             std::stop_token stop_token) const {
+    const auto write_started = native_backend_detail::Clock::now();
     if (auto written = native_backend_detail::write_output_bytes(
-            result.output_path, std::span<const std::byte>{encoded.encoded.bytes});
+            result.output_path, std::span<const std::byte>{encoded.encoded.bytes},
+            cfg_.collision_mode == CollisionMode::overwrite, stop_token);
         !written) {
-      mark_failed(result, written.error());
+      result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
+      if (stop_token.stop_requested()) {
+        cancel_if_requested(result, stop_token);
+      } else {
+        mark_failed(result, written.error());
+      }
       return result;
     }
+    result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
 
     encoded.diagnostics.decoder_id = decoded.decoder_id;
     encoded.diagnostics.used_decoder_fallback = decoder_used_fallback;
+    native_backend_detail::merge_stage_timing(encoded, result);
     native_backend_detail::copy_native_result(encoded, result);
     if (!decoded.decoder_id.empty()) {
       result.decoder_id = decoded.decoder_id;
@@ -1265,70 +2584,137 @@ export class NativeBackend final {
     result.processed = true;
     result.ok = true;
     result.message = "OK";
-    logger_.info(std::format("native encode ok: {} -> {}",
-                             path_to_utf8(result.input_path.filename()),
-                             path_to_utf8(result.output_path.filename())));
+    native_backend_detail::log_info_noexcept(logger_, [&] {
+      return std::format("native encode ok: item={:04}", result.index + 1);
+    });
+    native_backend_detail::log_info_noexcept(logger_, [&] {
+      return std::format(
+          "native timing: item={:04} total={}s decode={}s prepare={}s encode={}s vq={}s metrics={}s write={}s",
+          result.index + 1,
+          native_backend_detail::format_timing_seconds(result.seconds),
+          native_backend_detail::format_timing_seconds(result.decode_seconds),
+          native_backend_detail::format_timing_seconds(result.prepare_seconds),
+          native_backend_detail::format_timing_seconds(result.encode_seconds),
+          native_backend_detail::format_timing_seconds(result.visual_quality_search_seconds),
+          native_backend_detail::format_timing_seconds(result.visual_quality_metric_seconds),
+          native_backend_detail::format_timing_seconds(result.write_seconds));
+    });
+    if (result.visual_quality_search_seconds >= 0.0) {
+      native_backend_detail::log_info_noexcept(logger_, [&] {
+        return std::format(
+            "native vq breakdown: item={:04} candidates={} memory_fallback_decodes={} gpu_fallbacks={} candidate_encode={}s candidate_decode={}s candidate_io={}s luma={}s gmsd={}s ms_ssim={}s metrics={}s metric_share={}%",
+            result.index + 1,
+            result.visual_quality_candidate_count,
+            result.visual_quality_decode_memory_fallback_count,
+            result.visual_quality_gpu_fallback_count,
+            native_backend_detail::format_timing_seconds(result.visual_quality_candidate_encode_seconds),
+            native_backend_detail::format_timing_seconds(result.visual_quality_candidate_decode_seconds),
+            native_backend_detail::format_timing_seconds(result.visual_quality_candidate_io_seconds),
+            native_backend_detail::format_timing_seconds(result.visual_quality_luma_seconds),
+            native_backend_detail::format_timing_seconds(result.gmsd_seconds),
+            native_backend_detail::format_timing_seconds(result.ms_ssim_seconds),
+            native_backend_detail::format_timing_seconds(result.visual_quality_metric_seconds),
+            native_backend_detail::format_timing_share(result.visual_quality_metric_seconds,
+                                                      result.visual_quality_search_seconds));
+      });
+    }
     return result;
   }
 
   EncodeResult encode_with_overrides(const ImageFile& image,
                                      EncodeOverrides overrides,
                                      std::stop_token stop_token = {}) const {
-    const auto started = std::chrono::steady_clock::now();
-    auto result = initialize_result(image);
+    try {
+      const auto started = std::chrono::steady_clock::now();
+      auto result = initialize_result(image);
 
-    if (cancel_if_requested(result, stop_token)) {
-      return result;
+      if (cancel_if_requested(result, stop_token)) {
+        return result;
+      }
+      if (result.processed && !result.ok) {
+        return result;
+      }
+
+      if (cfg_.collision_mode == CollisionMode::skip) {
+        std::error_code exists_ec;
+        const auto output_exists = fs::exists(result.output_path, exists_ec);
+        if (exists_ec) {
+          result.processed = true;
+          result.ok = false;
+          result.message = std::format("无法检查输出路径 {}: {}",
+                                       display_path_for_user(result.output_path), exists_ec.message());
+          return result;
+        }
+        if (output_exists) {
+          result.processed = true;
+          result.ok = true;
+          result.skipped = true;
+          result.message = "输出已存在，已跳过。";
+          return result;
+        }
+      }
+
+      if (auto passthrough = try_avif_lossless_passthrough(image, result, started, stop_token)) {
+        return std::move(*passthrough);
+      }
+
+      if (auto transcode = try_jxl_jpeg_bitstream_transcode(image, result, started, stop_token)) {
+        return std::move(*transcode);
+      }
+
+      const auto decode_started = native_backend_detail::Clock::now();
+      auto decoded_input = decode_input(image);
+      result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
+      if (!decoded_input) {
+        mark_failed(result, decoded_input.error());
+        return result;
+      }
+
+      if (cancel_if_requested(result, stop_token)) {
+        return result;
+      }
+
+      const auto prepare_started = native_backend_detail::Clock::now();
+      auto prepared = prepare_encoding(image, decoded_input->decoded, std::move(overrides));
+      result.prepare_seconds = native_backend_detail::elapsed_seconds(prepare_started);
+      if (!prepared) {
+        native_backend_detail::copy_settings_diagnostics(prepared.error().settings, result);
+        mark_failed(result, prepared.error().message);
+        return result;
+      }
+
+      if (cancel_if_requested(result, stop_token)) {
+        return result;
+      }
+
+      const auto encode_started = native_backend_detail::Clock::now();
+      auto encoded = execute_encode(decoded_input->decoded, prepared->encoder.get(),
+                                    prepared->settings, result.output_path, stop_token);
+      result.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
+      if (!encoded) {
+        native_backend_detail::copy_settings_diagnostics(prepared->settings, result);
+        if (stop_token.stop_requested()) {
+          cancel_if_requested(result, stop_token);
+        } else {
+          mark_failed(result, encoded.error());
+        }
+        return result;
+      }
+
+      if (cancel_if_requested(result, stop_token)) {
+        return result;
+      }
+
+      return finalize_result(std::move(result), std::move(*encoded), decoded_input->decoded,
+                             decoded_input->decoder_used_fallback,
+                             std::move(prepared->avif_bit_depth_reason), started, stop_token);
+    } catch (const std::bad_alloc&) {
+      return failed_encode_result(image, "native backend 单项转换内存不足。");
+    } catch (const std::length_error&) {
+      return failed_encode_result(image, "native backend 单项转换数据超过运行时限制。");
+    } catch (const std::filesystem::filesystem_error&) {
+      return failed_encode_result(image, "native backend 单项转换文件系统访问失败。");
     }
-
-    if (cfg_.collision_mode == CollisionMode::skip && fs::exists(result.output_path)) {
-      result.processed = true;
-      result.ok = true;
-      result.skipped = true;
-      result.message = "输出已存在，已跳过。";
-      return result;
-    }
-
-    if (auto passthrough = try_avif_lossless_passthrough(image, result, started, stop_token)) {
-      return std::move(*passthrough);
-    }
-
-    auto decoded_input = decode_input(image);
-    if (!decoded_input) {
-      mark_failed(result, decoded_input.error());
-      return result;
-    }
-
-    if (cancel_if_requested(result, stop_token)) {
-      return result;
-    }
-
-    auto prepared = prepare_encoding(image, decoded_input->decoded, std::move(overrides));
-    if (!prepared) {
-      native_backend_detail::copy_settings_diagnostics(prepared.error().settings, result);
-      mark_failed(result, prepared.error().message);
-      return result;
-    }
-
-    if (cancel_if_requested(result, stop_token)) {
-      return result;
-    }
-
-    auto encoded = execute_encode(decoded_input->decoded, prepared->encoder.get(),
-                                  prepared->settings, result.output_path, stop_token);
-    if (!encoded) {
-      native_backend_detail::copy_settings_diagnostics(prepared->settings, result);
-      mark_failed(result, encoded.error());
-      return result;
-    }
-
-    if (cancel_if_requested(result, stop_token)) {
-      return result;
-    }
-
-    return finalize_result(std::move(result), std::move(*encoded), decoded_input->decoded,
-                           decoded_input->decoder_used_fallback,
-                           std::move(prepared->avif_bit_depth_reason), started);
   }
 
  private:

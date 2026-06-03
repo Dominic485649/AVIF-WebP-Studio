@@ -1,6 +1,7 @@
 module;
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cwctype>
@@ -10,8 +11,12 @@ module;
 #include <format>
 #include <limits>
 #include <memory>
-#include <string>
+#include <new>
 #include <span>
+#include <stdexcept>
+#include <stop_token>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <webp/decode.h>
@@ -24,12 +29,15 @@ import awj.codec;
 import awj.config;
 import awj.core;
 import awj.decoder_common;
+import awj.encoding_defaults;
 import awj.image;
 import awj.large_image_plan;
 
 export namespace awj {
 
 namespace webp_detail {
+
+constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
 
 struct WebPFreeDeleter {
   void operator()(void* value) const noexcept {
@@ -39,18 +47,66 @@ struct WebPFreeDeleter {
   }
 };
 
-struct WebPMemoryWriterGuard {
-  WebPMemoryWriter writer{};
-  WebPMemoryWriterGuard() { WebPMemoryWriterInit(&writer); }
-  ~WebPMemoryWriterGuard() { WebPMemoryWriterClear(&writer); }
-  WebPMemoryWriterGuard(const WebPMemoryWriterGuard&) = delete;
-  WebPMemoryWriterGuard& operator=(const WebPMemoryWriterGuard&) = delete;
+struct WebPVectorWriter {
+  std::vector<std::byte> bytes;
+  const char* error{};
+  std::stop_token* stop_token{};
 };
+
+int write_webp_bytes(const std::uint8_t* data,
+                     std::size_t data_size,
+                     const WebPPicture* picture) noexcept {
+  if (picture == nullptr || picture->custom_ptr == nullptr) {
+    return 0;
+  }
+  auto* writer = static_cast<WebPVectorWriter*>(picture->custom_ptr);
+  if (writer->stop_token != nullptr && writer->stop_token->stop_requested()) {
+    writer->error = "任务已取消。";
+    return 0;
+  }
+  if (data_size == 0) {
+    return 1;
+  }
+  if (data == nullptr) {
+    writer->error = "WebP encoder 输出数据无效。";
+    return 0;
+  }
+  const auto old_size = writer->bytes.size();
+  if (data_size > std::numeric_limits<std::size_t>::max() - old_size) {
+    writer->error = "WebP encoder 输出过大。";
+    return 0;
+  }
+  if (old_size + data_size > encoding_defaults::max_input_file_bytes) {
+    writer->error = "WebP encoder 输出超过 20 GiB 运行时上限。";
+    return 0;
+  }
+  try {
+    writer->bytes.resize(old_size + data_size);
+  } catch (const std::bad_alloc&) {
+    writer->error = "WebP encoder 输出缓冲区内存不足。";
+    return 0;
+  } catch (const std::length_error&) {
+    writer->error = "WebP encoder 输出缓冲区尺寸超过运行时限制。";
+    return 0;
+  }
+  if (writer->stop_token != nullptr && writer->stop_token->stop_requested()) {
+    writer->error = "任务已取消。";
+    return 0;
+  }
+  std::ranges::copy_n(reinterpret_cast<const std::byte*>(data), data_size,
+                      writer->bytes.data() + old_size);
+  return 1;
+}
 
 struct WebPPictureGuard {
   WebPPicture picture{};
-  WebPPictureGuard() { WebPPictureInit(&picture); }
-  ~WebPPictureGuard() { WebPPictureFree(&picture); }
+  bool initialized{WebPPictureInit(&picture) != 0};
+  WebPPictureGuard() = default;
+  ~WebPPictureGuard() {
+    if (initialized) {
+      WebPPictureFree(&picture);
+    }
+  }
   WebPPictureGuard(const WebPPictureGuard&) = delete;
   WebPPictureGuard& operator=(const WebPPictureGuard&) = delete;
 };
@@ -72,6 +128,9 @@ std::expected<std::vector<std::byte>, std::string> read_file_bytes(
 
 std::expected<std::size_t, std::string> checked_rgba_stride(std::size_t width,
                                                             std::string_view context) {
+  if (width == 0) {
+    return std::unexpected{std::format("{} 输入宽度无效。", context)};
+  }
   if (width > std::numeric_limits<std::size_t>::max() / 4) {
     return std::unexpected{std::format("{} 输入宽度过大。", context)};
   }
@@ -81,10 +140,17 @@ std::expected<std::size_t, std::string> checked_rgba_stride(std::size_t width,
 std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
                                                            std::size_t height,
                                                            std::string_view context) {
-  if (stride == 0 || height > std::numeric_limits<std::size_t>::max() / stride) {
+  if (stride == 0 || height == 0) {
+    return std::unexpected{std::format("{} 输入尺寸无效。", context)};
+  }
+  if (height > std::numeric_limits<std::size_t>::max() / stride) {
     return std::unexpected{std::format("{} 输入尺寸过大。", context)};
   }
-  return stride * height;
+  const auto byte_count = stride * height;
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
+    return std::unexpected{std::format("{} 图像 buffer 超过 20 GiB 运行时上限。", context)};
+  }
+  return byte_count;
 }
 
 std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image) {
@@ -107,22 +173,189 @@ std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& imag
   return &plane;
 }
 
-const MetadataBlock* first_icc_metadata(const ImageBuffer& image) noexcept {
+struct WebPMetadataChunk {
+  MetadataKind kind{};
+  const char* fourcc{};
+  std::string_view name{};
+};
+
+constexpr WebPMetadataChunk webp_metadata_chunks[] = {
+    {.kind = MetadataKind::icc, .fourcc = "ICCP", .name = "ICC"},
+    {.kind = MetadataKind::exif, .fourcc = "EXIF", .name = "Exif"},
+    {.kind = MetadataKind::xmp, .fourcc = "XMP ", .name = "XMP"},
+};
+
+std::uint32_t read_le_u32(std::span<const std::byte> bytes,
+                          std::size_t offset) noexcept {
+  return std::to_integer<std::uint32_t>(bytes[offset]) |
+         (std::to_integer<std::uint32_t>(bytes[offset + 1]) << 8) |
+         (std::to_integer<std::uint32_t>(bytes[offset + 2]) << 16) |
+         (std::to_integer<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+bool fourcc_is(std::span<const std::byte> bytes,
+               std::size_t offset,
+               std::string_view fourcc) noexcept {
+  return fourcc.size() == 4 && offset <= bytes.size() && bytes.size() - offset >= 4 &&
+         bytes[offset] == std::byte{static_cast<unsigned char>(fourcc[0])} &&
+         bytes[offset + 1] == std::byte{static_cast<unsigned char>(fourcc[1])} &&
+         bytes[offset + 2] == std::byte{static_cast<unsigned char>(fourcc[2])} &&
+         bytes[offset + 3] == std::byte{static_cast<unsigned char>(fourcc[3])};
+}
+
+std::size_t metadata_chunk_index(std::span<const std::byte> header) noexcept {
+  for (std::size_t index = 0; index < std::size(webp_metadata_chunks); ++index) {
+    if (fourcc_is(header, 0, webp_metadata_chunks[index].fourcc)) {
+      return index;
+    }
+  }
+  return std::size(webp_metadata_chunks);
+}
+
+const MetadataBlock* first_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
   for (const auto& block : image.metadata) {
-    if (block.kind == MetadataKind::icc && !block.bytes.empty()) {
+    if (block.kind == kind && !block.bytes.empty()) {
       return &block;
     }
   }
   return nullptr;
 }
 
-std::expected<std::vector<std::byte>, std::string> mux_icc(
+PixelFormat source_pixel_format_for_webp(const WebPBitstreamFeatures& features) noexcept {
+  if (features.format == 1) {
+    return PixelFormat::yuv420;
+  }
+  if (features.format == 2) {
+    return features.has_alpha ? PixelFormat::rgba : PixelFormat::rgb;
+  }
+  return PixelFormat::unknown;
+}
+
+ImageSourceInfo source_info_from_features(const WebPBitstreamFeatures& features) noexcept {
+  return ImageSourceInfo{.pixel_format = source_pixel_format_for_webp(features),
+                         .bit_depth = 8};
+}
+
+bool has_metadata_to_mux(const ImageBuffer& image,
+                         const NativeEncodeSettings& settings) noexcept {
+  if (settings.applied_icc == "kept" && first_metadata(image, MetadataKind::icc) != nullptr) {
+    return true;
+  }
+  return first_metadata(image, MetadataKind::exif) != nullptr ||
+         first_metadata(image, MetadataKind::xmp) != nullptr;
+}
+
+std::expected<std::vector<std::byte>, std::string> copy_metadata_payload(
+    std::span<const std::byte> payload,
+    std::string_view context) {
+  if (payload.empty()) {
+    return std::vector<std::byte>{};
+  }
+  if (payload.size() > max_metadata_bytes) {
+    return std::unexpected{std::format("{} 超过 64 MiB 上限。", context)};
+  }
+  auto bytes = decoder_common::make_byte_buffer(payload.size(), context);
+  if (!bytes) {
+    return std::unexpected{bytes.error()};
+  }
+  std::ranges::copy_n(payload.data(), payload.size(), bytes->begin());
+  return std::move(*bytes);
+}
+
+std::expected<void, std::string> copy_metadata(ImageBuffer& image,
+                                               std::span<const std::byte> encoded) {
+  if (encoded.size() < 12 || !fourcc_is(encoded, 0, "RIFF") ||
+      !fourcc_is(encoded, 8, "WEBP")) {
+    return {};
+  }
+
+  const auto riff_payload_size = static_cast<std::size_t>(read_le_u32(encoded, 4));
+  if (riff_payload_size < 4 || riff_payload_size > encoded.size() - 8) {
+    return {};
+  }
+  const auto riff_end = 8 + riff_payload_size;
+  std::array<std::vector<std::byte>, std::size(webp_metadata_chunks)> metadata_payloads{};
+  std::array<bool, std::size(webp_metadata_chunks)> seen_metadata{};
+
+  std::size_t offset = 12;
+  while (offset + 8 <= riff_end) {
+    const auto payload_size = static_cast<std::size_t>(read_le_u32(encoded, offset + 4));
+    const auto payload_offset = offset + 8;
+    if (payload_size > riff_end - payload_offset) {
+      return {};
+    }
+
+    const auto chunk_index = metadata_chunk_index(encoded.subspan(offset, 4));
+    if (chunk_index < std::size(webp_metadata_chunks)) {
+      const auto& chunk = webp_metadata_chunks[chunk_index];
+      if (payload_size > max_metadata_bytes) {
+        return std::unexpected{std::format("WebP {} metadata 超过 64 MiB 上限。", chunk.name)};
+      }
+      if (!seen_metadata[chunk_index]) {
+        seen_metadata[chunk_index] = true;
+        auto payload = copy_metadata_payload(encoded.subspan(payload_offset, payload_size),
+                                             std::format("WebP {} metadata", chunk.name));
+        if (!payload) {
+          return std::unexpected{payload.error()};
+        }
+        metadata_payloads[chunk_index] = std::move(*payload);
+      }
+    }
+
+    const auto padded_payload_size = payload_size + (payload_size & 1U);
+    if (padded_payload_size > riff_end - payload_offset) {
+      return {};
+    }
+    offset = payload_offset + padded_payload_size;
+  }
+
+  for (std::size_t index = 0; index < std::size(webp_metadata_chunks); ++index) {
+    if (metadata_payloads[index].empty()) {
+      continue;
+    }
+    MetadataBlock block{.kind = webp_metadata_chunks[index].kind,
+                        .bytes = std::move(metadata_payloads[index])};
+    try {
+      image.metadata.push_back(std::move(block));
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{std::format("WebP {} metadata 内存不足。",
+                                         webp_metadata_chunks[index].name)};
+    } catch (const std::length_error&) {
+      return std::unexpected{std::format("WebP {} metadata 尺寸超过运行时限制。",
+                                         webp_metadata_chunks[index].name)};
+    }
+  }
+  return {};
+}
+
+std::expected<void, std::string> set_metadata_chunk(WebPMux* mux,
+                                                    const ImageBuffer& image,
+                                                    const WebPMetadataChunk& chunk) {
+  const auto* metadata = first_metadata(image, chunk.kind);
+  if (metadata == nullptr) {
+    return {};
+  }
+  if (metadata->bytes.size() > max_metadata_bytes) {
+    return std::unexpected{std::format("WebP {} metadata 超过 64 MiB 上限。", chunk.name)};
+  }
+  WebPData chunk_data{.bytes = reinterpret_cast<const std::uint8_t*>(metadata->bytes.data()),
+                      .size = metadata->bytes.size()};
+  if (WebPMuxSetChunk(mux, chunk.fourcc, &chunk_data, 1) != WEBP_MUX_OK) {
+    return std::unexpected{std::format("WebP mux 设置 {} 失败。", chunk.name)};
+  }
+  return {};
+}
+
+std::expected<std::vector<std::byte>, std::string> mux_metadata(
     std::span<const std::byte> encoded,
-    const MetadataBlock& icc) {
+    const ImageBuffer& image,
+    const NativeEncodeSettings& settings,
+    std::stop_token stop_token = {}) {
+  if (stop_token.stop_requested()) {
+    return std::unexpected{"任务已取消。"};
+  }
   WebPData image_data{.bytes = reinterpret_cast<const std::uint8_t*>(encoded.data()),
                       .size = encoded.size()};
-  WebPData icc_data{.bytes = reinterpret_cast<const std::uint8_t*>(icc.bytes.data()),
-                    .size = icc.bytes.size()};
   WebPDataGuard assembled{};
   WebPMux* mux = WebPMuxNew();
   if (mux == nullptr) {
@@ -132,17 +365,42 @@ std::expected<std::vector<std::byte>, std::string> mux_icc(
   if (WebPMuxSetImage(mux, &image_data, 1) != WEBP_MUX_OK) {
     return std::unexpected{"WebP mux 设置图像失败。"};
   }
-  if (WebPMuxSetChunk(mux, "ICCP", &icc_data, 1) != WEBP_MUX_OK) {
-    return std::unexpected{"WebP mux 设置 ICC 失败。"};
+  if (settings.applied_icc == "kept") {
+    if (auto set = set_metadata_chunk(mux, image, webp_metadata_chunks[0]); !set) {
+      return std::unexpected{set.error()};
+    }
+  }
+  for (std::size_t index = 1; index < std::size(webp_metadata_chunks); ++index) {
+    if (stop_token.stop_requested()) {
+      return std::unexpected{"任务已取消。"};
+    }
+    if (auto set = set_metadata_chunk(mux, image, webp_metadata_chunks[index]); !set) {
+      return std::unexpected{set.error()};
+    }
+  }
+  if (stop_token.stop_requested()) {
+    return std::unexpected{"任务已取消。"};
   }
   if (WebPMuxAssemble(mux, &assembled.data) != WEBP_MUX_OK ||
       assembled.data.bytes == nullptr || assembled.data.size == 0) {
     return std::unexpected{"WebP mux 输出失败。"};
   }
-  std::vector<std::byte> bytes(assembled.data.size);
+  if (assembled.data.size > encoding_defaults::max_input_file_bytes) {
+    return std::unexpected{"WebP mux 输出超过 20 GiB 运行时上限。"};
+  }
+  if (stop_token.stop_requested()) {
+    return std::unexpected{"任务已取消。"};
+  }
+  auto bytes = decoder_common::make_byte_buffer(assembled.data.size, "WebP mux");
+  if (!bytes) {
+    return std::unexpected{bytes.error()};
+  }
+  if (stop_token.stop_requested()) {
+    return std::unexpected{"任务已取消。"};
+  }
   std::ranges::copy_n(reinterpret_cast<const std::byte*>(assembled.data.bytes),
-                      assembled.data.size, bytes.begin());
-  return bytes;
+                      assembled.data.size, bytes->begin());
+  return std::move(*bytes);
 }
 
 }  // namespace webp_detail
@@ -160,77 +418,117 @@ export class WebPImageDecoder final : public ImageDecoder {
 
   std::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
-    auto bytes = webp_detail::read_file_bytes(path);
-    if (!bytes) {
-      return std::unexpected{bytes.error()};
+    try {
+      auto bytes = decoder_common::read_file_prefix(path, 30, "WebP");
+      if (!bytes) {
+        return std::unexpected{bytes.error()};
+      }
+      WebPBitstreamFeatures features{};
+      const auto* data = reinterpret_cast<const std::uint8_t*>(bytes->data());
+      if (WebPGetFeatures(data, bytes->size(), &features) != VP8_STATUS_OK ||
+          features.width <= 0 || features.height <= 0) {
+        return std::unexpected{std::format("WebP 文件信息无效: {}", display_path_for_user(path))};
+      }
+      if (features.has_animation) {
+        return std::unexpected{std::format("暂不支持动画 WebP 输入: {}", display_path_for_user(path))};
+      }
+      return decoder_common::make_image_dimensions_checked(static_cast<std::uint32_t>(features.width),
+                                                           static_cast<std::uint32_t>(features.height),
+                                                           "WebP");
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"WebP 尺寸探测内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"WebP 尺寸探测数据超过运行时限制。"};
+    } catch (const std::filesystem::filesystem_error&) {
+      return std::unexpected{"WebP 尺寸探测文件系统访问失败。"};
     }
-    int width = 0;
-    int height = 0;
-    const auto* data = reinterpret_cast<const std::uint8_t*>(bytes->data());
-    if (WebPGetInfo(data, bytes->size(), &width, &height) == 0 ||
-        width <= 0 || height <= 0) {
-      return std::unexpected{std::format("WebP 文件信息无效: {}", path_to_utf8(path))};
-    }
-    return decoder_common::make_image_dimensions_checked(static_cast<std::uint32_t>(width),
-                                                         static_cast<std::uint32_t>(height),
-                                                         "WebP");
   }
 
   std::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte> bytes,
       std::string_view source_name) const override {
-    return decode_bytes(bytes, source_name);
+    return decode_bytes(bytes, source_name, false);
   }
 
   std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const override {
-    auto bytes = webp_detail::read_file_bytes(path);
-    if (!bytes) {
-      return std::unexpected{bytes.error()};
+    try {
+      auto bytes = webp_detail::read_file_bytes(path);
+      if (!bytes) {
+        return std::unexpected{bytes.error()};
+      }
+      return decode_bytes(*bytes, display_path_for_user(path), true);
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"WebP 解码内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"WebP 解码数据超过运行时限制。"};
+    } catch (const std::filesystem::filesystem_error&) {
+      return std::unexpected{"WebP 解码文件系统访问失败。"};
     }
-    return decode_bytes(*bytes, path_to_utf8(path));
   }
 
  private:
   static std::expected<ImageDecodeResult, std::string> decode_bytes(
       std::span<const std::byte> bytes,
-      std::string_view source_name) {
-    int width = 0;
-    int height = 0;
-    const auto* data = reinterpret_cast<const std::uint8_t*>(bytes.data());
-    if (WebPGetInfo(data, bytes.size(), &width, &height) == 0 ||
-        width <= 0 || height <= 0) {
-      return std::unexpected{std::format("WebP 文件信息无效: {}", source_name)};
-    }
+      std::string_view source_name,
+      bool copy_metadata_payloads) {
+    try {
+      if (bytes.empty()) {
+        return std::unexpected{std::format("WebP 输入为空: {}", source_name)};
+      }
+      WebPBitstreamFeatures features{};
+      const auto* data = reinterpret_cast<const std::uint8_t*>(bytes.data());
+      if (WebPGetFeatures(data, bytes.size(), &features) != VP8_STATUS_OK ||
+          features.width <= 0 || features.height <= 0) {
+        return std::unexpected{std::format("WebP 文件信息无效: {}", source_name)};
+      }
+      if (features.has_animation) {
+        return std::unexpected{std::format("暂不支持动画 WebP 输入: {}", source_name)};
+      }
+      const int width = features.width;
+      const int height = features.height;
 
-    const auto stride = webp_detail::checked_rgba_stride(static_cast<std::size_t>(width), "WebP decoder");
-    if (!stride) {
-      return std::unexpected{stride.error()};
-    }
-    const auto byte_count = webp_detail::checked_image_bytes(*stride, static_cast<std::size_t>(height), "WebP decoder");
-    if (!byte_count) {
-      return std::unexpected{byte_count.error()};
-    }
-    if (*stride > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-        *byte_count > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-      return std::unexpected{"WebP decoder 输出尺寸超过 libwebp API 限制。"};
-    }
+      const auto stride = webp_detail::checked_rgba_stride(static_cast<std::size_t>(width), "WebP decoder");
+      if (!stride) {
+        return std::unexpected{stride.error()};
+      }
+      const auto byte_count = webp_detail::checked_image_bytes(*stride, static_cast<std::size_t>(height), "WebP decoder");
+      if (!byte_count) {
+        return std::unexpected{byte_count.error()};
+      }
+      if (*stride > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return std::unexpected{"WebP decoder 输出步长超过 libwebp API 限制。"};
+      }
 
-    ImagePlane plane{.stride = *stride};
-    plane.bytes.resize(*byte_count);
-    auto* output = reinterpret_cast<std::uint8_t*>(plane.bytes.data());
-    if (WebPDecodeRGBAInto(data, bytes.size(), output, plane.bytes.size(),
-                           static_cast<int>(*stride)) == nullptr) {
-      return std::unexpected{std::format("WebP 解码失败: {}", source_name)};
-    }
+      ImagePlane plane{.stride = *stride};
+      auto resized = decoder_common::resize_buffer(plane.bytes, *byte_count, "WebP decoder");
+      if (!resized) {
+        return std::unexpected{resized.error()};
+      }
+      auto* output = reinterpret_cast<std::uint8_t*>(plane.bytes.data());
+      if (WebPDecodeRGBAInto(data, bytes.size(), output, plane.bytes.size(),
+                             static_cast<int>(*stride)) == nullptr) {
+        return std::unexpected{std::format("WebP 解码失败: {}", source_name)};
+      }
 
-    ImageBuffer image{.width = static_cast<std::size_t>(width),
-                      .height = static_cast<std::size_t>(height),
-                      .pixel_format = PixelFormat::rgba,
-                      .alpha_mode = AlphaMode::straight,
-                      .bit_depth = 8};
-    image.planes.push_back(std::move(plane));
-    return ImageDecodeResult{.image = std::move(image), .decoder_id = "libwebp"};
+      ImageBuffer image{.width = static_cast<std::size_t>(width),
+                        .height = static_cast<std::size_t>(height),
+                        .pixel_format = PixelFormat::rgba,
+                        .alpha_mode = features.has_alpha ? AlphaMode::straight : AlphaMode::none,
+                        .bit_depth = 8,
+                        .source_info = webp_detail::source_info_from_features(features)};
+      image.planes.push_back(std::move(plane));
+      if (copy_metadata_payloads) {
+        if (auto copied = webp_detail::copy_metadata(image, bytes); !copied) {
+          return std::unexpected{copied.error()};
+        }
+      }
+      return ImageDecodeResult{.image = std::move(image), .decoder_id = "libwebp"};
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"WebP 解码内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"WebP 解码数据超过运行时限制。"};
+    }
   }
 };
 
@@ -252,77 +550,118 @@ export class WebPImageEncoder final : public ImageEncoder {
 
   std::expected<NativeEncodeResult, std::string> encode(
       const ImageBuffer& image,
-      const NativeEncodeSettings& settings) const override {
-    auto plane = webp_detail::rgba_plane(image);
-    if (!plane) {
-      return std::unexpected{plane.error()};
-    }
-    if (image.width > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-        image.height > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-        (*plane)->stride > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-      return std::unexpected{"WebP encoder 输入尺寸超过 libwebp API 限制。"};
-    }
+      const NativeEncodeSettings& settings,
+      std::stop_token stop_token = {}) const override {
+    try {
+      if (stop_token.stop_requested()) {
+        return std::unexpected{"任务已取消。"};
+      }
+      auto plane = webp_detail::rgba_plane(image);
+      if (!plane) {
+        return std::unexpected{plane.error()};
+      }
+      if (image.width > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+          image.height > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+          (*plane)->stride > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return std::unexpected{"WebP encoder 输入尺寸超过 libwebp API 限制。"};
+      }
+      if (image.width > static_cast<std::size_t>(WEBP_MAX_DIMENSION) ||
+          image.height > static_cast<std::size_t>(WEBP_MAX_DIMENSION)) {
+        return std::unexpected{std::format(
+            "WebP encoder 输入尺寸 {}x{} 超过 libwebp 边长上限 {}。",
+            image.width, image.height, WEBP_MAX_DIMENSION)};
+      }
 
-    const auto* rgba = reinterpret_cast<const std::uint8_t*>((*plane)->bytes.data());
-    const int width = static_cast<int>(image.width);
-    const int height = static_cast<int>(image.height);
-    const int stride = static_cast<int>((*plane)->stride);
-    const bool lossless = settings.visual_quality == 100 || settings.quality >= 100;
+      const auto* rgba = reinterpret_cast<const std::uint8_t*>((*plane)->bytes.data());
+      const int width = static_cast<int>(image.width);
+      const int height = static_cast<int>(image.height);
+      const int stride = static_cast<int>((*plane)->stride);
+      const bool lossless = settings.visual_quality ? *settings.visual_quality >= 100 : settings.quality >= 100;
 
-    WebPConfig config{};
-    if (WebPConfigInit(&config) == 0) {
-      return std::unexpected{"WebP config 初始化失败。"};
-    }
-    const int method = settings.speed_explicit ? map_webp_speed_to_method(settings.speed).codec_value
-                                               : 0;
-    config.quality = static_cast<float>(lossless ? 100 : std::clamp(settings.quality, 1, 100));
-    config.lossless = lossless ? 1 : 0;
-    config.method = method;
-    config.alpha_quality = 100;
-    config.thread_level = settings.resources.encoder_threads_per_file > 1 ? 1 : 0;
-    if (WebPValidateConfig(&config) == 0) {
-      return std::unexpected{"WebP config 参数无效。"};
-    }
+      WebPConfig config{};
+      if (WebPConfigInit(&config) == 0) {
+        return std::unexpected{"WebP config 初始化失败。"};
+      }
+      const auto speed_mapping = map_webp_speed_to_method(settings.speed);
+      const int method = speed_mapping.codec_value;
+      const int final_quality = lossless ? 100 : std::clamp(settings.quality, 1, 100);
+      config.quality = static_cast<float>(final_quality);
+      config.lossless = lossless ? 1 : 0;
+      config.method = method;
+      config.alpha_quality = 100;
+      config.thread_level = settings.resources.encoder_threads_per_file > 1 ? 1 : 0;
+      if (WebPValidateConfig(&config) == 0) {
+        return std::unexpected{"WebP config 参数无效。"};
+      }
 
-    webp_detail::WebPPictureGuard picture{};
-    picture.picture.use_argb = 1;
-    picture.picture.width = width;
-    picture.picture.height = height;
-    webp_detail::WebPMemoryWriterGuard writer{};
-    picture.picture.writer = WebPMemoryWrite;
-    picture.picture.custom_ptr = &writer.writer;
-    if (WebPPictureImportRGBA(&picture.picture, rgba, stride) == 0) {
-      return std::unexpected{"WebP picture 导入 RGBA 失败。"};
-    }
-    if (WebPEncode(&config, &picture.picture) == 0) {
-      return std::unexpected{std::format("WebP 编码失败，错误码 {}。", static_cast<int>(picture.picture.error_code))};
-    }
+      webp_detail::WebPPictureGuard picture{};
+      if (!picture.initialized) {
+        return std::unexpected{"WebP picture 初始化失败。"};
+      }
+      picture.picture.use_argb = 1;
+      picture.picture.width = width;
+      picture.picture.height = height;
+      webp_detail::WebPVectorWriter writer{.stop_token = &stop_token};
+      picture.picture.writer = webp_detail::write_webp_bytes;
+      picture.picture.custom_ptr = &writer;
+      if (stop_token.stop_requested()) {
+        return std::unexpected{"任务已取消。"};
+      }
+      if (settings.applied_alpha == "kept") {
+        if (WebPPictureImportRGBA(&picture.picture, rgba, stride) == 0) {
+          return std::unexpected{"WebP picture 导入 RGBA 失败。"};
+        }
+      } else {
+        if (WebPPictureImportRGBX(&picture.picture, rgba, stride) == 0) {
+          return std::unexpected{"WebP picture 导入 RGBX 失败。"};
+        }
+      }
+      if (stop_token.stop_requested()) {
+        return std::unexpected{"任务已取消。"};
+      }
+      if (WebPEncode(&config, &picture.picture) == 0) {
+        if (writer.error != nullptr) {
+          return std::unexpected{writer.error};
+        }
+        return std::unexpected{std::format("WebP 编码失败，错误码 {}。", static_cast<int>(picture.picture.error_code))};
+      }
+      if (stop_token.stop_requested()) {
+        return std::unexpected{"任务已取消。"};
+      }
 
-    EncodedImage encoded{.codec_name = "libwebp"};
-    encoded.bytes.resize(writer.writer.size);
-    std::ranges::copy_n(reinterpret_cast<std::byte*>(writer.writer.mem), writer.writer.size,
-                        encoded.bytes.begin());
-    if (!settings.strip_metadata) {
-      if (const auto* icc = webp_detail::first_icc_metadata(image); icc != nullptr) {
-        auto muxed = webp_detail::mux_icc(encoded.bytes, *icc);
+      if (writer.error != nullptr) {
+        return std::unexpected{writer.error};
+      }
+      if (writer.bytes.empty()) {
+        return std::unexpected{"WebP encoder 输出失败。"};
+      }
+      EncodedImage encoded{.codec_name = "libwebp"};
+      encoded.bytes = std::move(writer.bytes);
+      if (!settings.strip_metadata && webp_detail::has_metadata_to_mux(image, settings)) {
+        auto muxed = webp_detail::mux_metadata(encoded.bytes, image, settings, stop_token);
         if (!muxed) {
           return std::unexpected{muxed.error()};
         }
         encoded.bytes = std::move(*muxed);
       }
-    }
 
-    return NativeEncodeResult{.encoded = std::move(encoded),
-                              .diagnostics = EncodeDiagnostics{
-                                  .encoder_id = "libwebp",
-                                  .speed_mapping = SpeedMapping{.user_speed = settings.speed,
-                                                                .codec_value = method,
-                                                                .codec_key = "webp:method"},
-                                  .encoder_threads = settings.resources.encoder_threads_per_file,
-                                  .memory_budget_bytes = settings.resources.memory_limit_bytes},
-                              .final_quality = lossless ? 100 : settings.quality,
-                              .lossless = lossless,
-                              .search_attempt_count = 1};
+      auto diagnostics = diagnostics_from_settings(settings);
+      diagnostics.encoder_id = "libwebp";
+      diagnostics.speed_mapping = speed_mapping;
+      diagnostics.encoder_threads = settings.resources.encoder_threads_per_file;
+      diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
+      return NativeEncodeResult{.encoded = std::move(encoded),
+                                .diagnostics = std::move(diagnostics),
+                                .final_quality = final_quality,
+                                .lossless = lossless,
+                                .search_attempt_count = 1};
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"WebP 编码内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"WebP 编码数据超过运行时限制。"};
+    } catch (const std::filesystem::filesystem_error&) {
+      return std::unexpected{"WebP 编码文件系统访问失败。"};
+    }
   }
 };
 
