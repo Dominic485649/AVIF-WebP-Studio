@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.7.1 - 2026-06-05
+
+0.7.1 修复双击启动 `AWJ.exe` 时短暂弹出命令行窗口的问题，并保留命令行入口的等待、输出和退出码语义。
+
+- 将 `AWJ.exe` 改为 Windows GUI subsystem，双击无参数启动 Studio 时不再创建命令行窗口。
+- 新增 `AWJ.com` console shim；命令行输入 `AWJ ...` 时由 shim 转发到同目录 `AWJ.exe`，等待结束并透传 stdout/stderr 与退出码。
+- Studio 内部 worker 仍自举 `AWJ.exe`，不依赖 `AWJ.com`，取消、强制终止和 Job Object 隔离语义保持不变。
+- 更新构建脚本、CLI smoke 脚本、README、迁移文档和帮助文本，说明 GUI 主程序与 console shim 的分工。
+
 ## 0.7.0 - 2026-06-04
 
 0.7.0 是一次以单一 `AWJ.exe` 发布物、Studio 自举 worker 和 CLI/Studio 合体体验为核心的版本更新。重点是取消 Studio 对独立命令行可执行文件的依赖，让 UI、命令行与内部编码 worker 都收敛到同一个可执行文件。

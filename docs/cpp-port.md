@@ -45,7 +45,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 
 ## 新增内容
 
-- CMake 根工程，生成 `AWJ.exe`。
+- CMake 根工程，生成 `AWJ.exe` 和命令行 shim `AWJ.com`。
 - Slint 桌面 UI。
 - UI 支持跟随 Windows 应用主题，也可以手动切换浅色/深色。
 - `run_batch(config, progress_callback, stop_token)` 批处理服务，CLI/UI 共用。
@@ -81,12 +81,13 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - `awj.pipeline`：多线程调度、进度事件和汇总。
 - `awj.native_visual_search` / `awj.visual_metrics` / `awj.visual_metrics_gpu`：视觉质量搜索、CPU/GPU 质量指标和 fallback 诊断。
 - `src\cli\main.cpp`：CLI 入口。
+- `src\cli\shim_main.cpp`：`AWJ.com` console shim，转发到同目录 `AWJ.exe` 并透传命令行输出与退出码。
 - `src\ui\main.cpp`：Slint UI 入口和 Win32 文件/文件夹选择。
 
 ## 进阶改动
 
 - CLI 文本输出使用 C++23 `std::println`，避免继续扩散 `cout`/`printf` 风格输出。
-- 批处理由 `AWJ` 同一可执行程序以 worker 模式执行；Studio 作为 UI host 启动同目录 `AWJ.exe` worker 子进程并用 Job Object 管理其生命周期。UI 的“取消”通过隐藏 cancel event 触发 worker 协作式停止；“强制终止”和运行中关闭窗口只终止 worker/job，不终止 Studio 本体，避免第三方同步编码调用卡住时拖死 UI 进程。
+- 批处理由 `AWJ.exe` 同一可执行程序以 worker 模式执行；Studio 作为 UI host 启动同目录 `AWJ.exe` worker 子进程并用 Job Object 管理其生命周期。命令行入口由 `AWJ.com` shim 转发到 `AWJ.exe`，保留终端等待、stdout/stderr 和退出码；双击 `AWJ.exe` 使用 GUI subsystem，不弹出命令行窗口。UI 的“取消”通过隐藏 cancel event 触发 worker 协作式停止；“强制终止”和运行中关闭窗口只终止 worker/job，不终止 Studio 本体，避免第三方同步编码调用卡住时拖死 UI 进程。
 - C API、Win32 和 COM 交界处统一用 `std::unique_ptr` 自定义 deleter 或局部 RAII 类型表达拥有关系，覆盖 `Release`、`CoTaskMemFree`、`LocalFree`、libavif/libjxl/libwebp/libraw 等资源释放路径。
 - 参数解析、文件系统、decoder/encoder 入口和重要分配路径使用 `std::expected<T, std::string>` 表达错误。
 - 索引型循环优先使用 `std::views::iota`，只有依赖迭代器失效、外部 C API 或更清晰的资源生命周期时才保留传统循环。
@@ -96,10 +97,10 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 
 ## 构建与验证约束
 
-日常验证只构建 AWJ 目标；首次配置 Release preset 时还会预编译并内嵌 visual_quality Direct3D 11 shader，构建机需要可用的 Windows SDK `fxc.exe`。Release preset 默认启用 `AWJ_ENABLE_X64_V3=ON`，MSVC Release 会为项目目标添加 `/arch:AVX2`：
+日常验证只构建 AWJ 和 AWJ-com 目标；首次配置 Release preset 时还会预编译并内嵌 visual_quality Direct3D 11 shader，构建机需要可用的 Windows SDK `fxc.exe`。Release preset 默认启用 `AWJ_ENABLE_X64_V3=ON`，MSVC Release 会为项目目标添加 `/arch:AVX2`：
 
 ```powershell
-cmake --build --preset windows-msvc-x64-release --target AWJ
+cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 ```
 
 测试可执行文件只在明确需要测试验证时单独构建，不能混入普通构建步骤。

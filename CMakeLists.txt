@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.7.0
+    VERSION 0.7.1
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -661,7 +661,7 @@ if(BUILD_TESTING)
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--option' '=x' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('--option 的 key 不能为空')) { exit 1 }")
 endif()
 
-add_executable(AWJ
+add_executable(AWJ WIN32
     src/app/main.cpp
     src/cli/main.cpp
     src/ui/main.cpp
@@ -669,6 +669,9 @@ add_executable(AWJ
     src/ui/AWJ.rc)
 avif_enable_common_options(AWJ)
 target_compile_definitions(AWJ PRIVATE AWJ_UNIFIED_EXE)
+if(MSVC)
+    target_link_options(AWJ PRIVATE "/ENTRY:wmainCRTStartup")
+endif()
 target_link_libraries(AWJ PRIVATE
     awj_core
     Slint::Slint
@@ -687,3 +690,11 @@ endif()
 avif_add_slint_sources(AWJ ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
+
+add_executable(AWJ-com src/cli/shim_main.cpp)
+avif_enable_common_options(AWJ-com)
+set_target_properties(AWJ-com PROPERTIES
+    OUTPUT_NAME "AWJ"
+    SUFFIX ".com"
+    PDB_NAME "AWJ-com")
+awj_add_sha256_post_build(AWJ-com)
