@@ -320,6 +320,10 @@ export component AwjStudio inherits Window {
     in-out property <length> import-drop-zone-y: 0px;
     in-out property <length> import-drop-zone-width: 0px;
     in-out property <length> import-drop-zone-height: 0px;
+    in-out property <length> drag-zone-x: 0px;
+    in-out property <length> drag-zone-y: 0px;
+    in-out property <length> drag-zone-width: 0px;
+    in-out property <length> drag-zone-height: 0px;
     property <length> parameter-control-width: 230px;
     property <length> parameter-control-height: 38px;
 
@@ -371,6 +375,7 @@ export component AwjStudio inherits Window {
     callback preset-defaults-requested(int);
     callback toggle-template-token(string);
     callback title-bar-theme-requested(bool);
+    callback begin-window-drag();
 
     init => {
         Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
@@ -479,6 +484,24 @@ export component AwjStudio inherits Window {
                     Rectangle {
                         height: 52px;
                         background: transparent;
+                        init => {
+                            root.drag-zone-x = self.absolute-position.x;
+                            root.drag-zone-y = self.absolute-position.y;
+                            root.drag-zone-width = self.width;
+                            root.drag-zone-height = self.height;
+                        }
+                        changed width => {
+                            root.drag-zone-x = self.absolute-position.x;
+                            root.drag-zone-y = self.absolute-position.y;
+                            root.drag-zone-width = self.width;
+                            root.drag-zone-height = self.height;
+                        }
+                        changed height => {
+                            root.drag-zone-x = self.absolute-position.x;
+                            root.drag-zone-y = self.absolute-position.y;
+                            root.drag-zone-width = self.width;
+                            root.drag-zone-height = self.height;
+                        }
                         VerticalLayout {
                             spacing: 4px;
                             Text { text: "AWJ Studio"; color: root.text-strong; font-size: 24px; font-weight: 900; letter-spacing: 0.5px; }
@@ -487,6 +510,15 @@ export component AwjStudio inherits Window {
                                 height: 3px;
                                 border-radius: 1.5px;
                                 background: #0f7c8c;
+                            }
+                        }
+                        TouchArea {
+                            width: parent.width;
+                            height: parent.height;
+                            pointer-event(event) => {
+                                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                    root.begin-window-drag();
+                                }
                             }
                         }
                     }
@@ -943,7 +975,7 @@ export component AwjStudio inherits Window {
                                 VerticalLayout {
                                     spacing: 8px;
                                     CheckBox { text: "GPU 加速视觉质量"; checked <=> root.visual-quality-gpu; enabled: !root.running; }
-                                    Text { text: "默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM；关闭后使用 CPU 路径，便于兼容性排查和结果对比。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: "默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
                                 }
                                 VerticalLayout {
                                     spacing: 8px;

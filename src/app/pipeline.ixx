@@ -24,12 +24,15 @@ module;
 #include <print>
 #include <ranges>
 #include <stdexcept>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 export module awj.pipeline;
@@ -781,6 +784,91 @@ std::expected<BatchSummary, std::string> run_batch(
     const AppConfig& cfg, ProgressCallback progress = {},
     std::stop_token stop_token = {}) {
   try {
+    if (!cfg.studio_large_action.empty()) {
+      if (auto valid = validate_config(cfg); !valid) {
+        return std::unexpected{valid.error()};
+      }
+      if (cfg.output_format != OutputFormat::avif) {
+        return std::unexpected{"Studio 大图 worker 仅支持 AVIF 输出。"};
+      }
+      auto dimensions = probe_image_dimensions_for_path(
+          cfg.input_path,
+          DecoderRegistryOptions{.allow_wic_fallback = cfg.allow_wic_fallback});
+      if (!dimensions) {
+        return std::unexpected{dimensions.error()};
+      }
+      std::error_code file_ec;
+      const auto bytes = std::filesystem::file_size(cfg.input_path, file_ec);
+      if (file_ec) {
+        return std::unexpected{std::format("读取文件大小失败: {}；系统错误：{}。",
+                                           display_path_for_user(cfg.input_path),
+                                           file_ec.message())};
+      }
+      const bool grid_action = cfg.studio_large_action == L"grid";
+      const bool zenrav1e_action = cfg.studio_large_action == L"zenrav1e";
+      auto decision = classify_large_image(*dimensions, grid_action,
+                                           zenrav1e_action);
+      decision.klass = LargeImageClass::large_mode_required;
+      if (decision.reason == LargeImageReason::none) {
+        decision.reason_text = "Studio 手动大图 worker。";
+      }
+      auto item = BatchLargeImageItem{
+          .file = ImageFile{.index = 0, .path = cfg.input_path, .bytes = bytes},
+          .dimensions = *dimensions,
+          .decision = std::move(decision)};
+      const auto output_dir = output_dir_for(cfg);
+      FileLogger logger{output_dir, cfg.write_log};
+      const auto configured_memory_limit =
+          cfg.memory_limit_bytes == 0 ? automatic_memory_limit(current_memory_status())
+                                      : cfg.memory_limit_bytes;
+      pipeline_detail::best_effort([&] {
+        emit_progress(progress,
+                      BatchProgress{.kind = BatchEventKind::message,
+                                    .completed = 0,
+                                    .total = 1,
+                                    .large_image = item,
+                                    .text = pipeline_detail::large_image_action_text(item)});
+      });
+      auto result = pipeline_detail::encode_large_mode_item(
+          cfg, logger, item, configured_memory_limit, stop_token);
+      pipeline_detail::best_effort([&] {
+        emit_progress(progress,
+                      BatchProgress{.kind = BatchEventKind::item_finished,
+                                    .completed = 1,
+                                    .total = 1,
+                                    .result = result,
+                                    .text = pipeline_detail::format_result_line(result)});
+      });
+      const bool canceled = stop_token.stop_requested() || result.canceled;
+      const bool ok = result.ok;
+      const BatchSummary summary{.ok_count = ok ? 1 : 0,
+                                 .failed_count = !ok && !canceled ? 1 : 0,
+                                 .canceled_count = canceled ? 1 : 0,
+                                 .large_image_deferred_count = 0,
+                                 .large_image_queued_count = 0,
+                                 .original_total = result.original_bytes,
+                                 .output_total = ok ? result.output_bytes : 0,
+                                 .canceled = canceled,
+                                 .exit_code = canceled ? 130 : (ok ? 0 : 2)};
+      if (cfg.write_summary) {
+        if (auto csv = write_csv(output_dir, std::span<const EncodeResult>{&result, 1}); !csv) {
+          return std::unexpected{csv.error()};
+        }
+      }
+      pipeline_detail::best_effort([&] {
+        emit_progress(progress,
+                      BatchProgress{.kind = BatchEventKind::summary,
+                                    .completed = 1,
+                                    .total = 1,
+                                    .summary = summary,
+                                    .text = std::format("{}：成功 {}，失败 {}，取消 {}。",
+                                                        canceled ? "已取消" : "完成",
+                                                        summary.ok_count,
+                                                        summary.failed_count,
+                                                        summary.canceled_count)});
+      });
+      return summary;
+    }
     if (auto valid = validate_config(cfg); !valid) {
       return std::unexpected{valid.error()};
     }

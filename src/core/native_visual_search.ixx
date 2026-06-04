@@ -254,6 +254,7 @@ evaluate_visual_quality_candidate(
 
   std::optional<VisualMetricResult> accelerated_metrics;
   bool metric_session_failed = false;
+  std::string metric_session_error;
   if (metric_session != nullptr) {
     AcceleratedVisualMetricTiming accelerated_timing{};
     if (auto metrics = metric_session->calculate_candidate_metrics(
@@ -266,6 +267,7 @@ evaluate_visual_quality_candidate(
           accelerated_timing.gmsd_seconds + accelerated_timing.ms_ssim_seconds;
     } else {
       metric_session_failed = true;
+      metric_session_error = metrics.error();
       ++timing.visual_quality_gpu_fallback_count;
       timing.visual_quality_luma_seconds += accelerated_timing.luma_seconds;
       timing.gmsd_seconds += accelerated_timing.gmsd_seconds;
@@ -282,6 +284,9 @@ evaluate_visual_quality_candidate(
     const auto encoded_bytes = encoded->encoded.bytes.size();
     auto encode_result = std::move(*encoded);
     encode_result.diagnostics.timing = timing;
+    encode_result.diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
+    encode_result.diagnostics.visual_quality_gpu_used = true;
+    encode_result.diagnostics.visual_quality_gpu_path = "d3d11-session";
     return EvaluatedVisualQualityCandidate{
         .candidate =
             VisualQualityCandidate{
@@ -441,6 +446,10 @@ evaluate_visual_quality_candidate(
   const auto encoded_bytes = encoded->encoded.bytes.size();
   auto encode_result = std::move(*encoded);
   encode_result.diagnostics.timing = timing;
+  encode_result.diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
+  encode_result.diagnostics.visual_quality_gpu_used = false;
+  encode_result.diagnostics.visual_quality_gpu_path = settings.visual_quality_gpu ? "cpu-fallback" : "cpu";
+  encode_result.diagnostics.visual_quality_gpu_fallback_reason = metric_session_error;
   return EvaluatedVisualQualityCandidate{
       .candidate =
           VisualQualityCandidate{
@@ -473,6 +482,10 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
 
   const int requested = std::clamp(*settings.visual_quality, 1, 100);
   const auto range = get_quality_search_range(requested);
+  const int search_q_min =
+      std::clamp(range.q_min, ENCODER_QUALITY_MIN, ENCODER_QUALITY_MAX - 1);
+  const int search_q_max =
+      std::clamp(range.q_max, search_q_min, ENCODER_QUALITY_MAX - 1);
   const auto search_started = native_visual_search_detail::Clock::now();
   auto timing = native_visual_search_detail::make_visual_quality_timing();
   if (range.lossless) {
@@ -493,6 +506,9 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     encoded->lossless = true;
     encoded->search_attempt_count = 1;
     encoded->diagnostics.timing = timing;
+    encoded->diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
+    encoded->diagnostics.visual_quality_gpu_used = false;
+    encoded->diagnostics.visual_quality_gpu_path = "lossless-bypass";
     return NativeVisualQualitySearchResult{
         .encode_result = std::move(*encoded),
         .candidate = VisualQualityCandidate{.quality = 100,
@@ -505,13 +521,19 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
         .target_met = true};
   }
 
+  const bool gpu_requested = settings.visual_quality_gpu;
+  bool gpu_used = false;
+  std::string gpu_path = gpu_requested ? "cpu-fallback" : "cpu-disabled";
+  std::string gpu_fallback_reason;
   std::optional<AcceleratedVisualMetricSession> metric_session;
-  if (settings.visual_quality_gpu) {
+  if (gpu_requested) {
     if (auto session =
             AcceleratedVisualMetricSession::create(reference_image)) {
       metric_session.emplace(std::move(*session));
+      gpu_path = "d3d11-session";
     } else {
       ++timing.visual_quality_gpu_fallback_count;
+      gpu_fallback_reason = session.error();
     }
   }
   std::optional<LumaImage> reference_luma;
@@ -520,6 +542,16 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   std::optional<EvaluatedVisualQualityCandidate> smallest_passing_result;
   std::vector<VisualQualityCandidate> candidates;
   std::vector<int> evaluated_qualities;
+  const auto reserve_candidate_count = static_cast<std::size_t>(
+      std::max(4, search_q_max - search_q_min + 1));
+  try {
+    candidates.reserve(reserve_candidate_count);
+    evaluated_qualities.reserve(reserve_candidate_count);
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"visual_quality 候选记录内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"visual_quality 候选记录数量超过运行时限制。"};
+  }
 
   auto candidate_matches = [](const VisualQualityCandidate& left,
                               const VisualQualityCandidate& right) noexcept {
@@ -552,7 +584,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
 
   auto find_evaluated_candidate =
       [&](int quality) -> std::optional<VisualQualityCandidate> {
-    quality = std::clamp(quality, range.q_min, range.q_max);
+    quality = std::clamp(quality, search_q_min, search_q_max);
     for (std::size_t index = 0; index < evaluated_qualities.size(); ++index) {
       if (evaluated_qualities[index] == quality) {
         return candidates[index];
@@ -562,10 +594,11 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   };
 
   std::vector<std::byte> jxl_rgb8_input_cache;
+  bool gpu_session_available = metric_session.has_value();
 
   auto evaluate_quality =
       [&](int quality) -> std::expected<VisualQualityCandidate, std::string> {
-    quality = std::clamp(quality, range.q_min, range.q_max);
+    quality = std::clamp(quality, search_q_min, search_q_max);
     if (const auto existing = find_evaluated_candidate(quality)) {
       return *existing;
     }
@@ -573,6 +606,9 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       return std::unexpected{"visual_quality 搜索已取消。"};
     }
     auto candidate_settings = settings;
+    // visual_quality 搜索只使用可复用 session；session 不可用时直接 CPU，
+    // 避免每个候选反复尝试失败的 one-shot GPU 初始化。
+    candidate_settings.visual_quality_gpu = gpu_session_available;
     auto jxl_rgb8_input = native_visual_search_detail::make_jxl_rgb8_input_view(
         reference_image, candidate_settings, jxl_rgb8_input_cache);
     if (!jxl_rgb8_input) {
@@ -603,6 +639,20 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     }
     native_visual_search_detail::accumulate_visual_quality_timing(
         timing, candidate->timing);
+    gpu_used = gpu_used || candidate->encode_result.diagnostics.visual_quality_gpu_used;
+    const bool candidate_gpu_fallback =
+        candidate->timing.visual_quality_gpu_fallback_count > 0;
+    if (gpu_fallback_reason.empty() &&
+        !candidate->encode_result.diagnostics.visual_quality_gpu_fallback_reason.empty()) {
+      gpu_fallback_reason = candidate->encode_result.diagnostics.visual_quality_gpu_fallback_reason;
+    }
+    if (gpu_session_available && candidate_gpu_fallback) {
+      gpu_session_available = false;
+      metric_session.reset();
+      if (gpu_used) {
+        gpu_path = "d3d11-session+cpu-fallback";
+      }
+    }
     retain_candidate_result(std::move(*candidate));
     return candidate_summary;
   };
@@ -610,65 +660,50 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   CandidateSelection selected{};
   bool target_met = false;
 
-  auto low_candidate = evaluate_quality(range.q_min);
-  if (!low_candidate) {
-    return std::unexpected{low_candidate.error()};
+  // 先用 visual_quality 的曲线预测窗口定位大致范围，再在窗口内做
+  // lower-bound 二分。lossy q 限定为 1..99；q100 保留给 lossless 特例。
+  // 这样完整 1..99 区间最坏也只需 7 次评估，避免 q_min 命中时 1 次
+  // 早停、未命中时又额外评估 q_max/high+1 导致 8/9 次的跳变。
+  int low = search_q_min - 1;
+  int high = search_q_max;
+  while (low + 1 < high) {
+    const int midpoint =
+        native_visual_search_detail::midpoint_quality(low, high);
+    auto midpoint_candidate = evaluate_quality(midpoint);
+    if (!midpoint_candidate) {
+      return std::unexpected{midpoint_candidate.error()};
+    }
+    if (visual_quality_candidate_meets_target(*midpoint_candidate, requested)) {
+      high = midpoint;
+    } else {
+      low = midpoint;
+    }
   }
 
-  if (visual_quality_candidate_meets_target(*low_candidate, requested)) {
+  auto final_candidate = evaluate_quality(high);
+  if (!final_candidate) {
+    return std::unexpected{final_candidate.error()};
+  }
+
+  if (visual_quality_candidate_meets_target(*final_candidate, requested)) {
     selected =
         select_smallest_passing_visual_quality_candidate(candidates, requested);
     target_met = selected.found;
   } else {
-    auto high_candidate = evaluate_quality(range.q_max);
-    if (!high_candidate) {
-      return std::unexpected{high_candidate.error()};
+    if (!settings.visual_quality_fallback) {
+      const auto closest = select_closest_visual_quality_candidate(candidates);
+      if (closest.found) {
+        return std::unexpected{std::format(
+            "未找到达到 visual_quality={} 的候选，最接近候选为 q{}、VQ "
+            "{:.2f}；请降低 visual_quality 或使用 visual_quality=100 无损。",
+            requested, closest.candidate.quality, closest.candidate.visual_score)};
+      }
+      return std::unexpected{
+          std::format("未找到达到 visual_quality={} 的候选，请降低 "
+                      "visual_quality 或使用 visual_quality=100 无损。",
+                      requested)};
     }
-
-    if (!visual_quality_candidate_meets_target(*high_candidate, requested)) {
-      if (!settings.visual_quality_fallback) {
-        const auto closest =
-            select_closest_visual_quality_candidate(candidates);
-        if (closest.found) {
-          return std::unexpected{std::format(
-              "未找到达到 visual_quality={} 的候选，最接近候选为 q{}、VQ "
-              "{:.2f}；请降低 visual_quality 或使用 visual_quality=100 无损。",
-              requested, closest.candidate.quality,
-              closest.candidate.visual_score)};
-        }
-        return std::unexpected{
-            std::format("未找到达到 visual_quality={} 的候选，请降低 "
-                        "visual_quality 或使用 visual_quality=100 无损。",
-                        requested)};
-      }
-      selected = select_closest_visual_quality_candidate(candidates);
-    } else {
-      int low = range.q_min;
-      int high = range.q_max;
-      while (high - low > 1) {
-        const int midpoint =
-            native_visual_search_detail::midpoint_quality(low, high);
-        auto midpoint_candidate = evaluate_quality(midpoint);
-        if (!midpoint_candidate) {
-          return std::unexpected{midpoint_candidate.error()};
-        }
-        if (visual_quality_candidate_meets_target(*midpoint_candidate,
-                                                  requested)) {
-          high = midpoint;
-        } else {
-          low = midpoint;
-        }
-      }
-      if (high < range.q_max) {
-        auto neighbor = evaluate_quality(high + 1);
-        if (!neighbor) {
-          return std::unexpected{neighbor.error()};
-        }
-      }
-      selected = select_smallest_passing_visual_quality_candidate(candidates,
-                                                                  requested);
-      target_met = selected.found;
-    }
+    selected = select_closest_visual_quality_candidate(candidates);
   }
 
   if (!selected.found) {
@@ -702,6 +737,10 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       .gmsd_quality_score = selected.candidate.gmsd_quality_score,
       .msssim_quality_score = selected.candidate.msssim_quality_score};
   encoded.diagnostics.timing = timing;
+  encoded.diagnostics.visual_quality_gpu_requested = gpu_requested;
+  encoded.diagnostics.visual_quality_gpu_used = gpu_used;
+  encoded.diagnostics.visual_quality_gpu_path = gpu_requested ? (gpu_used ? gpu_path : "cpu-fallback") : "cpu-disabled";
+  encoded.diagnostics.visual_quality_gpu_fallback_reason = gpu_fallback_reason;
 
   return NativeVisualQualitySearchResult{.encode_result = std::move(encoded),
                                          .candidate = selected.candidate,

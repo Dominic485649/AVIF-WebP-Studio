@@ -1,15 +1,12 @@
 module;
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cwctype>
 #include <expected>
 #include <filesystem>
-#include <fstream>
 #include <format>
 #include <limits>
 #include <memory>
@@ -37,7 +34,6 @@ import awj.image;
 import awj.jxl_codec;
 import awj.large_image_plan;
 import awj.native_visual_search;
-import awj.raw_image_io;
 import awj.resource_planner;
 import awj.svtav1hdr_codec;
 import awj.visual_quality;
@@ -144,156 +140,6 @@ struct HandleDeleter {
 
 using UniqueHandle = std::unique_ptr<void, HandleDeleter>;
 
-class ProcThreadAttributeListGuard {
- public:
-  explicit ProcThreadAttributeListGuard(LPPROC_THREAD_ATTRIBUTE_LIST list) noexcept
-      : list_{list} {}
-  ~ProcThreadAttributeListGuard() {
-    if (list_ != nullptr) {
-      DeleteProcThreadAttributeList(list_);
-    }
-  }
-  ProcThreadAttributeListGuard(const ProcThreadAttributeListGuard&) = delete;
-  ProcThreadAttributeListGuard& operator=(const ProcThreadAttributeListGuard&) = delete;
-
- private:
-  LPPROC_THREAD_ATTRIBUTE_LIST list_{};
-};
-
-std::expected<void, std::string> initialize_helper_handle_list(
-    LPPROC_THREAD_ATTRIBUTE_LIST attribute_list,
-    SIZE_T attribute_list_size,
-    std::span<HANDLE> handles) {
-  if (!InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_list_size)) {
-    return std::unexpected{
-        std::format("初始化 AVIF helper 继承句柄列表失败: {}", win32_error_message(GetLastError()))};
-  }
-  if (!UpdateProcThreadAttribute(attribute_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                                 handles.data(), handles.size_bytes(), nullptr, nullptr)) {
-    const auto message = win32_error_message(GetLastError());
-    DeleteProcThreadAttributeList(attribute_list);
-    return std::unexpected{
-        std::format("配置 AVIF helper 继承句柄列表失败: {}", message)};
-  }
-  return {};
-}
-
-struct HeapAllocationDeleter {
-  using pointer = void*;
-  void operator()(void* value) const noexcept {
-    if (value != nullptr) {
-      HeapFree(GetProcessHeap(), 0, value);
-    }
-  }
-};
-
-using UniqueHeapAllocation = std::unique_ptr<void, HeapAllocationDeleter>;
-
-struct ProcThreadAttributeListAllocation {
-  UniqueHeapAllocation storage;
-  SIZE_T size{};
-};
-
-std::expected<ProcThreadAttributeListAllocation, std::string> allocate_helper_handle_list() {
-  SIZE_T attribute_list_size = 0;
-  if (InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_list_size) ||
-      GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-    return std::unexpected{
-        std::format("计算 AVIF helper 继承句柄列表尺寸失败: {}", win32_error_message(GetLastError()))};
-  }
-  UniqueHeapAllocation storage{HeapAlloc(GetProcessHeap(), 0, attribute_list_size)};
-  if (!storage) {
-    return std::unexpected{"AVIF helper 继承句柄列表内存不足。"};
-  }
-  return ProcThreadAttributeListAllocation{.storage = std::move(storage), .size = attribute_list_size};
-}
-
-std::expected<UniqueHandle, std::string> create_helper_process_job() {
-  HANDLE raw_job = CreateJobObjectW(nullptr, nullptr);
-  if (raw_job == nullptr) {
-    return std::unexpected{
-        std::format("创建 AVIF helper 进程树管理对象失败: {}", win32_error_message(GetLastError()))};
-  }
-  UniqueHandle job{raw_job};
-  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-  if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
-                               &limits, sizeof(limits))) {
-    return std::unexpected{
-        std::format("配置 AVIF helper 进程树管理失败: {}", win32_error_message(GetLastError()))};
-  }
-  return std::move(job);
-}
-
-void terminate_helper_process_tree(HANDLE job, HANDLE process, UINT exit_code) noexcept {
-  bool terminated = false;
-  if (job != nullptr && job != INVALID_HANDLE_VALUE) {
-    terminated = TerminateJobObject(job, exit_code) != FALSE;
-  }
-  if (!terminated && process != nullptr && process != INVALID_HANDLE_VALUE) {
-    TerminateProcess(process, exit_code);
-  }
-  if (process != nullptr && process != INVALID_HANDLE_VALUE) {
-    WaitForSingleObject(process, 1000);
-  }
-}
-
-constexpr std::size_t kMaxHelperDiagnosticsBytes = 4096;
-
-std::string trim_helper_diagnostics(std::string text) {
-  text.erase(std::ranges::remove(text, '\r').begin(), text.end());
-  while (!text.empty() && (text.back() == '\n' || text.back() == ' ' || text.back() == '\t')) {
-    text.pop_back();
-  }
-  return text;
-}
-
-std::string truncate_helper_diagnostics(std::string text) {
-  if (text.size() > kMaxHelperDiagnosticsBytes) {
-    constexpr std::string_view suffix{"..."};
-    const auto suffix_offset = kMaxHelperDiagnosticsBytes - suffix.size();
-    std::ranges::copy(suffix, text.begin() + static_cast<std::ptrdiff_t>(suffix_offset));
-    text.resize(kMaxHelperDiagnosticsBytes);
-  }
-  return text;
-}
-
-std::string sanitize_stderr_message(std::string text) {
-  return truncate_helper_diagnostics(trim_helper_diagnostics(std::move(text)));
-}
-
-std::string sanitize_helper_diagnostics(std::string text,
-                                        std::span<const fs::path> private_paths) {
-  text = trim_helper_diagnostics(std::move(text));
-  for (const auto& path : private_paths) {
-    text = redact_path_for_user(std::move(text), path);
-  }
-  return truncate_helper_diagnostics(std::move(text));
-}
-
-void append_pipe_available(HANDLE pipe, std::string& text) noexcept {
-  std::array<char, 4096> buffer{};
-  while (true) {
-    DWORD available = 0;
-    if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) || available == 0) {
-      break;
-    }
-    DWORD bytes_read = 0;
-    const DWORD to_read = std::min<DWORD>(available, static_cast<DWORD>(buffer.size()));
-    if (!ReadFile(pipe, buffer.data(), to_read, &bytes_read, nullptr) || bytes_read == 0) {
-      break;
-    }
-    if (text.size() < kMaxHelperDiagnosticsBytes) {
-      const auto remaining = kMaxHelperDiagnosticsBytes - text.size();
-      try {
-        text.append(buffer.data(), std::min<std::size_t>(bytes_read, remaining));
-      } catch (...) {
-        text.clear();
-      }
-    }
-  }
-}
-
 void remove_file_noexcept(const fs::path& path) noexcept {
   try {
     std::error_code ec;
@@ -301,39 +147,6 @@ void remove_file_noexcept(const fs::path& path) noexcept {
   } catch (...) {
   }
 }
-
-void remove_directory_noexcept(const fs::path& path) noexcept {
-  try {
-    std::error_code ec;
-    fs::remove_all(path, ec);
-  } catch (...) {
-  }
-}
-
-class TempFileCleanup {
- public:
-  TempFileCleanup(const fs::path& input, const fs::path& output, const fs::path& directory) noexcept
-      : input_{&input}, output_{&output}, directory_{&directory} {}
-  ~TempFileCleanup() { cleanup(); }
-  TempFileCleanup(const TempFileCleanup&) = delete;
-  TempFileCleanup& operator=(const TempFileCleanup&) = delete;
-  void cleanup() noexcept {
-    if (input_ != nullptr && !input_->empty()) {
-      remove_file_noexcept(*input_);
-    }
-    if (output_ != nullptr && !output_->empty()) {
-      remove_file_noexcept(*output_);
-    }
-    if (directory_ != nullptr && !directory_->empty()) {
-      remove_directory_noexcept(*directory_);
-    }
-  }
-
- private:
-  const fs::path* input_{};
-  const fs::path* output_{};
-  const fs::path* directory_{};
-};
 
 class TempOutputFile {
  public:
@@ -448,95 +261,6 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
   return {};
 }
 
-std::expected<std::vector<std::byte>, std::string> read_file_bytes(const fs::path& path) {
-  try {
-    std::ifstream input{path, std::ios::binary};
-    if (!input) {
-      return std::unexpected{std::format("无法读取 helper 输出文件: {}", display_path_for_user(path))};
-    }
-    input.seekg(0, std::ios::end);
-    if (!input) {
-      return std::unexpected{std::format("读取 helper 输出文件大小失败: {}", display_path_for_user(path))};
-    }
-    const auto size = input.tellg();
-    if (size < 0) {
-      return std::unexpected{std::format("读取 helper 输出文件大小失败: {}", display_path_for_user(path))};
-    }
-    if (size == 0) {
-      return std::unexpected{std::format("helper 输出文件为空: {}", display_path_for_user(path))};
-    }
-    const auto file_size = static_cast<std::uint64_t>(size);
-    if (file_size > encoding_defaults::max_input_file_bytes) {
-      return std::unexpected{std::format("helper 输出文件超过 20 GiB 输入上限: {}", display_path_for_user(path))};
-    }
-    if (file_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
-      return std::unexpected{std::format("helper 输出文件超过流读取 API 限制: {}", display_path_for_user(path))};
-    }
-    input.seekg(0, std::ios::beg);
-    if (!input) {
-      return std::unexpected{std::format("读取 helper 输出文件失败: {}", display_path_for_user(path))};
-    }
-    auto bytes = decoder_common::make_byte_buffer(static_cast<std::size_t>(file_size),
-                                                  "helper 输出文件");
-    if (!bytes) {
-      return std::unexpected{bytes.error()};
-    }
-    input.read(reinterpret_cast<char*>(bytes->data()), static_cast<std::streamsize>(bytes->size()));
-    if (!input) {
-      return std::unexpected{std::format("读取 helper 输出文件失败: {}", display_path_for_user(path))};
-    }
-    return std::move(*bytes);
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"读取 helper 输出文件时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"读取 helper 输出文件时数据超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"读取 helper 输出文件时文件系统访问失败。"};
-  }
-}
-
-std::wstring quote_process_argument(std::wstring_view value) {
-  std::wstring quoted{L"\""};
-  std::size_t backslashes = 0;
-  for (const wchar_t ch : value) {
-    if (ch == L'\\') {
-      ++backslashes;
-      continue;
-    }
-    if (ch == L'\"') {
-      quoted.append(backslashes * 2 + 1, L'\\');
-      quoted.push_back(ch);
-    } else {
-      quoted.append(backslashes, L'\\');
-      quoted.push_back(ch);
-    }
-    backslashes = 0;
-  }
-  quoted.append(backslashes * 2, L'\\');
-  quoted += L"\"";
-  return quoted;
-}
-
-std::wstring helper_encoder_argument(AvifEncoderMode mode) {
-  return wide_from_utf8(avif_encoder_mode_name(mode));
-}
-
-std::wstring helper_chroma_argument(ChromaMode mode) {
-  return wide_from_utf8(chroma_mode_name(mode));
-}
-
-int avif_helper_thread_count(int requested_threads) noexcept {
-  return std::clamp(requested_threads, 1, encoding_defaults::default_av1_encoder_thread_cap);
-}
-
-int avif_helper_quality(int quality) noexcept {
-  return std::clamp(quality, 1, 100);
-}
-
-int avif_helper_speed(int speed) noexcept {
-  return std::clamp(speed, 0, 10);
-}
-
 bool effective_lossless_requested(int quality, std::optional<int> visual_quality) noexcept {
   return visual_quality ? *visual_quality >= 100 : quality >= 100;
 }
@@ -549,14 +273,6 @@ bool avif_lossless_requested(const AppConfig& cfg) noexcept {
 bool jxl_lossless_requested(const AppConfig& cfg) noexcept {
   return cfg.output_format == OutputFormat::jxl &&
          effective_lossless_requested(cfg.quality, cfg.visual_quality);
-}
-
-bool encode_settings_lossless_requested(const NativeEncodeSettings& settings) noexcept {
-  return effective_lossless_requested(settings.quality, settings.visual_quality);
-}
-
-int avif_helper_final_quality(const NativeEncodeSettings& settings) noexcept {
-  return encode_settings_lossless_requested(settings) ? 100 : avif_helper_quality(settings.quality);
 }
 
 bool avif_lossless_passthrough_source(const fs::path& path) {
@@ -1163,176 +879,6 @@ bool avif_lossless_bit_depth_supported(int bit_depth) noexcept {
   return bit_depth == 8 || bit_depth == 10 || bit_depth == 12;
 }
 
-std::expected<std::wstring, std::string> make_helper_command_line(
-    const fs::path& helper,
-    const fs::path& input,
-    const fs::path& output,
-    const NativeEncodeSettings& settings) {
-  try {
-    std::wstring command = quote_process_argument(helper.native());
-    const auto append = [&](std::wstring_view value) {
-      command.push_back(L' ');
-      command += value;
-    };
-    append(L"--mode");
-    append(L"encode");
-    append(L"--encoder");
-    append(helper_encoder_argument(settings.avif_encoder));
-    append(L"--input");
-    append(quote_process_argument(input.native()));
-    append(L"--output");
-    append(quote_process_argument(output.native()));
-    append(L"--quality");
-    append(std::format(L"{}", avif_helper_final_quality(settings)));
-    append(L"--speed");
-    append(std::format(L"{}", avif_helper_speed(settings.speed)));
-    if (!encode_settings_lossless_requested(settings)) {
-      append(L"--bit-depth");
-      append(std::format(L"{}", settings.bit_depth.value_or(8)));
-      append(L"--chroma");
-      append(helper_chroma_argument(settings.chroma_mode));
-    }
-    append(L"--threads");
-    append(std::format(L"{}", avif_helper_thread_count(settings.resources.encoder_threads_per_file)));
-    if (settings.applied_hdr_metadata == "kept" && settings.source_content_light) {
-      append(L"--source-content-light");
-      append(std::format(L"{}", settings.source_content_light->max_cll));
-      append(std::format(L"{}", settings.source_content_light->max_pall));
-    }
-    if (settings.avif_encoder == AvifEncoderMode::zenrav1e) {
-      append(L"--experimental-encoders");
-    }
-    return command;
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"构造 AVIF helper 命令行时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"构造 AVIF helper 命令行超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"构造 AVIF helper 命令行时文件系统访问失败。"};
-  }
-}
-
-std::expected<void, std::string> run_helper_command(
-    std::wstring command_line,
-    std::chrono::minutes timeout,
-    std::stop_token stop_token,
-    std::span<const fs::path> private_paths = {}) {
-  try {
-    SECURITY_ATTRIBUTES security{};
-    security.nLength = sizeof(security);
-    security.bInheritHandle = TRUE;
-
-    HANDLE raw_read = nullptr;
-    HANDLE raw_write = nullptr;
-    if (!CreatePipe(&raw_read, &raw_write, &security, 0)) {
-      return std::unexpected{std::format("创建 AVIF helper 输出管道失败: {}", win32_error_message(GetLastError()))};
-    }
-    UniqueHandle read_pipe{raw_read};
-    UniqueHandle write_pipe{raw_write};
-    if (!SetHandleInformation(read_pipe.get(), HANDLE_FLAG_INHERIT, 0)) {
-      return std::unexpected{std::format("配置 AVIF helper 输出管道失败: {}", win32_error_message(GetLastError()))};
-    }
-
-    auto job = create_helper_process_job();
-    if (!job) {
-      return std::unexpected{job.error()};
-    }
-
-    HANDLE raw_null_input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                        &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (raw_null_input == INVALID_HANDLE_VALUE) {
-      return std::unexpected{std::format("创建 AVIF helper 标准输入失败: {}", win32_error_message(GetLastError()))};
-    }
-    UniqueHandle null_input{raw_null_input};
-
-    auto attribute_storage = allocate_helper_handle_list();
-    if (!attribute_storage) {
-      return std::unexpected{attribute_storage.error()};
-    }
-    auto* attribute_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_storage->storage.get());
-    std::array<HANDLE, 2> inherited_handles{null_input.get(), write_pipe.get()};
-    if (auto initialized = initialize_helper_handle_list(attribute_list, attribute_storage->size, inherited_handles); !initialized) {
-      return std::unexpected{initialized.error()};
-    }
-    ProcThreadAttributeListGuard attribute_guard{attribute_list};
-
-    STARTUPINFOEXW startup{};
-    startup.StartupInfo.cb = sizeof(startup);
-    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdOutput = write_pipe.get();
-    startup.StartupInfo.hStdError = write_pipe.get();
-    startup.StartupInfo.hStdInput = null_input.get();
-    startup.lpAttributeList = attribute_list;
-    PROCESS_INFORMATION process{};
-    if (!CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-                        nullptr, nullptr, &startup.StartupInfo, &process)) {
-      return std::unexpected{std::format("启动 AVIF helper 失败: {}", win32_error_message(GetLastError()))};
-    }
-    UniqueHandle process_handle{process.hProcess};
-    UniqueHandle thread_handle{process.hThread};
-    write_pipe.reset();
-    if (!AssignProcessToJobObject(job->get(), process_handle.get())) {
-      const auto message = win32_error_message(GetLastError());
-      TerminateProcess(process_handle.get(), 127);
-      WaitForSingleObject(process_handle.get(), 1000);
-      return std::unexpected{std::format("将 AVIF helper 加入进程树管理失败: {}", message)};
-    }
-    if (ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1)) {
-      const auto message = win32_error_message(GetLastError());
-      terminate_helper_process_tree(job->get(), process_handle.get(), 127);
-      return std::unexpected{std::format("恢复 AVIF helper 执行失败: {}", message)};
-    }
-
-    const auto started = std::chrono::steady_clock::now();
-    std::string diagnostics;
-    while (true) {
-      append_pipe_available(read_pipe.get(), diagnostics);
-      const DWORD wait = WaitForSingleObject(process_handle.get(), 50);
-      if (wait == WAIT_OBJECT_0) {
-        break;
-      }
-      if (wait != WAIT_TIMEOUT) {
-        const auto message = win32_error_message(GetLastError());
-        terminate_helper_process_tree(job->get(), process_handle.get(), 127);
-        return std::unexpected{std::format("等待 AVIF helper 失败: {}", message)};
-      }
-      if (stop_token.stop_requested()) {
-        terminate_helper_process_tree(job->get(), process_handle.get(), 130);
-        append_pipe_available(read_pipe.get(), diagnostics);
-        const auto message = sanitize_helper_diagnostics(std::move(diagnostics), private_paths);
-        return std::unexpected{message.empty() ? "AVIF helper 已取消。" : std::format("AVIF helper 已取消: {}", message)};
-      }
-      if (timeout.count() > 0 && std::chrono::steady_clock::now() - started > timeout) {
-        terminate_helper_process_tree(job->get(), process_handle.get(), 124);
-        append_pipe_available(read_pipe.get(), diagnostics);
-        const auto message = sanitize_helper_diagnostics(std::move(diagnostics), private_paths);
-        return std::unexpected{message.empty() ? std::format("AVIF helper 超时（{} 分钟）。", timeout.count())
-                                              : std::format("AVIF helper 超时（{} 分钟）: {}", timeout.count(), message)};
-      }
-    }
-
-    append_pipe_available(read_pipe.get(), diagnostics);
-    DWORD exit_code = 1;
-    if (!GetExitCodeProcess(process_handle.get(), &exit_code)) {
-      return std::unexpected{std::format("读取 AVIF helper 退出码失败: {}", win32_error_message(GetLastError()))};
-    }
-    if (exit_code != 0) {
-      const auto message = sanitize_helper_diagnostics(std::move(diagnostics), private_paths);
-      return std::unexpected{message.empty() ? std::format("AVIF helper 编码失败，退出码 {}。", exit_code)
-                                            : std::format("AVIF helper 编码失败，退出码 {}: {}", exit_code, message)};
-    }
-    return {};
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"运行 AVIF helper 时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"运行 AVIF helper 时数据超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"运行 AVIF helper 时文件系统访问失败。"};
-  }
-}
-
-std::atomic<std::uint64_t> helper_counter{};
 std::atomic<std::uint64_t> output_temp_counter{};
 constexpr int kMaxOutputTempPathAttempts = 1000;
 
@@ -1340,183 +886,6 @@ fs::path make_output_temp_path(const fs::path& target) {
   const auto parent = target.parent_path();
   const auto id = output_temp_counter.fetch_add(1, std::memory_order_relaxed);
   return parent / std::format(L".awj-output-{}-{}.tmp", GetCurrentProcessId(), id);
-}
-
-std::expected<fs::path, std::string> helper_executable_path() {
-  try {
-    const auto exe_dir = executable_directory();
-    if (!exe_dir) {
-      return std::unexpected{exe_dir.error()};
-    }
-    const auto colocated = *exe_dir / L"AWJ-native-avif-helper.exe";
-    std::error_code ec;
-    const auto colocated_is_file = fs::is_regular_file(colocated, ec);
-    if (ec) {
-      return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
-                                         display_path_for_user(colocated), ec.message())};
-    }
-    if (colocated_is_file) {
-      return colocated;
-    }
-    const auto internal = exe_dir->parent_path() / L"internal" / exe_dir->filename() /
-                          L"AWJ-native-avif-helper.exe";
-    const auto internal_is_file = fs::is_regular_file(internal, ec);
-    if (ec) {
-      return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
-                                         display_path_for_user(internal), ec.message())};
-    }
-    if (internal_is_file) {
-      return internal;
-    }
-    return colocated;
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"定位 AVIF helper 路径时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"定位 AVIF helper 路径超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"定位 AVIF helper 路径时文件系统访问失败。"};
-  }
-}
-
-struct HelperTempFiles {
-  fs::path directory;
-  fs::path input;
-  fs::path output;
-};
-
-std::expected<HelperTempFiles, std::string> create_helper_temp_files() {
-  try {
-    std::error_code ec;
-    const auto temp_base = fs::temp_directory_path(ec);
-    if (ec) {
-      return std::unexpected{std::format("无法获取 AVIF helper 临时目录: {}", ec.message())};
-    }
-    const auto temp_root = temp_base / L"awjimage-avif-helper";
-    fs::create_directories(temp_root, ec);
-    if (ec) {
-      return std::unexpected{std::format("无法创建 AVIF helper 临时目录 {}: {}",
-                                         display_path_for_user(temp_root),
-                                         ec.message())};
-    }
-    for (int attempt = 0; attempt < 1000; ++attempt) {
-      const auto id = helper_counter.fetch_add(1);
-      auto directory = temp_root / std::format(L"job-{}-{}", GetCurrentProcessId(), id);
-      auto input = directory / L"input.awsraw";
-      auto output = directory / L"output.avif";
-      if (fs::create_directory(directory, ec)) {
-        return HelperTempFiles{.directory = std::move(directory),
-                               .input = std::move(input),
-                               .output = std::move(output)};
-      }
-      if (ec && ec != std::errc::file_exists) {
-        return std::unexpected{std::format("无法创建 AVIF helper 临时目录 {}: {}",
-                                           display_path_for_user(directory),
-                                           ec.message())};
-      }
-      ec.clear();
-    }
-    return std::unexpected{std::format("无法创建唯一 AVIF helper 临时目录: {}",
-                                       display_path_for_user(temp_root))};
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"创建 AVIF helper 临时路径时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"创建 AVIF helper 临时路径超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"创建 AVIF helper 临时路径时文件系统访问失败。"};
-  }
-}
-
-std::expected<NativeEncodeResult, std::string> encode_with_helper_process(
-    const ImageBuffer& image,
-    const NativeEncodeSettings& settings,
-    std::chrono::minutes timeout,
-    std::stop_token stop_token) {
-  try {
-    if (encode_settings_lossless_requested(settings)) {
-      return std::unexpected{
-          "AVIF helper/raw RGBA 无损编码不能保证继承全部源图参数；请使用内置 AOM 无损路径。"};
-    }
-    if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 || image.planes.empty()) {
-      return std::unexpected{"AVIF helper 当前需要 8-bit RGBA ImageBuffer。"};
-    }
-    auto temp_files = create_helper_temp_files();
-    if (!temp_files) {
-      return std::unexpected{temp_files.error()};
-    }
-    TempFileCleanup cleanup{temp_files->input, temp_files->output, temp_files->directory};
-    if (auto written = write_raw_image_file(temp_files->input, image); !written) {
-      return std::unexpected{written.error()};
-    }
-    auto helper = helper_executable_path();
-    if (!helper) {
-      return std::unexpected{helper.error()};
-    }
-    std::error_code ec;
-    const auto helper_is_file = fs::is_regular_file(*helper, ec);
-    if (ec) {
-      return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
-                                         display_path_for_user(*helper), ec.message())};
-    }
-    if (!helper_is_file) {
-      const auto helper_exists = fs::exists(*helper, ec);
-      if (ec) {
-        return std::unexpected{std::format("无法检查 AVIF helper 路径 {}: {}",
-                                           display_path_for_user(*helper), ec.message())};
-      }
-      if (helper_exists) {
-        return std::unexpected{std::format("AVIF helper 路径不是普通文件: {}；请重新安装或重新构建 AWJimage。",
-                                           display_path_for_user(*helper))};
-      }
-      return std::unexpected{std::format("AVIF helper 缺失: {}；请重新安装或重新构建 AWJimage。",
-                                         display_path_for_user(*helper))};
-    }
-    auto command_line = make_helper_command_line(*helper, temp_files->input, temp_files->output, settings);
-    if (!command_line) {
-      return std::unexpected{command_line.error()};
-    }
-    const std::array private_paths{temp_files->directory, temp_files->input, temp_files->output};
-    if (auto ran = run_helper_command(std::move(*command_line), timeout, stop_token,
-                                      std::span<const fs::path>{private_paths}); !ran) {
-      return std::unexpected{ran.error()};
-    }
-    auto bytes = read_file_bytes(temp_files->output);
-    if (!bytes) {
-      return std::unexpected{bytes.error()};
-    }
-
-    const int final_speed = avif_helper_speed(settings.speed);
-    const auto speed_mapping = avif_speed_mapping_for(AvifEncoderSelection{
-        .applied_encoder = settings.avif_encoder,
-        .speed = final_speed});
-    auto diagnostics = diagnostics_from_settings(settings);
-    diagnostics.encoder_id = avif_encoder_mode_name(settings.avif_encoder);
-    diagnostics.requested_encoder_id = avif_encoder_mode_name(settings.requested_avif_encoder);
-    diagnostics.requested_chroma = chroma_mode_name(settings.requested_chroma_mode);
-    diagnostics.applied_chroma = chroma_mode_name(settings.chroma_mode);
-    diagnostics.requested_bit_depth = settings.requested_bit_depth;
-    diagnostics.applied_bit_depth = settings.bit_depth;
-    diagnostics.bit_depth_reason = settings.bit_depth_reason;
-    diagnostics.fallback_reason = settings.encoder_fallback_reason;
-    diagnostics.encoder_experimental = settings.avif_encoder == AvifEncoderMode::zenrav1e;
-    diagnostics.encoder_license = settings.avif_encoder == AvifEncoderMode::zenrav1e
-                                      ? "AGPL-3.0-only OR LicenseRef-Imazen-Commercial"
-                                      : "BSD-2-Clause";
-    diagnostics.speed_mapping = speed_mapping;
-    diagnostics.encoder_threads = avif_helper_thread_count(settings.resources.encoder_threads_per_file);
-    diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
-    return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(*bytes),
-                                                      .codec_name = avif_encoder_mode_name(settings.avif_encoder)},
-                              .diagnostics = std::move(diagnostics),
-                              .final_quality = avif_helper_final_quality(settings),
-                              .lossless = encode_settings_lossless_requested(settings),
-                              .search_attempt_count = 1};
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"AVIF helper 编码内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"AVIF helper 编码数据超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"AVIF helper 编码文件系统访问失败。"};
-  }
 }
 
 std::expected<void, std::string> write_output_bytes(const fs::path& path,
@@ -1835,6 +1204,10 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.color_reason = native.diagnostics.color_reason;
   result.fallback_reason = native.diagnostics.fallback_reason;
   result.used_decoder_fallback = native.diagnostics.used_decoder_fallback;
+  result.visual_quality_gpu_requested = native.diagnostics.visual_quality_gpu_requested;
+  result.visual_quality_gpu_used = native.diagnostics.visual_quality_gpu_used;
+  result.visual_quality_gpu_path = native.diagnostics.visual_quality_gpu_path;
+  result.visual_quality_gpu_fallback_reason = native.diagnostics.visual_quality_gpu_fallback_reason;
   result.encoder_experimental = native.diagnostics.encoder_experimental;
   result.encoder_license = native.diagnostics.encoder_license;
   result.integration_mode = native.diagnostics.integration_mode;
@@ -1960,6 +1333,10 @@ void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResul
   result.color_metadata_source = diagnostics.color_metadata_source;
   result.color_reason = diagnostics.color_reason;
   result.fallback_reason = settings.encoder_fallback_reason;
+  result.visual_quality_gpu_requested = diagnostics.visual_quality_gpu_requested;
+  result.visual_quality_gpu_used = diagnostics.visual_quality_gpu_used;
+  result.visual_quality_gpu_path = diagnostics.visual_quality_gpu_path;
+  result.visual_quality_gpu_fallback_reason = diagnostics.visual_quality_gpu_fallback_reason;
   result.speed = settings.speed;
   result.encoder_threads = settings.resources.encoder_threads_per_file;
   result.memory_budget_bytes = settings.resources.memory_limit_bytes;
@@ -2292,6 +1669,11 @@ export class NativeBackend final {
       } else if (cfg_.chroma_mode != ChromaMode::auto_keep) {
         selection_requested_chroma = cfg_.chroma_mode;
         prepared.settings.chroma_reason = "用户请求 chroma";
+      } else if (requested_avif_encoder == AvifEncoderMode::automatic) {
+        selection_requested_chroma = ChromaMode::auto_keep;
+        prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
+                                             ? "encoder/chroma auto 使用编码器推荐 chroma"
+                                             : "encoder/chroma auto 不用源图 chroma 限制 encoder selection";
       } else {
         selection_requested_chroma = source_chroma;
         prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
@@ -2602,11 +1984,17 @@ export class NativeBackend final {
     if (result.visual_quality_search_seconds >= 0.0) {
       native_backend_detail::log_info_noexcept(logger_, [&] {
         return std::format(
-            "native vq breakdown: item={:04} candidates={} memory_fallback_decodes={} gpu_fallbacks={} candidate_encode={}s candidate_decode={}s candidate_io={}s luma={}s gmsd={}s ms_ssim={}s metrics={}s metric_share={}%",
+            "native vq breakdown: item={:04} candidates={} memory_fallback_decodes={} gpu_requested={} gpu_used={} gpu_path={} gpu_fallbacks={} gpu_fallback_reason={} candidate_encode={}s candidate_decode={}s candidate_io={}s luma={}s gmsd={}s ms_ssim={}s metrics={}s metric_share={}%",
             result.index + 1,
             result.visual_quality_candidate_count,
             result.visual_quality_decode_memory_fallback_count,
+            result.visual_quality_gpu_requested ? "true" : "false",
+            result.visual_quality_gpu_used ? "true" : "false",
+            result.visual_quality_gpu_path.empty() ? "-" : result.visual_quality_gpu_path,
             result.visual_quality_gpu_fallback_count,
+            result.visual_quality_gpu_fallback_reason.empty()
+                ? "-"
+                : result.visual_quality_gpu_fallback_reason,
             native_backend_detail::format_timing_seconds(result.visual_quality_candidate_encode_seconds),
             native_backend_detail::format_timing_seconds(result.visual_quality_candidate_decode_seconds),
             native_backend_detail::format_timing_seconds(result.visual_quality_candidate_io_seconds),

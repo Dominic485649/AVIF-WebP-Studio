@@ -8,13 +8,16 @@
 #include <shobjidl.h>
 #include <slint.h>
 #include <windows.h>
+#include <windowsx.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cwctype>
 #include <exception>
 #include <expected>
@@ -27,10 +30,12 @@
 #include <new>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -60,15 +65,53 @@ awj::LargeImageDecision manual_large_image_decision(
   return decision;
 }
 
-struct RetiringWorker {
-  std::jthread thread{};
-  std::shared_ptr<std::atomic_bool> finished{};
+struct Win32HandleDeleter {
+  using pointer = HANDLE;
+  void operator()(HANDLE value) const noexcept {
+    if (value != nullptr && value != INVALID_HANDLE_VALUE) {
+      CloseHandle(value);
+    }
+  }
+};
+
+using UniqueWin32Handle = std::unique_ptr<void, Win32HandleDeleter>;
+
+constexpr DWORD kStudioWorkerForceStopExitCode = 130;
+
+struct StudioChildProcess {
+  UniqueWin32Handle process{};
+  UniqueWin32Handle thread{};
+  UniqueWin32Handle job{};
+  UniqueWin32Handle cancel_event{};
+  UniqueWin32Handle output_read{};
+  std::wstring command_line{};
+  DWORD process_id{};
+  std::atomic_bool cancel_requested{};
+  std::atomic_bool force_terminated{};
+
+  void request_cancel() noexcept {
+    cancel_requested.store(true, std::memory_order_release);
+    if (cancel_event != nullptr) {
+      SetEvent(cancel_event.get());
+    }
+  }
+
+  bool terminate(DWORD exit_code = kStudioWorkerForceStopExitCode) noexcept {
+    force_terminated.store(true, std::memory_order_release);
+    request_cancel();
+    bool terminated = false;
+    if (job != nullptr) {
+      terminated = TerminateJobObject(job.get(), exit_code) != FALSE;
+    }
+    if (!terminated && process != nullptr) {
+      terminated = TerminateProcess(process.get(), exit_code) != FALSE;
+    }
+    return terminated;
+  }
 };
 
 struct UiState {
   std::jthread worker{};
-  std::shared_ptr<std::atomic_bool> worker_finished{};
-  std::vector<RetiringWorker> retiring_workers{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
@@ -77,6 +120,7 @@ struct UiState {
   std::uint64_t run_id{};
   std::mutex mutex{};
   std::vector<awj::BatchProgress> pending_events{};
+  std::shared_ptr<StudioChildProcess> active_child{};
   bool worker_active{};
 };
 
@@ -93,20 +137,6 @@ int preferred_large_image_action_index(
 
 LRESULT CALLBACK drop_bridge_window_proc(HWND hwnd, UINT message, WPARAM wparam,
                                          LPARAM lparam);
-
-struct WorkerCompletionMarker {
-  explicit WorkerCompletionMarker(
-      std::shared_ptr<std::atomic_bool> flag) noexcept
-      : flag{std::move(flag)} {}
-
-  ~WorkerCompletionMarker() {
-    if (flag != nullptr) {
-      flag->store(true, std::memory_order_release);
-    }
-  }
-
-  std::shared_ptr<std::atomic_bool> flag{};
-};
 
 struct ComApartment {
   ComApartment()
@@ -125,24 +155,6 @@ struct ComApartment {
 
   [[nodiscard]] bool should_uninitialize() const noexcept {
     return SUCCEEDED(init);
-  }
-
-  HRESULT init{};
-};
-
-struct WorkerComApartment {
-  WorkerComApartment()
-      : init{CoInitializeEx(nullptr,
-                            COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE)} {}
-
-  ~WorkerComApartment() {
-    if (SUCCEEDED(init)) {
-      CoUninitialize();
-    }
-  }
-
-  [[nodiscard]] bool usable() const noexcept {
-    return SUCCEEDED(init) || init == RPC_E_CHANGED_MODE;
   }
 
   HRESULT init{};
@@ -168,6 +180,8 @@ struct CoTaskMemDeleter {
 std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
 }
+
+slint::SharedString to_shared(std::string_view text);
 
 std::expected<void, std::string> add_manual_large_image_path(
     UiState& state, const std::filesystem::path& path, bool allow_wic_fallback,
@@ -223,6 +237,20 @@ std::string trim_copy(std::string value) {
     return {};
   }
   return std::string{first, last};
+}
+
+bool output_dir_is_empty(const AwjStudio& app) {
+  return trim_copy(shared_to_string(app.get_output_dir())).empty();
+}
+
+void set_input_path_preserving_output(AwjStudio& app,
+                                      const std::filesystem::path& path) {
+  const bool should_fill_output = output_dir_is_empty(app);
+  app.set_input_path(to_shared(awj::path_to_utf8(path)));
+  if (should_fill_output) {
+    app.set_output_dir(
+        to_shared(awj::path_to_utf8(awj::default_output_dir_for(path))));
+  }
 }
 
 std::expected<int, std::string> parse_int_field(std::string text,
@@ -904,6 +932,18 @@ bool point_in_import_drop_zone(const AwjStudio& app, POINT point) noexcept {
   }
 }
 
+bool point_in_window_drag_zone(const AwjStudio& app, POINT point) noexcept {
+  try {
+    return slint_rect_contains(static_cast<float>(point.x),
+                               static_cast<float>(point.y),
+                               app.get_drag_zone_x(), app.get_drag_zone_y(),
+                               app.get_drag_zone_width(),
+                               app.get_drag_zone_height());
+  } catch (...) {
+    return false;
+  }
+}
+
 void select_first_large_image_from_state(AwjStudio& app,
                                          const UiState& state) noexcept {
   try {
@@ -952,9 +992,7 @@ void apply_import_drop_paths(AwjStudio& app,
   const auto& path = paths.front();
   const bool folder = path_is_directory(path);
   app.set_input_mode_index(folder ? 1 : 0);
-  app.set_input_path(to_shared(awj::path_to_utf8(path)));
-  app.set_output_dir(
-      to_shared(awj::path_to_utf8(awj::default_output_dir_for(path))));
+  set_input_path_preserving_output(app, path);
   if (paths.size() > 1) {
     app.set_status_text(
         to_shared(std::format("已导入首个路径；普通编码队列一次使用一个输入路径"
@@ -1061,35 +1099,350 @@ void append_pending_event(UiState& state, std::uint64_t run_id,
   }
 }
 
-std::vector<std::jthread> take_finished_retiring_workers(UiState& state) {
-  std::vector<std::jthread> finished_workers;
-  try {
-    finished_workers.reserve(state.retiring_workers.size());
-  } catch (const std::bad_alloc&) {
-    return finished_workers;
-  } catch (const std::length_error&) {
-    return finished_workers;
+bool request_all_workers_stop_locked(UiState& state) noexcept {
+  bool stop_requested = false;
+  if (state.worker_active) {
+    stop_requested = true;
   }
-
-  for (auto it = state.retiring_workers.begin();
-       it != state.retiring_workers.end();) {
-    const bool finished = it->finished != nullptr &&
-                          it->finished->load(std::memory_order_acquire);
-    if (!finished) {
-      ++it;
-      continue;
-    }
-    finished_workers.push_back(std::move(it->thread));
-    it = state.retiring_workers.erase(it);
+  if (state.active_child != nullptr) {
+    state.active_child->request_cancel();
+    stop_requested = true;
   }
-  return finished_workers;
+  return stop_requested;
 }
 
-void join_workers(std::vector<std::jthread>& workers) {
-  for (auto& worker : workers) {
-    if (worker.joinable()) {
-      worker.join();
+bool request_all_workers_stop(const std::shared_ptr<UiState>& state) noexcept {
+  if (state == nullptr) {
+    return false;
+  }
+  try {
+    std::scoped_lock lock{state->mutex};
+    return request_all_workers_stop_locked(*state);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool worker_active(const std::shared_ptr<UiState>& state) noexcept {
+  if (state == nullptr) {
+    return false;
+  }
+  try {
+    std::scoped_lock lock{state->mutex};
+    return state->worker_active;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool force_stop_current_worker(const std::shared_ptr<UiState>& state) noexcept {
+  if (state == nullptr) {
+    return false;
+  }
+  std::shared_ptr<StudioChildProcess> child;
+  bool had_worker = false;
+  try {
+    std::scoped_lock lock{state->mutex};
+    had_worker = state->worker_active || state->active_child != nullptr;
+    child = state->active_child;
+    request_all_workers_stop_locked(*state);
+  } catch (...) {
+    return false;
+  }
+  if (child != nullptr) {
+    return child->terminate() || had_worker;
+  }
+  return had_worker;
+}
+
+std::wstring cli_output_format_arg(awj::OutputFormat format) {
+  switch (format) {
+    case awj::OutputFormat::webp:
+      return L"webp";
+    case awj::OutputFormat::jxl:
+      return L"jxl";
+    case awj::OutputFormat::avif:
+    default:
+      return L"avif";
+  }
+}
+
+std::wstring cli_collision_arg(awj::CollisionMode mode) {
+  switch (mode) {
+    case awj::CollisionMode::skip:
+      return L"skip";
+    case awj::CollisionMode::suffix_time:
+      return L"time";
+    case awj::CollisionMode::suffix_random:
+      return L"random";
+    case awj::CollisionMode::overwrite:
+    default:
+      return L"overwrite";
+  }
+}
+
+std::wstring cli_chroma_arg(awj::ChromaMode mode) {
+  return awj::wide_from_utf8(awj::chroma_mode_name(mode));
+}
+
+std::wstring cli_avif_encoder_arg(awj::AvifEncoderMode mode) {
+  return awj::wide_from_utf8(awj::avif_encoder_mode_name(mode));
+}
+
+std::wstring cli_alpha_arg(awj::AlphaModePolicy policy) {
+  return awj::wide_from_utf8(awj::alpha_mode_policy_name(policy));
+}
+
+void push_cli_option(std::vector<std::wstring>& args, std::wstring option,
+                     std::wstring value) {
+  args.push_back(std::move(option));
+  args.push_back(std::move(value));
+}
+
+void push_cli_option(std::vector<std::wstring>& args, std::wstring option,
+                     const std::filesystem::path& value) {
+  push_cli_option(args, std::move(option), value.native());
+}
+
+std::wstring bytes_argument(std::uint64_t bytes) {
+  return bytes == 0 ? std::wstring{L"auto"} : std::format(L"{}b", bytes);
+}
+
+std::vector<std::wstring> cli_arguments_from_config(
+    const awj::AppConfig& cfg, std::wstring_view cancel_event_name) {
+  std::vector<std::wstring> args;
+  args.reserve(80 + cfg.svtav1hdr_params.size() * 2);
+
+  push_cli_option(args, L"--input", cfg.input_path);
+  if (!cfg.output_dir.empty()) {
+    push_cli_option(args, L"--output", cfg.output_dir);
+  }
+  push_cli_option(args, L"--format", cli_output_format_arg(cfg.output_format));
+  push_cli_option(args, L"--template", cfg.output_template);
+  push_cli_option(args, L"--threads", std::to_wstring(cfg.max_jobs));
+  push_cli_option(args, L"--memory-limit", bytes_argument(cfg.memory_limit_bytes));
+  push_cli_option(args, L"--timeout-encode",
+                  std::to_wstring(cfg.encode_timeout_minutes));
+  push_cli_option(args, L"--collision", cli_collision_arg(cfg.collision_mode));
+  push_cli_option(args, L"--studio-cancel-event",
+                  std::wstring{cancel_event_name});
+  if (!cfg.studio_large_action.empty()) {
+    push_cli_option(args, L"--studio-large-action", cfg.studio_large_action);
+  }
+
+  if (cfg.visual_quality) {
+    push_cli_option(args, L"--visual-quality",
+                    std::to_wstring(*cfg.visual_quality));
+    args.push_back(cfg.visual_quality_fallback ? L"--visual-quality-fallback"
+                                               : L"--no-visual-quality-fallback");
+    args.push_back(cfg.visual_quality_gpu ? L"--visual-quality-gpu"
+                                          : L"--no-visual-quality-gpu");
+  } else {
+    push_cli_option(args, L"--quality", std::to_wstring(cfg.quality));
+  }
+
+  if (cfg.bit_depth) {
+    push_cli_option(args, L"--bit-depth", std::to_wstring(*cfg.bit_depth));
+  }
+  if (cfg.speed) {
+    push_cli_option(args, L"--speed", std::to_wstring(*cfg.speed));
+  }
+
+  args.push_back(cfg.allow_wic_fallback ? L"--allow-wic-fallback"
+                                        : L"--no-wic-fallback");
+  args.push_back(cfg.enable_experimental_encoders ? L"--experimental-encoders"
+                                                  : L"--no-experimental-encoders");
+  args.push_back(cfg.experimental_clamped_grid_padding
+                     ? L"--experimental-clamped-grid-padding"
+                     : L"--no-experimental-clamped-grid-padding");
+  args.push_back(cfg.strip_metadata ? L"--strip" : L"--keep-metadata");
+  args.push_back(cfg.write_summary ? L"--summary" : L"--no-summary");
+  args.push_back(cfg.write_log ? L"--log" : L"--no-log");
+
+  if (cfg.output_format == awj::OutputFormat::avif) {
+    push_cli_option(args, L"--avif-encoder",
+                    cli_avif_encoder_arg(cfg.avif_encoder));
+    push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
+    push_cli_option(args, L"--alpha", cli_alpha_arg(cfg.alpha_policy));
+  }
+
+  if (cfg.svtav1hdr_crf) {
+    push_cli_option(args, L"--svtav1hdr-crf",
+                    std::to_wstring(*cfg.svtav1hdr_crf));
+  }
+  if (cfg.svtav1hdr_preset) {
+    push_cli_option(args, L"--svtav1hdr-preset",
+                    std::to_wstring(*cfg.svtav1hdr_preset));
+  }
+  if (!cfg.svtav1hdr_tune.empty()) {
+    push_cli_option(args, L"--svtav1hdr-tune",
+                    awj::wide_from_utf8(cfg.svtav1hdr_tune));
+  }
+  if (cfg.svtav1hdr_keyint) {
+    push_cli_option(args, L"--svtav1hdr-keyint",
+                    std::to_wstring(*cfg.svtav1hdr_keyint));
+  }
+  for (const auto& param : cfg.svtav1hdr_params) {
+    push_cli_option(args, L"--svtav1hdr-params", param);
+  }
+  if (cfg.color_primaries) {
+    push_cli_option(args, L"--color-primaries",
+                    std::to_wstring(*cfg.color_primaries));
+  }
+  if (cfg.transfer_characteristics) {
+    push_cli_option(args, L"--transfer-characteristics",
+                    std::to_wstring(*cfg.transfer_characteristics));
+  }
+  if (cfg.matrix_coefficients) {
+    push_cli_option(args, L"--matrix-coefficients",
+                    std::to_wstring(*cfg.matrix_coefficients));
+  }
+  if (cfg.color_range) {
+    push_cli_option(args, L"--color-range", std::to_wstring(*cfg.color_range));
+  }
+  if (!cfg.mastering_display.empty()) {
+    push_cli_option(args, L"--mastering-display", cfg.mastering_display);
+  }
+  if (!cfg.content_light.empty()) {
+    push_cli_option(args, L"--content-light", cfg.content_light);
+  }
+
+  return args;
+}
+
+std::wstring quote_windows_command_arg(std::wstring_view arg) {
+  if (arg.empty()) {
+    return L"\"\"";
+  }
+  const bool needs_quotes = arg.find_first_of(L" \t\n\v\"") != std::wstring_view::npos;
+  if (!needs_quotes) {
+    return std::wstring{arg};
+  }
+  std::wstring quoted;
+  quoted.reserve(arg.size() + 2);
+  quoted.push_back(L'\"');
+  std::size_t backslashes = 0;
+  for (const wchar_t ch : arg) {
+    if (ch == L'\\') {
+      ++backslashes;
+      continue;
     }
+    if (ch == L'\"') {
+      quoted.append(backslashes * 2 + 1, L'\\');
+      quoted.push_back(ch);
+      backslashes = 0;
+      continue;
+    }
+    quoted.append(backslashes, L'\\');
+    backslashes = 0;
+    quoted.push_back(ch);
+  }
+  quoted.append(backslashes * 2, L'\\');
+  quoted.push_back(L'\"');
+  return quoted;
+}
+
+std::wstring command_line_from_args(std::span<const std::wstring> args) {
+  std::wstring command;
+  for (const auto& arg : args) {
+    if (!command.empty()) {
+      command.push_back(L' ');
+    }
+    command += quote_windows_command_arg(arg);
+  }
+  return command;
+}
+
+std::expected<std::shared_ptr<StudioChildProcess>, std::string>
+start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
+  auto exe_dir = awj::executable_directory();
+  if (!exe_dir) {
+    return std::unexpected{exe_dir.error()};
+  }
+  const auto cli_path = *exe_dir / L"AWJ-cli.exe";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(cli_path, ec) || ec) {
+    return std::unexpected{std::format("找不到 Studio 编码 worker: {}。",
+                                       awj::display_path_for_user(cli_path))};
+  }
+
+  auto child = std::make_shared<StudioChildProcess>();
+  const auto event_name = std::format(L"Local\\AWJStudioCancel-{}-{}",
+                                      GetCurrentProcessId(), run_id);
+  child->cancel_event.reset(CreateEventW(nullptr, TRUE, FALSE, event_name.c_str()));
+  if (child->cancel_event == nullptr) {
+    return std::unexpected{std::format("创建编码取消事件失败: {}",
+                                       awj::win32_error_message(GetLastError()))};
+  }
+
+  auto args = cli_arguments_from_config(cfg, event_name);
+  args.insert(args.begin(), cli_path.native());
+  auto command_line = command_line_from_args(args);
+  if (command_line.size() >= 32767) {
+    return std::unexpected{"编码 worker 命令行超过 Windows 长度限制。"};
+  }
+  child->command_line = command_line;
+
+  UniqueWin32Handle job{CreateJobObjectW(nullptr, nullptr)};
+  if (job != nullptr) {
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
+                                 &limits, sizeof(limits))) {
+      job.reset();
+    }
+  }
+
+  HANDLE pipe_read = nullptr;
+  HANDLE pipe_write = nullptr;
+  SECURITY_ATTRIBUTES pipe_security{.nLength = sizeof(SECURITY_ATTRIBUTES),
+                                    .lpSecurityDescriptor = nullptr,
+                                    .bInheritHandle = TRUE};
+  if (!CreatePipe(&pipe_read, &pipe_write, &pipe_security, 0)) {
+    return std::unexpected{std::format("创建编码 worker 输出管道失败: {}",
+                                       awj::win32_error_message(GetLastError()))};
+  }
+  UniqueWin32Handle output_read{pipe_read};
+  UniqueWin32Handle output_write{pipe_write};
+  SetHandleInformation(output_read.get(), HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = output_write.get();
+  startup.hStdError = output_write.get();
+  PROCESS_INFORMATION process{};
+  auto mutable_command_line = command_line;
+  const auto cwd = exe_dir->native();
+  const BOOL created = CreateProcessW(
+      cli_path.c_str(), mutable_command_line.data(), nullptr, nullptr, TRUE,
+      CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, cwd.c_str(),
+      &startup, &process);
+  if (!created) {
+    return std::unexpected{std::format("启动编码 worker 失败: {}",
+                                       awj::win32_error_message(GetLastError()))};
+  }
+  child->process.reset(process.hProcess);
+  child->thread.reset(process.hThread);
+  child->output_read = std::move(output_read);
+  output_write.reset();
+  child->process_id = process.dwProcessId;
+  if (job != nullptr && AssignProcessToJobObject(job.get(), child->process.get())) {
+    child->job = std::move(job);
+  }
+  return child;
+}
+
+void begin_system_window_drag(slint::Window& window) noexcept {
+  try {
+    const HWND hwnd = window.win32_hwnd();
+    if (hwnd == nullptr) {
+      return;
+    }
+    ::ReleaseCapture();
+    ::SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+  } catch (...) {
   }
 }
 
@@ -1143,6 +1496,26 @@ LRESULT CALLBACK drop_bridge_window_proc(HWND hwnd, UINT message, WPARAM wparam,
     handle_drop_files(*bridge, drop);
     DragFinish(drop);
     return 0;
+  }
+  if (message == WM_NCHITTEST && bridge != nullptr) {
+    const LRESULT previous_result =
+        bridge->previous_proc != nullptr
+            ? CallWindowProcW(bridge->previous_proc, hwnd, message, wparam,
+                              lparam)
+            : DefWindowProcW(hwnd, message, wparam, lparam);
+    if (previous_result == HTCLIENT) {
+      POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      if (ScreenToClient(hwnd, &point)) {
+        try {
+          if (auto app = bridge->weak.lock();
+              app && point_in_window_drag_zone(**app, point)) {
+            return HTCAPTION;
+          }
+        } catch (...) {
+        }
+      }
+    }
+    return previous_result;
   }
   if (message == WM_NCDESTROY && bridge != nullptr) {
     const auto previous = bridge->previous_proc;
@@ -1696,424 +2069,199 @@ std::expected<void, std::string> open_path(std::filesystem::path path,
   return std::unexpected{"打开路径文件系统访问失败。"};
 }
 
-void begin_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
-                          const std::shared_ptr<UiState>& state,
-                          awj::AppConfig cfg);
+void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
+                                const std::shared_ptr<UiState>& state,
+                                awj::AppConfig cfg,
+                                std::optional<int> large_index = std::nullopt);
 
-void begin_large_image_run(slint::ComponentWeakHandle<AwjStudio> weak,
-                           const std::shared_ptr<UiState>& state,
-                           awj::AppConfig cfg, awj::BatchLargeImageItem item,
-                           int index, std::string action) {
+void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
+                                const std::shared_ptr<UiState>& state,
+                                awj::AppConfig cfg,
+                                std::optional<int> large_index) {
   auto app = weak.lock();
   if (!app) {
-    return;
-  }
-
-  if (!large_image_action_available(item, action)) {
-    const auto status = std::format("{} 不可用", action);
-    set_large_image_status(*state, index, status);
-    (*app)->set_status_text(to_shared(status));
-    return;
-  }
-
-  std::optional<awj::GridPlan> grid_plan;
-  if (action == "grid") {
-    auto planned = awj::plan_grid(awj::GridPlanRequest{
-        .width = item.dimensions.width,
-        .height = item.dimensions.height,
-        .mode = awj::GridMode::auto_grid,
-        .clamped_padding_enabled = cfg.experimental_clamped_grid_padding});
-    if (!planned) {
-      const auto status = std::format("grid 规划失败：{}", planned.error());
-      set_large_image_status(*state, index, status);
-      (*app)->set_status_text(to_shared(status));
-      return;
-    }
-    if (planned->uses_padding) {
-      const auto status = "grid 规划需要 padding；当前版本尚未启用安全裁切。";
-      set_large_image_status(*state, index, status);
-      (*app)->set_status_text(to_shared(status));
-      return;
-    }
-    grid_plan = *planned;
-  }
-
-  cfg.output_format = awj::OutputFormat::avif;
-  cfg.input_path = item.file.path;
-  cfg.avif_encoder = action == "grid" ? awj::AvifEncoderMode::aom
-                                      : awj::AvifEncoderMode::zenrav1e;
-  cfg.visual_quality.reset();
-
-  const auto configured_memory_limit =
-      cfg.memory_limit_bytes == 0
-          ? awj::automatic_memory_limit(awj::current_memory_status())
-          : cfg.memory_limit_bytes;
-  const auto resource_plan = awj::plan_large_deferred_resources(
-      awj::plan_resources(awj::ResourcePlanRequest{
-          .automatic_thread_budget = cfg.max_jobs,
-          .file_count = 1,
-          .memory_limit_bytes = configured_memory_limit,
-          .estimated_bytes_per_file =
-              awj::avif_encode_working_set_bytes_for_dimensions(
-                  item.dimensions),
-          .av1_encoder = true}),
-      1);
-
-  const auto running_status = std::format("正在使用 {} 编码…", action);
-
-  std::uint64_t run_id{};
-  std::vector<std::jthread> finished_retiring_workers;
-  {
-    std::scoped_lock lock{state->mutex};
-    finished_retiring_workers = take_finished_retiring_workers(*state);
-    if (state->worker_active) {
-      (*app)->set_status_text(to_shared("当前任务正在终止，请稍后再处理大图"));
-      return;
-    }
-    run_id = ++state->run_id;
-    state->pending_events.clear();
-    state->worker_active = true;
-    set_large_image_status(*state, index, running_status);
-  }
-  join_workers(finished_retiring_workers);
-  try {
-    (*app)->set_running(true);
-    (*app)->set_status_text(to_shared(std::format("正在处理大图：{}", action)));
-  } catch (const std::exception&) {
-    set_large_image_status(*state, index, "大图处理启动失败");
-    reset_failed_run(**app, *state, run_id, "大图处理启动失败。");
-    return;
-  } catch (...) {
-    set_large_image_status(*state, index, "大图处理启动失败");
-    reset_failed_run(**app, *state, run_id, "大图处理启动失败。");
-    return;
-  }
-
-  std::shared_ptr<std::atomic_bool> worker_finished;
-  std::optional<std::jthread> worker;
-  try {
-    worker_finished = std::make_shared<std::atomic_bool>(false);
-    worker.emplace([weak, state, run_id, worker_finished, cfg = std::move(cfg),
-                    item = std::move(item), index, action = std::move(action),
-                    resource_plan, grid_plan = std::move(grid_plan)](
-                       std::stop_token token) mutable {
-      WorkerCompletionMarker completion{worker_finished};
-      awj::EncodeResult result{
-          .index = item.file.index,
-          .input_path = item.file.path,
-          .original_bytes = item.file.bytes,
-          .quality = cfg.quality,
-          .requested_visual_quality = cfg.visual_quality,
-          .speed =
-              cfg.speed.value_or(awj::default_speed_for(cfg.output_format)),
-          .requested_encoder_id = awj::avif_encoder_mode_name(cfg.avif_encoder),
-          .user_encoder_id = awj::avif_encoder_mode_name(cfg.avif_encoder),
-          .processed = true};
-      try {
-        WorkerComApartment com;
-        if (!com.usable()) {
-          result.ok = false;
-          result.canceled = token.stop_requested();
-          result.message =
-              result.canceled
-                  ? "任务已取消。"
-                  : std::format("大图工作线程 COM 初始化失败: 0x{:08X}",
-                                static_cast<unsigned int>(com.init));
-        } else {
-          awj::FileLogger logger{awj::output_dir_for(cfg), cfg.write_log};
-          awj::NativeBackend backend{cfg, logger, resource_plan};
-          result = action == "grid"
-                       ? backend.encode_avif_grid(item.file, *grid_plan, token)
-                       : backend.encode_avif_zenrav1e(item.file, token);
-        }
-      } catch (const std::exception&) {
-        result.ok = false;
-        result.canceled = token.stop_requested();
-        result.message =
-            result.canceled ? "任务已取消。" : "大图工作线程异常。";
-      } catch (...) {
-        result.ok = false;
-        result.canceled = token.stop_requested();
-        result.message =
-            result.canceled ? "任务已取消。" : "大图工作线程异常：未知异常";
-      }
-      trim_process_working_set();
-
-      if (!post_to_ui(weak, [weak, state, run_id, index,
-                             result =
-                                 std::move(result)](AwjStudio& app) mutable {
-            std::vector<std::jthread> finished_retiring_workers;
-            {
-              std::scoped_lock lock{state->mutex};
-              if (state->run_id != run_id) {
-                return;
-              }
-              set_large_image_status(
-                  *state, index,
-                  result.ok ? "完成"
-                            : (result.canceled ? "已取消" : result.message));
-              state->worker_active = false;
-              finished_retiring_workers =
-                  take_finished_retiring_workers(*state);
-            }
-            join_workers(finished_retiring_workers);
-            add_task_row(state->task_rows, result);
-            try {
-              app.set_running(false);
-            } catch (...) {
-            }
-            try {
-              const auto status =
-                  result.ok
-                      ? std::string{"大图处理完成"}
-                      : (result.canceled
-                             ? std::string{"大图处理已取消"}
-                             : std::format("大图处理失败：{}", result.message));
-              app.set_status_text(to_shared(status));
-            } catch (...) {
-            }
-          })) {
-        clear_run_if_callback_not_posted(*state, run_id);
-      }
-    });
-  } catch (const std::exception&) {
-    set_large_image_status(*state, index, "大图处理启动失败");
-    reset_failed_run(**app, *state, run_id, "大图处理启动失败。");
-    return;
-  } catch (...) {
-    set_large_image_status(*state, index, "大图处理启动失败");
-    reset_failed_run(**app, *state, run_id, "大图处理启动失败。");
-    return;
-  }
-
-  {
-    std::scoped_lock lock{state->mutex};
-    state->worker_finished = std::move(worker_finished);
-    state->worker = std::move(*worker);
-  }
-}
-
-void begin_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
-                          const std::shared_ptr<UiState>& state,
-                          awj::AppConfig cfg) {
-  auto app = weak.lock();
-  if (!app) {
-    return;
-  }
-
-  std::vector<std::jthread> finished_retiring_workers;
-  {
-    std::scoped_lock lock{state->mutex};
-    finished_retiring_workers = take_finished_retiring_workers(*state);
-    if (state->worker_active) {
-      (*app)->set_running(true);
-      (*app)->set_status_text(
-          to_shared("当前任务正在终止，请稍后再开始新任务"));
-      return;
-    }
-  }
-  join_workers(finished_retiring_workers);
-
-  try {
-    (*app)->set_running(true);
-    (*app)->set_progress(0.0f);
-    (*app)->set_status_text(to_shared("准备中"));
-  } catch (const std::exception&) {
-    reset_failed_run(**app, *state, 0, "转换启动失败。");
-    return;
-  } catch (...) {
-    reset_failed_run(**app, *state, 0, "转换启动失败。");
     return;
   }
 
   std::uint64_t run_id{};
   std::shared_ptr<slint::VectorModel<TaskRow>> rows;
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_rows;
-  try {
+  {
     std::scoped_lock lock{state->mutex};
+    if (state->worker_active) {
+      (*app)->set_status_text(to_shared("当前任务正在运行，请先取消或强制终止"));
+      return;
+    }
     run_id = ++state->run_id;
-    state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
-    state->large_image_rows =
-        std::make_shared<slint::VectorModel<LargeImageRow>>();
-    state->large_image_items.clear();
-    rows = state->task_rows;
-    large_rows = state->large_image_rows;
     state->pending_events.clear();
     state->worker_active = true;
+    state->active_child.reset();
+    if (!large_index) {
+      state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+      state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
+      state->large_image_items.clear();
+      rows = state->task_rows;
+      large_rows = state->large_image_rows;
+    } else {
+      set_large_image_status(*state, *large_index, "正在编码…");
+      rows = state->task_rows;
+      large_rows = state->large_image_rows;
+    }
+  }
 
-    // Start the UI update timer
-    state->update_timer.start(
-        slint::TimerMode::Repeated, std::chrono::milliseconds{80},
-        [weak, state, run_id] {
-          run_ui_callback(weak, "刷新进度失败", [&] {
-            if (auto app = weak.lock()) {
-              std::vector<awj::BatchProgress> events;
-              {
-                std::scoped_lock lock{state->mutex};
-                if (state->run_id != run_id || state->pending_events.empty()) {
-                  return;
-                }
-                events = std::move(state->pending_events);
-              }
-
-              auto rows = state->task_rows;
-              std::size_t completed = 0;
-              std::size_t total = 0;
-              bool has_progress = false;
-              bool select_first_large_image = false;
-
-              for (const auto& event : events) {
-                if (event.total > 0) {
-                  completed = event.completed;
-                  total = event.total;
-                  has_progress = true;
-                }
-                if (event.kind == awj::BatchEventKind::item_finished) {
-                  add_task_row(rows, event.result);
-                }
-                if (event.kind == awj::BatchEventKind::warning) {
-                  append_log_row(rows, event.text);
-                }
-                if (event.kind == awj::BatchEventKind::large_image_queued) {
-                  add_large_image_task_row(rows, event.large_image);
-                  select_first_large_image |=
-                      push_large_image_row(*state, event.large_image);
-                }
-              }
-
-              if (select_first_large_image &&
-                  (*app)->get_selected_large_image_index() < 0) {
-                select_first_large_image_from_state(**app, *state);
-                (*app)->set_status_text(to_shared(
-                    "检测到大图，已进入参数设置，请选择大图处理方式。"));
-              }
-
-              if (has_progress && total > 0) {
-                const auto progress =
-                    static_cast<float>(completed) / static_cast<float>(total);
-                (*app)->set_progress(std::clamp(progress, 0.0f, 1.0f));
-                (*app)->set_status_text(
-                    to_shared(std::format("{}/{}", completed, total)));
-              }
-            }
-          });
-        });
-  } catch (const std::exception&) {
-    reset_failed_run(**app, *state, run_id, "转换启动失败。");
-    return;
+  try {
+    (*app)->set_running(true);
+    (*app)->set_progress(0.0f);
+    if (!large_index) {
+      (*app)->set_task_rows(rows);
+      (*app)->set_large_image_rows(large_rows);
+      (*app)->set_selected_large_image_index(-1);
+    }
+    (*app)->set_status_text(to_shared("正在启动编码 worker…"));
   } catch (...) {
     reset_failed_run(**app, *state, run_id, "转换启动失败。");
+    return;
+  }
+
+  auto child = start_studio_cli_worker(cfg, run_id);
+  if (!child) {
+    reset_failed_run(**app, *state, run_id,
+                     std::format("启动编码 worker 失败：{}", child.error()));
+    if (large_index) {
+      set_large_image_status(*state, *large_index, "启动失败");
+    }
     return;
   }
   try {
-    (*app)->set_task_rows(rows);
-    (*app)->set_large_image_rows(large_rows);
-    (*app)->set_selected_large_image_index(-1);
-  } catch (const std::exception&) {
-    reset_failed_run(**app, *state, run_id, "转换启动失败。");
-    return;
+    (*app)->set_status_text(
+        to_shared(std::format("编码 worker 已启动，PID {}", (*child)->process_id)));
   } catch (...) {
-    reset_failed_run(**app, *state, run_id, "转换启动失败。");
-    return;
   }
 
-  std::shared_ptr<std::atomic_bool> worker_finished;
   std::optional<std::jthread> worker;
   try {
-    worker_finished = std::make_shared<std::atomic_bool>(false);
-    worker.emplace([weak, state, run_id, worker_finished,
-                    cfg = std::move(cfg)](std::stop_token token) {
-      WorkerCompletionMarker completion{worker_finished};
-      std::expected<awj::BatchSummary, std::string> summary;
-      try {
-        summary = awj::run_batch(
-            cfg,
-            [state, run_id](const awj::BatchProgress& event) {
-              append_pending_event(*state, run_id, event);
-            },
-            token);
-      } catch (const std::exception&) {
-        summary = std::unexpected{"后台工作线程异常。"};
-      } catch (...) {
-        summary = std::unexpected{"后台工作线程异常：未知异常"};
+    {
+      std::scoped_lock lock{state->mutex};
+      state->active_child = *child;
+    }
+    worker.emplace([weak, state, run_id, child = *child,
+                    large_index](std::stop_token token) mutable {
+      std::string pending;
+      auto publish_line = [&](std::string line) {
+        line = trim_copy(std::move(line));
+        if (line.empty()) {
+          return;
+        }
+        post_to_ui(weak, [state, run_id, line = std::move(line)](AwjStudio&) {
+          std::scoped_lock lock{state->mutex};
+          if (state->run_id != run_id) {
+            return;
+          }
+          append_log_row(state->task_rows, line);
+        });
+      };
+      auto consume_output = [&] {
+        if (child->output_read == nullptr) {
+          return;
+        }
+        while (true) {
+          DWORD available = 0;
+          if (!PeekNamedPipe(child->output_read.get(), nullptr, 0, nullptr,
+                             &available, nullptr) ||
+              available == 0) {
+            break;
+          }
+          std::array<char, 4096> buffer{};
+          DWORD read = 0;
+          if (!ReadFile(child->output_read.get(), buffer.data(),
+                        static_cast<DWORD>(std::min<std::size_t>(buffer.size(), available)),
+                        &read, nullptr) ||
+              read == 0) {
+            break;
+          }
+          pending.append(buffer.data(), buffer.data() + read);
+          std::size_t pos = 0;
+          while ((pos = pending.find('\n')) != std::string::npos) {
+            auto line = pending.substr(0, pos);
+            if (!line.empty() && line.back() == '\r') {
+              line.pop_back();
+            }
+            pending.erase(0, pos + 1);
+            publish_line(std::move(line));
+          }
+        }
+      };
+
+      DWORD exit_code = 1;
+      while (!token.stop_requested()) {
+        consume_output();
+        const DWORD wait = WaitForSingleObject(child->process.get(), 80);
+        if (wait == WAIT_OBJECT_0) {
+          break;
+        }
+        if (wait != WAIT_TIMEOUT) {
+          break;
+        }
       }
-
-      trim_process_working_set();
-      // summary 回调同样可能晚于用户新开的一轮转换，必须在 event loop
-      // 内再次校验 run_id。
-      if (!post_to_ui(weak, [summary, state, run_id](AwjStudio& app) mutable {
-            std::vector<std::jthread> finished_retiring_workers;
-            bool select_first_large_image = false;
-            {
-              std::scoped_lock lock{state->mutex};
-              if (state->run_id != run_id) {
-                return;
-              }
-
-              if (!state->pending_events.empty()) {
-                auto events = std::move(state->pending_events);
-                auto rows = state->task_rows;
-                for (const auto& event : events) {
-                  if (event.kind == awj::BatchEventKind::item_finished) {
-                    add_task_row(rows, event.result);
-                  }
-                  if (event.kind == awj::BatchEventKind::warning) {
-                    append_log_row(rows, event.text);
-                  }
-                  if (event.kind == awj::BatchEventKind::large_image_queued) {
-                    add_large_image_task_row(rows, event.large_image);
-                    select_first_large_image |=
-                        push_large_image_row(*state, event.large_image);
-                  }
-                }
-              }
-              state->update_timer.stop();
-              state->worker_active = false;
-              finished_retiring_workers =
-                  take_finished_retiring_workers(*state);
-            }
-
-            join_workers(finished_retiring_workers);
-            try {
-              app.set_running(false);
-            } catch (...) {
-            }
-            try {
-              if (select_first_large_image &&
-                  app.get_selected_large_image_index() < 0) {
-                select_first_large_image_from_state(app, *state);
-              }
-              if (!summary) {
-                app.set_status_text(
-                    to_shared(std::format("失败：{}", summary.error())));
-              } else if (summary->canceled) {
-                app.set_status_text(to_shared("已取消"));
-              } else {
-                std::string status =
-                    summary->failed_count == 0 ? "完成" : "有失败";
-                if (summary->large_image_queued_count > 0) {
-                  status += std::format("；{} 个大图待处理",
-                                        summary->large_image_queued_count);
-                }
-                app.set_status_text(to_shared(status));
-                app.set_progress(1.0f);
-              }
-            } catch (...) {
-            }
-          })) {
-        clear_run_if_callback_not_posted(*state, run_id);
+      if (token.stop_requested() && child->process != nullptr) {
+        child->terminate();
       }
+      WaitForSingleObject(child->process.get(), INFINITE);
+      consume_output();
+      if (!pending.empty()) {
+        publish_line(std::move(pending));
+      }
+      GetExitCodeProcess(child->process.get(), &exit_code);
+      const bool forced = child->force_terminated.load(std::memory_order_acquire) ||
+                          exit_code == kStudioWorkerForceStopExitCode;
+      const bool canceled = child->cancel_requested.load(std::memory_order_acquire) &&
+                            !forced;
+      post_to_ui(weak, [state, run_id, large_index, exit_code, forced,
+                        canceled](AwjStudio& app) {
+              {
+          std::scoped_lock lock{state->mutex};
+          if (state->run_id != run_id) {
+            return;
+          }
+          state->update_timer.stop();
+          state->pending_events.clear();
+          state->worker_active = false;
+          state->active_child.reset();
+                if (large_index) {
+            set_large_image_status(
+                *state, *large_index,
+                exit_code == 0 ? "完成" : (forced ? "已强制终止"
+                                                   : (canceled ? "已取消" : "失败")));
+          }
+              }
+              try {
+          app.set_running(false);
+          app.set_progress(exit_code == 0 ? 1.0f : 0.0f);
+          if (exit_code == 0) {
+            app.set_status_text(to_shared(large_index ? "大图处理完成" : "完成"));
+          } else if (forced) {
+            app.set_status_text(to_shared("编码已强制终止，Studio 仍可继续使用"));
+          } else if (canceled) {
+            app.set_status_text(to_shared("已取消"));
+          } else {
+            app.set_status_text(
+                to_shared(std::format("编码 worker 失败，退出码 {}", exit_code)));
+          }
+        } catch (...) {
+        }
+      });
     });
   } catch (const std::exception&) {
+    force_stop_current_worker(state);
     reset_failed_run(**app, *state, run_id, "转换启动失败。");
     return;
   } catch (...) {
+    force_stop_current_worker(state);
     reset_failed_run(**app, *state, run_id, "转换启动失败。");
     return;
   }
   {
     std::scoped_lock lock{state->mutex};
-    state->worker_finished = std::move(worker_finished);
     state->worker = std::move(*worker);
   }
 }
@@ -2202,6 +2350,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       }
     });
 
+    app->on_begin_window_drag([weak] {
+      try {
+        if (auto app = weak.lock()) {
+          begin_system_window_drag((*app)->window());
+        }
+      } catch (...) {
+      }
+    });
+
     state->theme_timer.start(
         slint::TimerMode::Repeated, std::chrono::seconds{3}, [weak] {
           run_ui_callback(weak, "更新主题状态失败", [&] {
@@ -2220,10 +2377,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
           }
           const bool pick_folder = (*app)->get_input_mode_index() != 0;
           if (auto path = choose_path(pick_folder)) {
-            const auto output = awj::default_output_dir_for(*path);
-            post_to_ui(weak, [path = *path, output](AwjStudio& app) {
-              app.set_input_path(to_shared(awj::path_to_utf8(path)));
-              app.set_output_dir(to_shared(awj::path_to_utf8(output)));
+            post_to_ui(weak, [path = *path](AwjStudio& app) {
+              set_input_path_preserving_output(app, path);
             });
           }
         }
@@ -2301,16 +2456,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
     app->on_cancel_conversion([weak, state] {
       run_ui_callback(weak, "取消任务失败", [&] {
-        bool stop_requested = false;
-        {
-          std::scoped_lock lock{state->mutex};
-          if (state->worker_active) {
-            stop_requested = true;
-            if (state->worker.joinable()) {
-              state->worker.request_stop();
-            }
-          }
-        }
+        const bool stop_requested = request_all_workers_stop(state);
         if (auto app = weak.lock()) {
           if (!stop_requested) {
             (*app)->set_running(false);
@@ -2318,7 +2464,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             return;
           }
           (*app)->set_running(true);
-          (*app)->set_status_text(to_shared("正在终止当前任务…"));
+          (*app)->set_status_text(to_shared("正在取消当前任务…"));
         }
       });
     });
@@ -2352,8 +2498,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
                   to_shared(std::format("配置错误：{}", cfg.error())));
               return;
             }
-            begin_large_image_run(weak, state, std::move(*cfg), std::move(item),
-                                  index, action);
+            (*cfg).studio_large_action = awj::wide_from_utf8(action);
+            (*cfg).visual_quality.reset();
+            begin_child_conversion_run(weak, state, std::move(*cfg), index);
           });
         });
 
@@ -2364,19 +2511,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
           return;
         }
 
-        bool stop_requested = false;
-        {
-          std::scoped_lock lock{state->mutex};
-          if (state->worker_active) {
-            stop_requested = true;
-            if (state->worker.joinable()) {
-              state->worker.request_stop();
-            }
-          }
-        }
-        if (stop_requested) {
+        if (worker_active(state)) {
+          const bool stopped = force_stop_current_worker(state);
           (*app)->set_running(true);
-          (*app)->set_status_text(to_shared("正在终止当前任务…"));
+          (*app)->set_status_text(to_shared(
+              stopped ? "正在强制终止当前编码任务…"
+                      : "没有正在运行的编码任务"));
           return;
         }
 
@@ -2392,7 +2532,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
           return;
         }
 
-        begin_conversion_run(weak, state, std::move(*cfg));
+        begin_child_conversion_run(weak, state, std::move(*cfg));
       });
     });
 
@@ -2400,27 +2540,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     apply_title_bar_theme(app->window(), effective_studio_dark_mode(*app));
     constrain_window_to_work_area(app->window());
     install_drop_bridge(app->window(), weak, state);
+    app->window().on_close_requested([state] {
+      if (worker_active(state)) {
+        force_stop_current_worker(state);
+      }
+      return slint::CloseRequestResponse::HideWindow;
+    });
     app->run();
     std::jthread worker;
-    std::vector<RetiringWorker> retiring_workers;
     {
       std::scoped_lock lock{state->mutex};
       worker = std::move(state->worker);
-      retiring_workers = std::move(state->retiring_workers);
     }
     if (worker.joinable()) {
       worker.request_stop();
       worker.join();
-    }
-    for (auto& retiring_worker : retiring_workers) {
-      if (retiring_worker.thread.joinable()) {
-        retiring_worker.thread.request_stop();
-      }
-    }
-    for (auto& retiring_worker : retiring_workers) {
-      if (retiring_worker.thread.joinable()) {
-        retiring_worker.thread.join();
-      }
     }
     return 0;
   } catch (const std::exception&) {

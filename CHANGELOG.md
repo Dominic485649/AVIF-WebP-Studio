@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.6.2 - 2026-06-04
+
+0.6.2 是一次以 visual_quality GPU 指标链路、Studio 任务隔离和交互修复为核心的小版本更新。
+
+- 将 visual_quality Direct3D 11 shader 改为构建期预编译并内嵌 bytecode，Release 运行时不再依赖 `d3dcompiler` 或 `.cso` sidecar。
+- 扩展 Visual Quality Search 的 GPU 诊断，summary 与日志可区分 GPU requested/used/path/fallback reason/fallback count。
+- 优化 visual_quality 搜索为预测窗口内 lower-bound 二分，lossy q 限定在 1..99，减少 1 次早停和 8/9 次探测之间的跳变。
+- Studio 转换改为启动同目录 `AWJ-cli.exe` 作为 worker 子进程，使用 Job Object 管理生命周期；“取消”通过事件请求协作式停止，“强制终止”和运行中关闭窗口只终止编码 worker，不结束 Studio 本体。
+- 修复 Studio 窗口拖动：除 Slint 标题区域回调外，增加 Win32 `WM_NCHITTEST` fallback，将左侧标题区域识别为 `HTCAPTION`。
+- 修复 Studio 先选择输出路径、再选择输入路径时自动覆盖已有输出路径的问题；已有输出路径会保持用户手动指定的内容。
+- 清理旧 AVIF/AOM helper 源码和 Studio 同进程 worker 残留代码，转换路径继续收敛为 native codec 与 CLI/Studio 发布目标。
+
 ## 0.6.1 - 2026-06-03
 
 0.6.1 是一次以 Visual Quality 默认体验、Studio 任务控制和批处理资源规划为核心的小版本更新。

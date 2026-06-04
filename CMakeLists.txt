@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.6.1
+    VERSION 0.6.2
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -225,6 +225,70 @@ function(avif_copy_slint_runtime target)
         VERBATIM)
 endfunction()
 
+set(AWJ_VISUAL_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/core/shaders")
+set(AWJ_VISUAL_SHADER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/visual_shaders")
+set(AWJ_VISUAL_SHADER_HEADER "${AWJ_VISUAL_SHADER_GENERATED_DIR}/awj_visual_metric_shaders.hpp")
+file(MAKE_DIRECTORY "${AWJ_VISUAL_SHADER_GENERATED_DIR}")
+
+set(AWJ_SHADER_COMPILER_DIRS)
+if(DEFINED ENV{WindowsSdkDir} AND DEFINED ENV{WindowsSDKVersion})
+    list(APPEND AWJ_SHADER_COMPILER_DIRS "$ENV{WindowsSdkDir}/bin/$ENV{WindowsSDKVersion}/x64")
+endif()
+set(AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
+if(DEFINED ENV{ProgramFiles})
+    list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES "$ENV{ProgramFiles}/Windows Kits/10")
+endif()
+list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES
+    "C:/Program Files (x86)/Windows Kits/10"
+    "C:/Program Files/Windows Kits/10")
+foreach(AWJ_WINDOWS_KIT_ROOT IN LISTS AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
+    file(GLOB AWJ_WINDOWS_KIT_SHADER_DIRS "${AWJ_WINDOWS_KIT_ROOT}/bin/*/x64")
+    list(SORT AWJ_WINDOWS_KIT_SHADER_DIRS)
+    list(REVERSE AWJ_WINDOWS_KIT_SHADER_DIRS)
+    list(APPEND AWJ_SHADER_COMPILER_DIRS ${AWJ_WINDOWS_KIT_SHADER_DIRS})
+endforeach()
+find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc PATHS ${AWJ_SHADER_COMPILER_DIRS} NO_DEFAULT_PATH)
+if(NOT AWJ_FXC_EXECUTABLE)
+    find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc)
+endif()
+if(NOT AWJ_FXC_EXECUTABLE)
+    message(FATAL_ERROR "找不到 fxc.exe，无法预编译 visual_quality Direct3D 11 shader。请安装 Windows SDK；最终用户运行时不需要该工具。")
+endif()
+message(STATUS "AWJimage visual metric shader compiler: ${AWJ_FXC_EXECUTABLE}")
+
+function(awj_compile_visual_shader out_var shader_name hlsl_name)
+    set(output_path "${AWJ_VISUAL_SHADER_GENERATED_DIR}/${shader_name}.cso")
+    add_custom_command(
+        OUTPUT "${output_path}"
+        COMMAND "${AWJ_FXC_EXECUTABLE}" /nologo /T cs_5_0 /E main /Ges /O3
+                /Fo "${output_path}"
+                "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
+        DEPENDS "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
+        COMMENT "Precompiling visual metric shader ${hlsl_name}"
+        VERBATIM)
+    set(${out_var} "${output_path}" PARENT_SCOPE)
+endfunction()
+
+awj_compile_visual_shader(AWJ_LUMA_CSO luma visual_luma.hlsl)
+awj_compile_visual_shader(AWJ_GMSD_CSO gmsd visual_gmsd.hlsl)
+awj_compile_visual_shader(AWJ_DOWNSAMPLE_CSO downsample visual_downsample.hlsl)
+awj_compile_visual_shader(AWJ_MS_SSIM_CSO ms_ssim visual_ms_ssim.hlsl)
+
+add_custom_command(
+    OUTPUT "${AWJ_VISUAL_SHADER_HEADER}"
+    COMMAND ${CMAKE_COMMAND}
+            "-DAWJ_SHADER_HEADER=${AWJ_VISUAL_SHADER_HEADER}"
+            "-DAWJ_LUMA_CSO=${AWJ_LUMA_CSO}"
+            "-DAWJ_GMSD_CSO=${AWJ_GMSD_CSO}"
+            "-DAWJ_DOWNSAMPLE_CSO=${AWJ_DOWNSAMPLE_CSO}"
+            "-DAWJ_MS_SSIM_CSO=${AWJ_MS_SSIM_CSO}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/write_visual_shader_header.cmake"
+    DEPENDS "${AWJ_LUMA_CSO}" "${AWJ_GMSD_CSO}" "${AWJ_DOWNSAMPLE_CSO}" "${AWJ_MS_SSIM_CSO}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/write_visual_shader_header.cmake"
+    COMMENT "Embedding visual metric shader bytecode"
+    VERBATIM)
+add_custom_target(awj_visual_metric_shaders DEPENDS "${AWJ_VISUAL_SHADER_HEADER}")
+
 include(FetchContent)
 
 if(AWJ_ENABLE_SVTAV1HDR)
@@ -313,11 +377,13 @@ endfunction()
 
 add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
+add_dependencies(awj_base awj_visual_metric_shaders)
 target_link_libraries(awj_base PUBLIC
     scn::scn
     bcrypt
-    d3d11
-    d3dcompiler)
+    d3d11)
+target_sources(awj_base PRIVATE "${AWJ_VISUAL_SHADER_HEADER}")
+target_include_directories(awj_base PUBLIC "$<BUILD_INTERFACE:${AWJ_VISUAL_SHADER_GENERATED_DIR}>")
 target_sources(awj_base
     PUBLIC
         FILE_SET awj_base_modules TYPE CXX_MODULES FILES

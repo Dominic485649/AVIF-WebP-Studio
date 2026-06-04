@@ -127,6 +127,8 @@ struct AppConfig {
   bool strip_metadata{false};
   bool write_summary{false};
   bool write_log{false};
+  std::wstring studio_cancel_event_name{};
+  std::wstring studio_large_action{};
 };
 
 AppConfig default_app_config() { return AppConfig{}; }
@@ -684,8 +686,8 @@ std::string help_text() {
   -q, --quality <1-100>       编码质量，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@；JXL 100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL 100 为编码器无损；AVIF 100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样；显式 --avif-encoder svt 的 AVIF 100 为非像素级无损/最高质量，允许 RGB/YUV 与 420 chroma 转换损耗。也接受 q90 或 0.9
   --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，AVIF 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时直通、其他输入走 AOM 无损；显式 --avif-encoder svt 时为非像素级无损/最高质量；1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
-  --visual-quality-gpu       启用 visual_quality GPU 加速（默认）
-  --no-visual-quality-gpu    禁用 visual_quality GPU 加速，使用 CPU metric 路径
+  --visual-quality-gpu       启用 Direct3D 11 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
+  --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
   --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选
   --no-visual-quality-fallback visual_quality 搜索未达标时失败（默认）
   -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片，WebP 固定 @WEBP_BIT_DEPTH@
@@ -899,6 +901,28 @@ std::expected<ParseResult, std::string> parse_arguments(
         return std::unexpected{visual_quality.error()};
       }
       cfg.visual_quality = *visual_quality;
+      continue;
+    }
+
+    if (lower == L"--studio-cancel-event") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      cfg.studio_cancel_event_name = *value;
+      continue;
+    }
+
+    if (lower == L"--studio-large-action") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto lower_value = config_detail::lower_copy(*value);
+      if (lower_value != L"grid" && lower_value != L"zenrav1e") {
+        return std::unexpected{"studio-large-action 只支持 grid 或 zenrav1e。"};
+      }
+      cfg.studio_large_action = lower_value;
       continue;
     }
 

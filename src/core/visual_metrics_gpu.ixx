@@ -8,16 +8,12 @@ module;
 #include <cstdint>
 #include <cstring>
 #include <d3d11.h>
-#include <d3dcompiler.h>
 #include <expected>
-#include <filesystem>
 #include <format>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -25,6 +21,8 @@ module;
 #include <utility>
 #include <vector>
 #include <wrl/client.h>
+
+#include "awj_visual_metric_shaders.hpp"
 
 export module awj.visual_metrics_gpu;
 
@@ -35,7 +33,6 @@ import awj.visual_metrics;
 namespace awj::visual_metrics_gpu_detail {
 
 using Microsoft::WRL::ComPtr;
-namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 
 double elapsed_seconds(Clock::time_point started) {
@@ -88,6 +85,9 @@ std::expected<void, std::string> resize_uint32_buffer(std::vector<std::uint32_t>
   return {};
 }
 
+// 小图的 Direct3D 初始化、上传和 readback 成本通常高于 CPU SIMD/缓存路径收益。
+// visual_quality 搜索只在足够大的图片上创建可复用 session；one-shot 路径阈值更高，
+// 避免没有 reference/candidate 复用时反复支付 GPU 传输成本。
 constexpr std::size_t kMinimumGpuSessionPixelCount = 1ull * 1000ull * 1000ull;
 constexpr std::size_t kMinimumGpuOneShotPixelCount = 2ull * 1000ull * 1000ull;
 
@@ -95,237 +95,18 @@ std::uint32_t dispatch_group_count(std::uint32_t dimension) noexcept {
   return dimension / 16u + (dimension % 16u == 0 ? 0u : 1u);
 }
 
-constexpr char kLumaShader[] = R"hlsl(
-cbuffer LumaConstants : register(b0) {
-  uint width;
-  uint height;
-  uint stride;
-  uint channels;
-};
-
-StructuredBuffer<uint> input_words : register(t0);
-RWStructuredBuffer<float> output_luma : register(u0);
-
-uint load_byte(uint offset) {
-  const uint word = input_words[offset >> 2];
-  return (word >> ((offset & 3u) * 8u)) & 255u;
+bool valid_constant_buffer_size(std::size_t byte_count) noexcept {
+  constexpr std::size_t kConstantBufferRegisterBytes = 16;
+  constexpr std::size_t kMaxConstantBufferBytes =
+      static_cast<std::size_t>(D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT) *
+      kConstantBufferRegisterBytes;
+  return byte_count != 0 && byte_count % kConstantBufferRegisterBytes == 0 &&
+         byte_count <= kMaxConstantBufferBytes &&
+         byte_count <= static_cast<std::size_t>(std::numeric_limits<UINT>::max());
 }
 
-[numthreads(16, 16, 1)]
-void main(uint3 id : SV_DispatchThreadID) {
-  if (id.x >= width || id.y >= height) {
-    return;
-  }
-
-  const uint base = id.y * stride + id.x * channels;
-  const float r = (float)load_byte(base + 0u);
-  const float g = (float)load_byte(base + 1u);
-  const float b = (float)load_byte(base + 2u);
-  output_luma[id.y * width + id.x] = (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255.0f;
-}
-)hlsl";
-
-constexpr char kGmsdShader[] = R"hlsl(
-cbuffer GmsdConstants : register(b0) {
-  uint width;
-  uint height;
-  uint group_count_x;
-  uint reserved0;
-};
-
-StructuredBuffer<float> reference_luma : register(t0);
-StructuredBuffer<float> candidate_luma : register(t1);
-RWStructuredBuffer<float4> partials : register(u0);
-
-groupshared float shared_sum[256];
-groupshared float shared_sum_sq[256];
-groupshared float shared_count[256];
-
-uint image_index(uint x, uint y) {
-  return y * width + x;
-}
-
-float reference_at(uint x, uint y) {
-  return reference_luma[image_index(min(x, width - 1u), min(y, height - 1u))];
-}
-
-float candidate_at(uint x, uint y) {
-  return candidate_luma[image_index(min(x, width - 1u), min(y, height - 1u))];
-}
-
-float reference_gradient(uint x, uint y) {
-  const uint left = x == 0u ? x : x - 1u;
-  const uint right = min(x + 1u, width - 1u);
-  const uint top = y == 0u ? y : y - 1u;
-  const uint bottom = min(y + 1u, height - 1u);
-  const float dx = reference_at(right, y) - reference_at(left, y);
-  const float dy = reference_at(x, bottom) - reference_at(x, top);
-  return sqrt(dx * dx + dy * dy);
-}
-
-float candidate_gradient(uint x, uint y) {
-  const uint left = x == 0u ? x : x - 1u;
-  const uint right = min(x + 1u, width - 1u);
-  const uint top = y == 0u ? y : y - 1u;
-  const uint bottom = min(y + 1u, height - 1u);
-  const float dx = candidate_at(right, y) - candidate_at(left, y);
-  const float dy = candidate_at(x, bottom) - candidate_at(x, top);
-  return sqrt(dx * dx + dy * dy);
-}
-
-[numthreads(16, 16, 1)]
-void main(uint3 group_id : SV_GroupID,
-          uint3 group_thread_id : SV_GroupThreadID,
-          uint3 dispatch_thread_id : SV_DispatchThreadID) {
-  const uint local_index = group_thread_id.y * 16u + group_thread_id.x;
-  float sum = 0.0f;
-  float sum_sq = 0.0f;
-  float count = 0.0f;
-
-  if (dispatch_thread_id.x < width && dispatch_thread_id.y < height) {
-    const float ref_grad = reference_gradient(dispatch_thread_id.x, dispatch_thread_id.y);
-    const float candidate_grad = candidate_gradient(dispatch_thread_id.x, dispatch_thread_id.y);
-    const float c = 0.0026f;
-    const float similarity = (2.0f * ref_grad * candidate_grad + c) /
-                             (ref_grad * ref_grad + candidate_grad * candidate_grad + c);
-    sum = similarity;
-    sum_sq = similarity * similarity;
-    count = 1.0f;
-  }
-
-  shared_sum[local_index] = sum;
-  shared_sum_sq[local_index] = sum_sq;
-  shared_count[local_index] = count;
-  GroupMemoryBarrierWithGroupSync();
-
-  for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-    if (local_index < stride) {
-      shared_sum[local_index] += shared_sum[local_index + stride];
-      shared_sum_sq[local_index] += shared_sum_sq[local_index + stride];
-      shared_count[local_index] += shared_count[local_index + stride];
-    }
-    GroupMemoryBarrierWithGroupSync();
-  }
-
-  if (local_index == 0u) {
-    partials[group_id.y * group_count_x + group_id.x] =
-        float4(shared_sum[0], shared_sum_sq[0], shared_count[0], 0.0f);
-  }
-}
-)hlsl";
-
-constexpr char kDownsampleShader[] = R"hlsl(
-cbuffer DownsampleConstants : register(b0) {
-  uint source_width;
-  uint source_height;
-  uint output_width;
-  uint output_height;
-};
-
-StructuredBuffer<float> source_luma : register(t0);
-RWStructuredBuffer<float> output_luma : register(u0);
-
-[numthreads(16, 16, 1)]
-void main(uint3 id : SV_DispatchThreadID) {
-  if (id.x >= output_width || id.y >= output_height) {
-    return;
-  }
-
-  const uint sx = id.x * 2u;
-  const uint sy = id.y * 2u;
-  float sum = 0.0f;
-  float count = 0.0f;
-  for (uint oy = 0u; oy < 2u && sy + oy < source_height; ++oy) {
-    for (uint ox = 0u; ox < 2u && sx + ox < source_width; ++ox) {
-      sum += source_luma[(sy + oy) * source_width + sx + ox];
-      count += 1.0f;
-    }
-  }
-  output_luma[id.y * output_width + id.x] = sum / count;
-}
-)hlsl";
-
-constexpr char kSsimShader[] = R"hlsl(
-cbuffer SsimConstants : register(b0) {
-  uint width;
-  uint height;
-  uint group_count_x;
-  uint reserved0;
-};
-
-struct SsimPartial {
-  float sum_ref;
-  float sum_candidate;
-  float sum_ref_sq;
-  float sum_candidate_sq;
-  float sum_cross;
-  float count;
-  float padding0;
-  float padding1;
-};
-
-StructuredBuffer<float> reference_luma : register(t0);
-StructuredBuffer<float> candidate_luma : register(t1);
-RWStructuredBuffer<SsimPartial> partials : register(u0);
-
-groupshared float shared_ref[256];
-groupshared float shared_candidate[256];
-groupshared float shared_ref_sq[256];
-groupshared float shared_candidate_sq[256];
-groupshared float shared_cross[256];
-groupshared float shared_count[256];
-
-[numthreads(16, 16, 1)]
-void main(uint3 group_id : SV_GroupID,
-          uint3 group_thread_id : SV_GroupThreadID,
-          uint3 dispatch_thread_id : SV_DispatchThreadID) {
-  const uint local_index = group_thread_id.y * 16u + group_thread_id.x;
-  float ref_value = 0.0f;
-  float candidate_value = 0.0f;
-  float count = 0.0f;
-
-  if (dispatch_thread_id.x < width && dispatch_thread_id.y < height) {
-    const uint index = dispatch_thread_id.y * width + dispatch_thread_id.x;
-    ref_value = reference_luma[index];
-    candidate_value = candidate_luma[index];
-    count = 1.0f;
-  }
-
-  shared_ref[local_index] = ref_value;
-  shared_candidate[local_index] = candidate_value;
-  shared_ref_sq[local_index] = ref_value * ref_value;
-  shared_candidate_sq[local_index] = candidate_value * candidate_value;
-  shared_cross[local_index] = ref_value * candidate_value;
-  shared_count[local_index] = count;
-  GroupMemoryBarrierWithGroupSync();
-
-  for (uint stride = 128u; stride > 0u; stride >>= 1u) {
-    if (local_index < stride) {
-      shared_ref[local_index] += shared_ref[local_index + stride];
-      shared_candidate[local_index] += shared_candidate[local_index + stride];
-      shared_ref_sq[local_index] += shared_ref_sq[local_index + stride];
-      shared_candidate_sq[local_index] += shared_candidate_sq[local_index + stride];
-      shared_cross[local_index] += shared_cross[local_index + stride];
-      shared_count[local_index] += shared_count[local_index + stride];
-    }
-    GroupMemoryBarrierWithGroupSync();
-  }
-
-  if (local_index == 0u) {
-    SsimPartial partial;
-    partial.sum_ref = shared_ref[0];
-    partial.sum_candidate = shared_candidate[0];
-    partial.sum_ref_sq = shared_ref_sq[0];
-    partial.sum_candidate_sq = shared_candidate_sq[0];
-    partial.sum_cross = shared_cross[0];
-    partial.count = shared_count[0];
-    partial.padding0 = 0.0f;
-    partial.padding1 = 0.0f;
-    partials[group_id.y * group_count_x + group_id.x] = partial;
-  }
-}
-)hlsl";
-
+// 视觉指标 shader 在 CMake 构建期预编译并内嵌到可执行文件，
+// 最终用户运行时只创建 compute shader，不再承担 HLSL 编译成本。
 struct LumaConstants {
   std::uint32_t width{};
   std::uint32_t height{};
@@ -442,104 +223,6 @@ std::string format_hresult(std::string_view action, HRESULT hr) {
   return std::format("{} (HRESULT=0x{:08X})", action, static_cast<std::uint32_t>(hr));
 }
 
-constexpr std::uint64_t kFnvOffsetBasis = 14695981039346656037ull;
-constexpr std::uint64_t kFnvPrime = 1099511628211ull;
-constexpr std::uintmax_t kMaxShaderCacheBytes = 16ull * 1024ull * 1024ull;
-constexpr std::size_t kD3D11ConstantBufferAlignment = 16;
-constexpr std::size_t kMaxD3D11ConstantBufferBytes =
-    static_cast<std::size_t>(D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT) *
-    kD3D11ConstantBufferAlignment;
-
-bool valid_constant_buffer_size(std::size_t byte_count) noexcept {
-  return byte_count != 0 && byte_count % kD3D11ConstantBufferAlignment == 0 &&
-         byte_count <= kMaxD3D11ConstantBufferBytes;
-}
-
-std::uint64_t fnv1a_append(std::uint64_t hash, std::string_view text) noexcept {
-  for (const char ch : text) {
-    hash ^= static_cast<unsigned char>(ch);
-    hash *= kFnvPrime;
-  }
-  return hash;
-}
-
-std::uint64_t shader_cache_key(std::string_view source, std::string_view name) noexcept {
-  auto hash = fnv1a_append(kFnvOffsetBasis, "awj-d3d11-cs5-strict-opt3-v1");
-  hash = fnv1a_append(hash, name);
-  return fnv1a_append(hash, source);
-}
-
-std::optional<fs::path> shader_cache_path(std::string_view source, std::string_view name) {
-  try {
-    const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
-    if (required == 0) {
-      return std::nullopt;
-    }
-
-    std::wstring local_appdata(required, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", local_appdata.data(), required);
-    if (written == 0 || written >= required) {
-      return std::nullopt;
-    }
-    local_appdata.resize(written);
-
-    auto directory = fs::path(local_appdata) / L"AWJimage" / L"shader_cache";
-    std::error_code ec;
-    fs::create_directories(directory, ec);
-    if (ec) {
-      return std::nullopt;
-    }
-
-    return directory / std::format("{}-{:016x}.cso", std::string{name}, shader_cache_key(source, name));
-  } catch (...) {
-    return std::nullopt;
-  }
-}
-
-std::optional<std::vector<std::uint8_t>> read_shader_cache(const fs::path& path) {
-  try {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) {
-      return std::nullopt;
-    }
-
-    const auto end_position = file.tellg();
-    if (end_position <= std::streampos{0}) {
-      return std::nullopt;
-    }
-    const auto byte_count = static_cast<std::uintmax_t>(static_cast<std::streamoff>(end_position));
-    if (byte_count > kMaxShaderCacheBytes ||
-        byte_count > static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max()) ||
-        byte_count > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
-      return std::nullopt;
-    }
-
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(byte_count));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!file) {
-      return std::nullopt;
-    }
-    return bytes;
-  } catch (...) {
-    return std::nullopt;
-  }
-}
-
-void write_shader_cache(const fs::path& path, const void* bytecode, std::size_t byte_count) noexcept {
-  if (bytecode == nullptr || byte_count == 0 || byte_count > kMaxShaderCacheBytes) {
-    return;
-  }
-  try {
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    if (!file) {
-      return;
-    }
-    file.write(static_cast<const char*>(bytecode), static_cast<std::streamsize>(byte_count));
-  } catch (...) {
-  }
-}
-
 std::expected<ComPtr<ID3D11ComputeShader>, std::string> create_compute_shader_from_bytecode(
     ID3D11Device& device,
     const void* bytecode,
@@ -554,54 +237,6 @@ std::expected<ComPtr<ID3D11ComputeShader>, std::string> create_compute_shader_fr
     return std::unexpected{format_hresult(std::format("Direct3D {} shader 创建失败", name), shader_result)};
   }
   return shader;
-}
-
-std::expected<ComPtr<ID3D11ComputeShader>, std::string> compile_compute_shader(
-    ID3D11Device& device,
-    std::string_view source,
-    std::string_view name) {
-  auto cache_path = shader_cache_path(source, name);
-  if (cache_path) {
-    if (auto cached = read_shader_cache(*cache_path)) {
-      if (auto shader = create_compute_shader_from_bytecode(device, cached->data(), cached->size(), name)) {
-        return shader;
-      }
-    }
-  }
-
-  ComPtr<ID3DBlob> shader_blob;
-  ComPtr<ID3DBlob> errors;
-  const HRESULT compile_result = D3DCompile(source.data(),
-                                            source.size(),
-                                            std::string{name}.c_str(),
-                                            nullptr,
-                                            nullptr,
-                                            "main",
-                                            "cs_5_0",
-                                            D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3,
-                                            0,
-                                            shader_blob.GetAddressOf(),
-                                            errors.GetAddressOf());
-  if (FAILED(compile_result)) {
-    std::string message = format_hresult(std::format("Direct3D {} shader 编译失败", name), compile_result);
-    if (errors) {
-      const auto* error_text = static_cast<const char*>(errors->GetBufferPointer());
-      message += std::format(": {}", error_text == nullptr ? "unknown" : error_text);
-    }
-    return std::unexpected{std::move(message)};
-  }
-
-  auto shader = create_compute_shader_from_bytecode(device,
-                                                    shader_blob->GetBufferPointer(),
-                                                    shader_blob->GetBufferSize(),
-                                                    name);
-  if (!shader) {
-    return std::unexpected{shader.error()};
-  }
-  if (cache_path) {
-    write_shader_cache(*cache_path, shader_blob->GetBufferPointer(), shader_blob->GetBufferSize());
-  }
-  return *shader;
 }
 
 std::expected<std::unique_ptr<D3D11MetricContext>, std::string> create_metric_context() {
@@ -622,25 +257,37 @@ std::expected<std::unique_ptr<D3D11MetricContext>, std::string> create_metric_co
     return std::unexpected{format_hresult("Direct3D 11 设备创建失败", device_result)};
   }
 
-  auto luma_shader = compile_compute_shader(*context->device.Get(), kLumaShader, "luma");
+  auto luma_shader = create_compute_shader_from_bytecode(*context->device.Get(),
+                                                        visual_metrics_gpu_shaders::kLumaShaderBytecode,
+                                                        visual_metrics_gpu_shaders::kLumaShaderBytecodeSize,
+                                                        "luma");
   if (!luma_shader) {
     return std::unexpected{luma_shader.error()};
   }
   context->luma_shader = *luma_shader;
 
-  auto gmsd_shader = compile_compute_shader(*context->device.Get(), kGmsdShader, "gmsd");
+  auto gmsd_shader = create_compute_shader_from_bytecode(*context->device.Get(),
+                                                        visual_metrics_gpu_shaders::kGmsdShaderBytecode,
+                                                        visual_metrics_gpu_shaders::kGmsdShaderBytecodeSize,
+                                                        "gmsd");
   if (!gmsd_shader) {
     return std::unexpected{gmsd_shader.error()};
   }
   context->gmsd_shader = *gmsd_shader;
 
-  auto downsample_shader = compile_compute_shader(*context->device.Get(), kDownsampleShader, "downsample");
+  auto downsample_shader = create_compute_shader_from_bytecode(*context->device.Get(),
+                                                              visual_metrics_gpu_shaders::kDownsampleShaderBytecode,
+                                                              visual_metrics_gpu_shaders::kDownsampleShaderBytecodeSize,
+                                                              "downsample");
   if (!downsample_shader) {
     return std::unexpected{downsample_shader.error()};
   }
   context->downsample_shader = *downsample_shader;
 
-  auto ssim_shader = compile_compute_shader(*context->device.Get(), kSsimShader, "ms-ssim");
+  auto ssim_shader = create_compute_shader_from_bytecode(*context->device.Get(),
+                                                        visual_metrics_gpu_shaders::kMsSsimShaderBytecode,
+                                                        visual_metrics_gpu_shaders::kMsSsimShaderBytecodeSize,
+                                                        "ms-ssim");
   if (!ssim_shader) {
     return std::unexpected{ssim_shader.error()};
   }
@@ -1856,6 +1503,8 @@ class AcceleratedVisualMetricSession {
     if (!info) {
       return std::unexpected{info.error()};
     }
+    // candidate luma 常驻 GPU：后续 GMSD 与 MS-SSIM 直接复用同一 structured buffer，
+    // 不回读到 CPU；只有 GPU 失败并由调用方 fallback 时才重新走 CPU luma/metric。
     state.candidate_luma_ready = true;
 
     started = visual_metrics_gpu_detail::Clock::now();

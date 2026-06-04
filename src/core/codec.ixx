@@ -147,6 +147,10 @@ struct EncodeDiagnostics {
   int encoder_threads{};
   std::uint64_t memory_budget_bytes{};
   bool used_decoder_fallback{};
+  bool visual_quality_gpu_requested{};
+  bool visual_quality_gpu_used{};
+  std::string visual_quality_gpu_path{};
+  std::string visual_quality_gpu_fallback_reason{};
   EncodeTimingDiagnostics timing{};
 };
 
@@ -246,7 +250,9 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .source_has_hdr_metadata = settings.source_has_hdr_metadata,
                            .applied_hdr_metadata = settings.applied_hdr_metadata,
                            .color_metadata_source = settings.color_metadata_source,
-                           .color_reason = settings.color_reason};
+                           .color_reason = settings.color_reason,
+                           .visual_quality_gpu_requested = settings.visual_quality && settings.visual_quality_gpu,
+                           .visual_quality_gpu_path = settings.visual_quality ? (settings.visual_quality_gpu ? "requested" : "cpu-disabled") : "not-requested"};
 }
 
 class ImageDecoder {

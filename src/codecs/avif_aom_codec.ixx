@@ -1066,9 +1066,8 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   const int final_quality = lossless ? AVIF_QUALITY_LOSSLESS : std::clamp(settings.quality, 1, 100);
   encoder->quality = final_quality;
   encoder->qualityAlpha = lossless ? AVIF_QUALITY_LOSSLESS : 100;
-  if (settings.speed_explicit) {
-    encoder->speed = std::clamp(settings.speed, 0, 10);
-  }
+  const int encoder_speed = std::clamp(settings.speed, 0, 10);
+  encoder->speed = encoder_speed;
   encoder->keyframeInterval = 1;
   const int encoder_threads = avif_aom_detail::codec_thread_count(
       settings.resources.encoder_threads_per_file);
@@ -1295,11 +1294,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   diagnostics.fallback_reason = settings.encoder_fallback_reason;
   diagnostics.encoder_license = "BSD-2-Clause";
   diagnostics.integration_mode = settings.avif_grid_plan ? "libavif-grid" : std::string{};
-  diagnostics.speed_mapping = settings.speed_explicit
-                                  ? avif_aom_detail::libavif_speed_mapping(actual_mode, settings.speed)
-                                  : SpeedMapping{.user_speed = settings.speed,
-                                                 .codec_value = -1,
-                                                 .codec_key = "aom:encoder-default"};
+  diagnostics.speed_mapping = avif_aom_detail::libavif_speed_mapping(actual_mode, encoder_speed);
   diagnostics.encoder_threads = encoder_threads;
   diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
 

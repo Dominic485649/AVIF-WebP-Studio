@@ -8,7 +8,7 @@
 
 当前转换核心只保留 native codec，不再依赖内置 ImageMagick/MagickWand 后端。
 
-- AVIF：libavif/AOM；libavif SVT backend；实验 `zenrav1e` 通过隔离 helper 路径显式启用。
+- AVIF：libavif/AOM；libavif SVT backend；实验 `zenrav1e` 通过静态 Rust bridge 显式启用。
 - WebP：libwebp。
 - JXL：libjxl。
 - PNG/JPEG/TIFF/GIF/WIC/RAW：作为输入解码路径参与批处理和 metadata 透传。
@@ -19,12 +19,12 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 
 1. native decoder registry 按输入格式选择 PNG/JPEG/WebP/TIFF/GIF/JXL/AVIF/RAW/WIC 等解码器。
 2. 解码器返回像素、ICC、EXIF/XMP、色彩/HDR 和 alpha 语义。
-3. 根据配置执行可选缩放、alpha 策略、色度采样、位深选择和视觉质量搜索。
+3. 根据配置执行可选缩放、alpha 策略、色度采样、位深选择和视觉质量搜索；`visual_quality` 指标默认走 Direct3D 11 GPU-first 路径，必要时 CPU fallback。
 4. AVIF auto 只选择允许参与自动选择的稳定 encoder；实验 encoder 必须显式开启并选择。
 5. 大图模式按资源规划拆分 grid/tile，并对支持的 AVIF encoder 走专用路径。
 6. 编码器写回 ICC、EXIF/XMP、色彩和 HDR metadata；不支持的组合返回明确错误。
 7. 输出写入先经过临时文件与碰撞策略，再落到目标路径。
-8. 日志与 `summary.csv` 记录实际后端、质量、fallback 和诊断信息。
+8. 日志与 `summary.csv` 记录实际后端、质量、fallback、GPU 指标路径和诊断信息。
 
 ## 保留的功能
 
@@ -49,9 +49,18 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - Slint 桌面 UI。
 - UI 支持跟随 Windows 应用主题，也可以手动切换浅色/深色。
 - `run_batch(config, progress_callback, stop_token)` 批处理服务，CLI/UI 共用。
-- 大图模式、视觉质量搜索、AVIF encoder registry、资源规划和 GPU 视觉指标路径。
+- 大图模式、视觉质量搜索、AVIF encoder registry、资源规划和 Direct3D 11 GPU 视觉指标路径。
+- visual_quality shader 在 CMake 构建期由 Windows SDK `fxc.exe` 预编译并内嵌 bytecode；Release 不需要最终用户运行时编译 shader，也不携带 `.cso` sidecar。
 - 批量编码时只降低转换工作线程 CPU 优先级，避免 UI/CLI 启动阶段在高负载下被系统调度饿住。
 - Release 默认保留 `/O2`、函数级裁剪、常量合并、链接器裁剪和 x64-v3/AVX2 代码生成；`.\release.ps1 -EnableLto` 可显式启用 IPO/LTO，但默认关闭以优先保证静态依赖组合的运行稳定性。
+
+## visual_quality GPU 指标路径
+
+当前 GPU 加速范围是 visual_quality 的指标分析，不是端到端 GPU 转码。`awj.visual_metrics_gpu` 使用 Direct3D 11 compute shader 计算 luma、GMSD、MS-SSIM 和 MS-SSIM downsample；`awj.native_visual_search` 在 1..99 自动搜索中为每张参考图创建可复用 `AcceleratedVisualMetricSession`，复用 reference luma / reference MS-SSIM levels，并让 candidate luma 常驻 GPU 供 GMSD 和 MS-SSIM 连续使用。
+
+候选 encode/decode 仍由 native CPU codec 完成，候选选择、CSV/log 汇总和最终 encoded bytes 返回也仍在 CPU memory pipeline。GPU 小图阈值是刻意的性能保护：低于阈值时 Direct3D 初始化、上传和 readback 的成本通常高于收益。
+
+`summary.csv` 与日志会记录 `visual_quality_gpu_requested`、`visual_quality_gpu_used`、`visual_quality_gpu_path`、`visual_quality_gpu_fallback_reason`、`visual_quality_gpu_fallback_count`，用于区分 GPU 未请求、小图 CPU、Direct3D 初始化失败、session 中途失败后 CPU fallback 等情况。`visual_quality_fallback` 只表示“质量未达标时是否输出最接近候选”，不控制 GPU 到 CPU 的兼容性 fallback。
 
 ## 简化的部分
 
@@ -68,7 +77,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - `awj.image` / `awj.codec`：共享图像缓冲、metadata、codec capability 和 encode/decode 数据结构。
 - `awj.decoder_registry` / `awj.*_codec`：native 格式解码、编码与 metadata 透传。
 - `awj.avif_registry`：AVIF encoder 能力注册与选择策略。
-- `awj.native_backend`：native decoder/encoder 调度、AVIF helper、临时文件和输出写入边界。
+- `awj.native_backend`：native decoder/encoder 调度、SVT/libavif/zenrav1e 静态集成、临时文件和输出写入边界。
 - `awj.pipeline`：多线程调度、进度事件和汇总。
 - `awj.native_visual_search` / `awj.visual_metrics` / `awj.visual_metrics_gpu`：视觉质量搜索、CPU/GPU 质量指标和 fallback 诊断。
 - `src\cli\main.cpp`：CLI 入口。
@@ -77,7 +86,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 ## 进阶改动
 
 - CLI 文本输出使用 C++23 `std::println`，避免继续扩散 `cout`/`printf` 风格输出。
-- 批处理线程使用 `std::jthread`；UI 的“强制终止”只请求停止当前任务，不再终止后自动启动新任务。native encoder 接口接收 `std::stop_token`，在进入编码、可控循环、输出收集和写入前后尽早响应取消；第三方同步编码调用本身仍以调用前后的可控边界为准。
+- 批处理由 `AWJ-cli` 执行；Studio 作为 UI host 启动同目录 `AWJ-cli.exe` worker 子进程并用 Job Object 管理其生命周期。UI 的“取消”通过隐藏 cancel event 触发 worker 协作式停止；“强制终止”和运行中关闭窗口只终止 worker/job，不终止 Studio 本体，避免第三方同步编码调用卡住时拖死 UI 进程。
 - C API、Win32 和 COM 交界处统一用 `std::unique_ptr` 自定义 deleter 或局部 RAII 类型表达拥有关系，覆盖 `Release`、`CoTaskMemFree`、`LocalFree`、libavif/libjxl/libwebp/libraw 等资源释放路径。
 - 参数解析、文件系统、decoder/encoder 入口和重要分配路径使用 `std::expected<T, std::string>` 表达错误。
 - 索引型循环优先使用 `std::views::iota`，只有依赖迭代器失效、外部 C API 或更清晰的资源生命周期时才保留传统循环。
@@ -87,7 +96,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 
 ## 构建与验证约束
 
-日常验证只构建 CLI 和 Studio 目标；Release preset 默认启用 `AWJ_ENABLE_X64_V3=ON`，MSVC Release 会为项目目标添加 `/arch:AVX2`：
+日常验证只构建 CLI 和 Studio 目标；首次配置 Release preset 时还会预编译并内嵌 visual_quality Direct3D 11 shader，构建机需要可用的 Windows SDK `fxc.exe`。Release preset 默认启用 `AWJ_ENABLE_X64_V3=ON`，MSVC Release 会为项目目标添加 `/arch:AVX2`：
 
 ```powershell
 cmake --build --preset windows-msvc-x64-release --target AWJ-cli AWJ-studio

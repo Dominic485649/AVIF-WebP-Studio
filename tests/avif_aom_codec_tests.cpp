@@ -67,8 +67,19 @@ int main() {
   }
   if (encoded->diagnostics.encoder_id != "aom" ||
       encoded->diagnostics.applied_chroma != "444" ||
-      encoded->diagnostics.speed_mapping.codec_key != "aom:cpu-used") {
+      encoded->diagnostics.speed_mapping.codec_key != "aom:cpu-used" ||
+      encoded->diagnostics.speed_mapping.codec_value != 6) {
     return fail("AVIF AOM diagnostics invalid.");
+  }
+
+  auto default_speed_settings = settings(8, awj::ChromaMode::yuv420,
+                                         awj::AvifEncoderMode::aom);
+  default_speed_settings.speed_explicit = false;
+  auto default_speed = aom.encode(make_test_image(), default_speed_settings);
+  if (!default_speed || default_speed->diagnostics.speed_mapping.codec_key != "aom:cpu-used" ||
+      default_speed->diagnostics.speed_mapping.codec_value != 6) {
+    return fail(default_speed ? "AOM default speed diagnostics invalid."
+                              : default_speed.error());
   }
 
   auto ten_bit = aom.encode(make_test_image(), settings(10, awj::ChromaMode::yuv420,
