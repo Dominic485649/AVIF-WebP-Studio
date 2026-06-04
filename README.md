@@ -14,7 +14,7 @@ AWJimage 是一个 Windows C++23 / Slint 批量图片转换工具。当前内置
 
 ```powershell
 cmake --preset windows-msvc-x64-release
-cmake --build --preset windows-msvc-x64-release --target AWJ-cli AWJ-studio
+cmake --build --preset windows-msvc-x64-release --target AWJ
 ```
 
 或使用脚本：
@@ -25,8 +25,7 @@ cmake --build --preset windows-msvc-x64-release --target AWJ-cli AWJ-studio
 
 脚本会配置 native 依赖并清理 Release 输出目录，只保留面向用户的：
 
-- `bin\x64\Release\AWJ-cli.exe`
-- `bin\x64\Release\AWJ-studio.exe`
+- `bin\x64\Release\AWJ.exe`
 
 `svt-av1-hdr` 已作为源码依赖构建并静态链接进主程序，Release 不需要 `SvtAv1EncApp.exe`、DLL 或其他 SVT sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
@@ -41,18 +40,18 @@ GPU 不可用、小图低于收益阈值、资源超限或 GPU readback/shader �
 ## CLI 示例
 
 ```powershell
-AWJ-cli.exe -i "D:\图片" -o Avifoutput --format avif -q q90
-AWJ-cli.exe -i input.png --format webp --template "{name}-{date}"
-AWJ-cli.exe -i input.png -o output.jxl --format jxl -q 90
-AWJ-cli.exe -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
-AWJ-cli.exe -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
+AWJ.exe -i "D:\图片" -o Avifoutput --format avif -q q90
+AWJ.exe -i input.png --format webp --template "{name}-{date}"
+AWJ.exe -i input.png -o output.jxl --format jxl -q 90
+AWJ.exe -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
+AWJ.exe -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 ```
 
 `zenrav1e` 是实验编码器：必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`。默认 `auto` 不会选择实验编码器。
 
 ## 测试
 
-普通构建/验证只构建 CLI 和 Studio 目标，不构建测试可执行文件。只有明确需要测试验证时，才单独构建测试目标并运行：
+普通构建/验证只构建 AWJ 目标，不构建测试可执行文件。只有明确需要测试验证时，才单独构建测试目标并运行：
 
 ```powershell
 ctest --test-dir build/x64/Release -C Release --output-on-failure

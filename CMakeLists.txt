@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.6.2
+    VERSION 0.7.0
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -11,13 +11,13 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(AVIF_STATIC_SLINT "Link Slint statically so AWJ-studio does not need slint_cpp.dll" ON)
+option(AVIF_STATIC_SLINT "Link Slint statically so AWJ does not need slint_cpp.dll" ON)
 option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bundles when all dependencies allow it" ON)
 option(AVIF_ENABLE_RELEASE_IPO "Enable interprocedural optimization for Release builds when the compiler supports it" OFF)
 option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targets" ON)
 option(AWJ_ENABLE_X64_V3 "Enable x64-v3/AVX2 code generation for project targets in Release builds" OFF)
-option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into the main executables" ON)
-option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into the main executables" ON)
+option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into AWJ" ON)
+option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into AWJ" ON)
 set(AWJ_SVTAV1HDR_GIT_REPOSITORY "https://github.com/juliobbv-p/svt-av1-hdr.git" CACHE STRING "svt-av1-hdr repository")
 set(AWJ_SVTAV1HDR_GIT_TAG "b90fe2474a0c464121c0724d073f01953f792034" CACHE STRING "svt-av1-hdr git tag or commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
@@ -516,6 +516,11 @@ target_link_libraries(awj_native_backend PUBLIC
     awj_native_codecs
     awj_avif_base_codec
     awj_svtav1hdr_codec)
+add_dependencies(awj_native_backend
+    awj_native_visual_search
+    awj_native_codecs
+    awj_avif_base_codec
+    awj_svtav1hdr_codec)
 target_sources(awj_native_backend
     PUBLIC
         FILE_SET awj_native_backend_modules TYPE CXX_MODULES FILES
@@ -534,11 +539,6 @@ target_sources(awj_pipeline
 
 add_library(awj_core INTERFACE)
 target_link_libraries(awj_core INTERFACE awj_pipeline)
-
-add_executable(AWJ-cli src/cli/main.cpp)
-avif_enable_common_options(AWJ-cli)
-target_link_libraries(AWJ-cli PRIVATE awj_core)
-awj_add_sha256_post_build(AWJ-cli)
 
 if(BUILD_TESTING)
     add_executable(awj_visual_quality_tests tests/visual_quality_tests.cpp)
@@ -661,12 +661,15 @@ if(BUILD_TESTING)
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--option' '=x' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('--option 的 key 不能为空')) { exit 1 }")
 endif()
 
-add_executable(AWJ-studio WIN32
+add_executable(AWJ
+    src/app/main.cpp
+    src/cli/main.cpp
     src/ui/main.cpp
-    src/ui/AWJ-studio.manifest
-    src/ui/AWJ-studio.rc)
-avif_enable_common_options(AWJ-studio)
-target_link_libraries(AWJ-studio PRIVATE
+    src/ui/AWJ.manifest
+    src/ui/AWJ.rc)
+avif_enable_common_options(AWJ)
+target_compile_definitions(AWJ PRIVATE AWJ_UNIFIED_EXE)
+target_link_libraries(AWJ PRIVATE
     awj_core
     Slint::Slint
     dwmapi
@@ -679,8 +682,8 @@ if(MSVC AND AVIF_STATIC_SLINT AND AWJ_ZENRAVIF_AVAILABLE)
     # Both Slint's static C++ runtime and zenravif_bridge are Rust static libraries.
     # MSVC otherwise reports duplicate Rust std runtime symbols even when built by
     # the same toolchain for one final executable.
-    target_link_options(AWJ-studio PRIVATE "/FORCE:MULTIPLE")
+    target_link_options(AWJ PRIVATE "/FORCE:MULTIPLE")
 endif()
-avif_add_slint_sources(AWJ-studio ui/awj_studio.slint)
-avif_copy_slint_runtime(AWJ-studio)
-awj_add_sha256_post_build(AWJ-studio)
+avif_add_slint_sources(AWJ ui/awj_studio.slint)
+avif_copy_slint_runtime(AWJ)
+awj_add_sha256_post_build(AWJ)

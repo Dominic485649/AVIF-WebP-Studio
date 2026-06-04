@@ -145,6 +145,7 @@ int run_cli(int argc, wchar_t* argv[]) {
   }
 }
 
+#ifndef AWJ_UNIFIED_EXE
 int wmain(int argc, wchar_t* argv[]) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   std::setvbuf(stderr, nullptr, _IONBF, 0);
@@ -156,3 +157,4 @@ int wmain(int argc, wchar_t* argv[]) {
   // std::_Exit 避免运行 CRT/第三方静态析构，比 ExitProcess 更稳定。
   std::_Exit(exit_code);
 }
+#endif

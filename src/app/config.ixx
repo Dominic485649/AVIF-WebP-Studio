@@ -677,7 +677,7 @@ std::string help_text() {
 质量范围：q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；AVIF q100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源参数；显式 --avif-encoder svt 的 AVIF q100/visual-quality 100 是非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗
 
 用法:
-  AWJ-cli.exe [选项]
+  AWJ.exe [选项]
 
 常用选项:
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
@@ -723,7 +723,7 @@ std::string help_text() {
   --keep-metadata            保留源元数据，取消 --strip
   --summary                  生成 summary.csv
   --no-summary               不生成 summary.csv
-  --log                      生成 log\awj-cli.log
+  --log                      生成 log\awj.log
   --no-log                   不生成日志文件
   --skip-existing            已有输出时跳过
   --overwrite                已有输出时覆盖，默认行为
@@ -747,11 +747,11 @@ std::string help_text() {
   {params} 编码参数，例如 q95t5 或 q95t5_444_10
 
 示例:
-  AWJ-cli.exe -i "D:\图片" -o Avifoutput -q q90
-  AWJ-cli.exe -i input --format webp --template "{name}-{date}"
-  AWJ-cli.exe -i input.png -o output.jxl --format jxl -q 90
-  AWJ-cli.exe -i input --visual-quality 92 --summary
-  AWJ-cli.exe -i input --chroma 444 --bit-depth 10
+  AWJ.exe -i "D:\图片" -o Avifoutput -q q90
+  AWJ.exe -i input --format webp --template "{name}-{date}"
+  AWJ.exe -i input.png -o output.jxl --format jxl -q 90
+  AWJ.exe -i input --visual-quality 92 --summary
+  AWJ.exe -i input --chroma 444 --bit-depth 10
 )";
   const auto replace_all = [](std::string& text, std::string_view from,
                               std::string_view to) {

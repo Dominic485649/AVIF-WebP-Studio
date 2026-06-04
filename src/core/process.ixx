@@ -499,7 +499,7 @@ std::string win32_error_message(DWORD error) {
   return core_detail::trim_copy(utf8_from_wide(message));
 }
 
-std::expected<fs::path, std::string> executable_directory() {
+std::expected<fs::path, std::string> executable_path() {
   std::wstring buffer(MAX_PATH, L'\0');
   while (true) {
     const DWORD length = GetModuleFileNameW(nullptr, buffer.data(),
@@ -510,7 +510,7 @@ std::expected<fs::path, std::string> executable_directory() {
     }
     if (length < buffer.size()) {
       buffer.resize(length);
-      return fs::path{buffer}.parent_path();
+      return fs::path{buffer};
     }
     if (buffer.size() >
         static_cast<std::size_t>(std::numeric_limits<DWORD>::max() / 2)) {
@@ -518,6 +518,14 @@ std::expected<fs::path, std::string> executable_directory() {
     }
     buffer.assign(buffer.size() * 2, L'\0');
   }
+}
+
+std::expected<fs::path, std::string> executable_directory() {
+  auto path = executable_path();
+  if (!path) {
+    return std::unexpected{path.error()};
+  }
+  return path->parent_path();
 }
 
 class FileLogger {
@@ -529,7 +537,7 @@ class FileLogger {
     }
     try {
       log_dir_ = std::move(output_dir) / L"log";
-      log_file_ = log_dir_ / L"awj-cli.log";
+      log_file_ = log_dir_ / L"awj.log";
       std::error_code ec;
       fs::create_directories(log_dir_, ec);
       if (ec) {

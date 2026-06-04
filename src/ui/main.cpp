@@ -1310,11 +1310,13 @@ std::vector<std::wstring> cli_arguments_from_config(
   return args;
 }
 
-std::wstring quote_windows_command_arg(std::wstring_view arg) {
+std::wstring quote_windows_command_arg(std::wstring_view arg,
+                                      bool force_quotes = false) {
   if (arg.empty()) {
     return L"\"\"";
   }
-  const bool needs_quotes = arg.find_first_of(L" \t\n\v\"") != std::wstring_view::npos;
+  const bool needs_quotes =
+      force_quotes || arg.find_first_of(L" \t\n\v\"") != std::wstring_view::npos;
   if (!needs_quotes) {
     return std::wstring{arg};
   }
@@ -1344,27 +1346,29 @@ std::wstring quote_windows_command_arg(std::wstring_view arg) {
 
 std::wstring command_line_from_args(std::span<const std::wstring> args) {
   std::wstring command;
+  bool first = true;
   for (const auto& arg : args) {
     if (!command.empty()) {
       command.push_back(L' ');
     }
-    command += quote_windows_command_arg(arg);
+    command += quote_windows_command_arg(arg, first);
+    first = false;
   }
   return command;
 }
 
 std::expected<std::shared_ptr<StudioChildProcess>, std::string>
 start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
-  auto exe_dir = awj::executable_directory();
-  if (!exe_dir) {
-    return std::unexpected{exe_dir.error()};
+  auto exe_path = awj::executable_path();
+  if (!exe_path) {
+    return std::unexpected{exe_path.error()};
   }
-  const auto cli_path = *exe_dir / L"AWJ-cli.exe";
   std::error_code ec;
-  if (!std::filesystem::is_regular_file(cli_path, ec) || ec) {
+  if (!std::filesystem::is_regular_file(*exe_path, ec) || ec) {
     return std::unexpected{std::format("找不到 Studio 编码 worker: {}。",
-                                       awj::display_path_for_user(cli_path))};
+                                       awj::display_path_for_user(*exe_path))};
   }
+  const auto exe_dir = exe_path->parent_path();
 
   auto child = std::make_shared<StudioChildProcess>();
   const auto event_name = std::format(L"Local\\AWJStudioCancel-{}-{}",
@@ -1376,7 +1380,7 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
   }
 
   auto args = cli_arguments_from_config(cfg, event_name);
-  args.insert(args.begin(), cli_path.native());
+  args.insert(args.begin(), exe_path->native());
   auto command_line = command_line_from_args(args);
   if (command_line.size() >= 32767) {
     return std::unexpected{"编码 worker 命令行超过 Windows 长度限制。"};
@@ -1414,9 +1418,9 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
   startup.hStdError = output_write.get();
   PROCESS_INFORMATION process{};
   auto mutable_command_line = command_line;
-  const auto cwd = exe_dir->native();
+  const auto cwd = exe_dir.native();
   const BOOL created = CreateProcessW(
-      cli_path.c_str(), mutable_command_line.data(), nullptr, nullptr, TRUE,
+      exe_path->c_str(), mutable_command_line.data(), nullptr, nullptr, TRUE,
       CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, cwd.c_str(),
       &startup, &process);
   if (!created) {
@@ -2268,7 +2272,7 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+int run_studio_ui() {
   try {
     auto app = AwjStudio::create();
     auto state = std::make_shared<UiState>();
@@ -2558,11 +2562,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
     return 0;
   } catch (const std::exception&) {
-    MessageBoxW(nullptr, L"Studio 启动失败。", L"AWJ-studio",
+    MessageBoxW(nullptr, L"Studio 启动失败。", L"AWJ",
                 MB_OK | MB_ICONERROR);
     return 1;
   } catch (...) {
-    MessageBoxW(nullptr, L"Studio 启动失败：未知异常。", L"AWJ-studio",
+    MessageBoxW(nullptr, L"Studio 启动失败：未知异常。", L"AWJ",
                 MB_OK | MB_ICONERROR);
     return 1;
   }

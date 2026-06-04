@@ -22,7 +22,7 @@ AWJimage 当前已经实现 Direct3D 11 compute shader 视觉质量指标路径�
 - 不恢复 Magick/ffmpeg 内部后端；Magick 仍只能作为未来外部 exe/runtime 集成方向。
 - 不把所有图片都强制走 GPU；小图、D3D 不可用、资源超限、shader/device 失败时允许 CPU fallback，但必须可见、可解释。
 - 不做与 visual_quality、GPU、性能链路、分支清理和文档无关的大规模重构。
-- 日常构建不构建测试可执行文件，只构建 `AWJ-cli` 与 `AWJ-studio` 目标。
+- 日常构建不构建测试可执行文件，只构建 `AWJ` 目标。
 
 ## 当前链路判断
 
@@ -119,7 +119,7 @@ CLI help、Studio 文案、README 和迁移说明要统一：GPU 加速的是 vi
 HLSL source
   → CMake 调用 Windows SDK fxc.exe 编译为 Direct3D 11 cs_5_0 bytecode
   → 生成 C++ header 内嵌数组
-  → 链入 AWJ-cli / AWJ-studio
+  → 链入 AWJ
   → 运行时 CreateComputeShader(embedded bytecode)
 ```
 
@@ -235,7 +235,7 @@ GPU fallback 条件包括：
 
 ## 验证计划
 
-遵守项目规则：每次构建只构建 CLI 和 Studio 目标，不构建测试可执行文件。
+遵守项目规则：每次构建只构建 AWJ 目标，不构建测试可执行文件。
 
 ### 静态验证
 
@@ -249,7 +249,7 @@ GPU fallback 条件包括：
 仅运行：
 
 ```powershell
-cmake --build --preset windows-msvc-x64-release --target AWJ-cli AWJ-studio
+cmake --build --preset windows-msvc-x64-release --target AWJ
 ```
 
 不执行全量构建，不构建测试可执行文件。
@@ -269,5 +269,5 @@ cmake --build --preset windows-msvc-x64-release --target AWJ-cli AWJ-studio
 - GPU metric path 明确覆盖 luma、GMSD、MS-SSIM；codec encode/decode 和最终候选选择不被误称为 GPU。
 - GPU fallback 原因、次数和耗时可诊断。
 - 明显重复分配、重复 shader 编译、不必要 IO、过时 helper 调度代码等性能问题得到修复，或在风险过高时记录为下一阶段。
-- CLI 和 Studio 目标构建通过。
+- AWJ 目标构建通过。
 - 不构建测试可执行文件。

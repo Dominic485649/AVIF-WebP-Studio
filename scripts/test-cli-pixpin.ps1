@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
-$cli = Join-Path $repo 'bin\x64\Release\AWJ-cli.exe'
+$cli = Join-Path $repo 'bin\x64\Release\AWJ.exe'
 $runId = Get-Date -Format 'yyyyMMdd-HHmmss'
 $workRoot = Join-Path $repo ".claude\cli-pixpin-test\$runId"
 $sampleDir = Join-Path $workRoot 'input'
@@ -17,12 +17,12 @@ if (-not (Test-Path $SourceDir)) {
     throw "测试集目录不存在：$SourceDir"
 }
 
-cmake --build (Join-Path $repo $BuildDir) --config $Configuration --target AWJ-cli | Write-Host
+cmake --build (Join-Path $repo $BuildDir) --config $Configuration --target AWJ | Write-Host
 if ($LASTEXITCODE -ne 0) {
-    throw "CLI 构建失败：$LASTEXITCODE"
+    throw "AWJ 构建失败：$LASTEXITCODE"
 }
 if (-not (Test-Path $cli)) {
-    throw "找不到 CLI：$cli"
+    throw "找不到 AWJ：$cli"
 }
 
 New-Item -ItemType Directory -Path $sampleDir -Force | Out-Null

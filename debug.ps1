@@ -93,14 +93,14 @@ cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake 配置失败，退出码 $LASTEXITCODE。"
 }
-cmake --build $BuildDir --config Debug --target AWJ-cli AWJ-studio --parallel
+cmake --build $BuildDir --config Debug --target AWJ --parallel
 
 if ($LASTEXITCODE -ne 0) {
     throw "Debug 构建失败，退出码 $LASTEXITCODE。"
 }
 
 $OutputDir = Join-Path $Repo "bin\x64\Debug"
-$Keep = @("AWJ-cli.exe", "AWJ-studio.exe", "AWJ-cli.pdb", "AWJ-studio.pdb", "AWJ-cli.exe.sha256", "AWJ-studio.exe.sha256", "slint_cpp.dll")
+$Keep = @("AWJ.exe", "AWJ.pdb", "AWJ.exe.sha256", "slint_cpp.dll")
 if (Test-Path $OutputDir) {
     Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $Keep -notcontains $_.Name } | Remove-Item -Recurse -Force
     if (-not $SharedSlint) {
@@ -113,6 +113,5 @@ if (Test-Path $OutputDir) {
 
 Write-Host ""
 Write-Host "Debug 输出:"
-Write-Host "  $OutputDir\AWJ-cli.exe"
-Write-Host "  $OutputDir\AWJ-studio.exe"
+Write-Host "  $OutputDir\AWJ.exe"
 Write-Host "  svt-av1-hdr: 已静态集成到主程序。"

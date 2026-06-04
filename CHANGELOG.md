@@ -1,5 +1,16 @@
 # 更新日志
 
+## 0.7.0 - 2026-06-04
+
+0.7.0 是一次以单一 `AWJ.exe` 发布物、Studio 自举 worker 和 CLI/Studio 合体体验为核心的版本更新。重点是取消 Studio 对独立命令行可执行文件的依赖，让 UI、命令行与内部编码 worker 都收敛到同一个可执行文件。
+
+- 合并 CLI 与 Studio 发布目标，Release/Debug 日常构建只生成 `AWJ.exe`，不再生成旧 CLI/Studio 双可执行发布物。
+- 新增统一入口：无参数启动 Studio UI，带 CLI 参数时进入 headless 转换路径，`AWJ.exe --help` 显示命令行帮助并保持可靠 stdout/stderr 与退出码。
+- Studio 转换改为自举同目录 `AWJ.exe` worker 子进程，继续使用 Job Object 管理生命周期；“取消”通过事件请求协作式停止，“强制终止”和运行中关闭窗口只终止编码 worker，不结束 Studio 本体。
+- 保留现有 native codec pipeline、visual_quality GPU 指标路径、summary/log 诊断、AVIF 大图模式和实验编码器能力；UI 与 CLI 共用同一套参数解析与批处理服务。
+- 更新脚本、帮助文本、README、迁移文档、manifest/resource 和发布清理规则，面向用户的构建目标、命令示例、输出文件与校验文件统一为 `AWJ`。
+- 日志文件名从 `log\awj-cli.log` 调整为 `log\awj.log`，与统一发布物命名保持一致。
+
 ## 0.6.2 - 2026-06-04
 
 0.6.2 是一次以 visual_quality GPU 指标链路、Studio 任务隔离和交互修复为核心的小版本更新。
@@ -7,10 +18,10 @@
 - 将 visual_quality Direct3D 11 shader 改为构建期预编译并内嵌 bytecode，Release 运行时不再依赖 `d3dcompiler` 或 `.cso` sidecar。
 - 扩展 Visual Quality Search 的 GPU 诊断，summary 与日志可区分 GPU requested/used/path/fallback reason/fallback count。
 - 优化 visual_quality 搜索为预测窗口内 lower-bound 二分，lossy q 限定在 1..99，减少 1 次早停和 8/9 次探测之间的跳变。
-- Studio 转换改为启动同目录 `AWJ-cli.exe` 作为 worker 子进程，使用 Job Object 管理生命周期；“取消”通过事件请求协作式停止，“强制终止”和运行中关闭窗口只终止编码 worker，不结束 Studio 本体。
+- Studio 转换改为启动同目录统一 AWJ worker 子进程，使用 Job Object 管理生命周期；“取消”通过事件请求协作式停止，“强制终止”和运行中关闭窗口只终止编码 worker，不结束 Studio 本体。
 - 修复 Studio 窗口拖动：除 Slint 标题区域回调外，增加 Win32 `WM_NCHITTEST` fallback，将左侧标题区域识别为 `HTCAPTION`。
 - 修复 Studio 先选择输出路径、再选择输入路径时自动覆盖已有输出路径的问题；已有输出路径会保持用户手动指定的内容。
-- 清理旧 AVIF/AOM helper 源码和 Studio 同进程 worker 残留代码，转换路径继续收敛为 native codec 与 CLI/Studio 发布目标。
+- 清理旧 AVIF/AOM helper 源码和 Studio 同进程 worker 残留代码，转换路径继续收敛为 native codec 与统一 AWJ 发布目标。
 
 ## 0.6.1 - 2026-06-03
 
@@ -23,7 +34,7 @@
 - 改进 AVIF 大图提示，按当前构建能力识别 AOM grid 与实验 zenrav1e，队列、日志和 summary 中输出更明确的尺寸、原因与可用处理方式。
 - 扩展 summary.csv 与日志诊断字段，记录 visual-quality 分数、GMSD/MS-SSIM、候选次数、GPU/内存回退、速度参数、编码线程、内存预算和阶段耗时。
 - 调整 Studio 参数页与设置页说明，补充质量、视觉质量、内存、速度、WIC 兜底、GPU 加速和实验编码器等选项文案，并改用 HarmonyOS Sans SC 字体资源。
-- 更新构建版本到 0.6.1，同步 Debug/Release 脚本构建参数，继续保持 native codec 主线和 CLI/Studio 发布目标。
+- 更新构建版本到 0.6.1，同步 Debug/Release 脚本构建参数，继续保持 native codec 主线和统一 AWJ 发布目标。
 
 ## 0.4.0-rc1 - 2026-05-25 (Pre-release)
 
@@ -40,7 +51,7 @@
 - 编码队列改为默认入口，输入输出和开始/取消/清空等操作集中到队列页。
 - 调整导航、下拉框和页面卡片样式，移除多余说明文字与默认下拉黑色焦点边框。
 - 大图模式保持轻量占位，不加载图片、不缓存预览资源，页面切换继续使用条件实例化降低常驻内存。
-- 记录项目构建约束：日常构建只构建 CLI 和 Studio，不构建测试可执行文件。
+- 记录项目构建约束：日常构建只构建 AWJ，不构建测试可执行文件。
 
 ## 0.3 - 2026-05-21
 

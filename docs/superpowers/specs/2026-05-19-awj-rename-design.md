@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前项目已经从旧目录迁移到 `D:\Code\Cpp\FFimage`，远端仓库为 `Dominic485649/AVIF-WebP-Studio`。用户希望把远端仓库名称改为 `AWJimage`，本地文件夹名称也改为 `AWJimage`，并把用户入口程序改名为 `AWJ-cli` 和 `AWJ-studio`。
+当前项目已经从旧目录迁移到 `D:\Code\Cpp\FFimage`，远端仓库为 `Dominic485649/AVIF-WebP-Studio`。用户希望把远端仓库名称改为 `AWJimage`，本地文件夹名称也改为 `AWJimage`，并把用户入口程序统一为 `AWJ`。
 
 本设计覆盖仓库、目录、CMake target、可执行文件、UI 标题、CLI help、脚本、测试和文档的命名变更。目标是完成品牌层深度改名，同时避免把 AVIF 图像格式概念错误替换为 AWJ。
 
@@ -18,7 +18,7 @@
 
 采用分层深度改名：
 
-1. 产品层统一为 `AWJimage` / `AWJ-cli` / `AWJ-studio`。
+1. 产品层统一为 `AWJimage` / `AWJ`。
 2. CMake 根工程、产品 target、helper target、manifest、UI 标题、CLI help、脚本、测试和当前说明文档同步改名。
 3. 通用项目层 target 和源码符号从 `avif_*` 迁移到 `awj_*`，例如 base、pipeline、core、backend 等。
 4. 格式层保留 `avif`，包括 AVIF codec、AVIF registry、AVIF 参数和 AVIF 用户文案。
@@ -42,15 +42,13 @@
 
 根工程从 `AVIFWebPStudio` 改为 `AWJimage`。工程描述和构建日志中的产品名从 `AVIF-WebP-Studio` 改为 `AWJimage`。
 
-用户入口 target 和可执行文件改名：
+用户入口 target 和可执行文件统一为：
 
-- `AVIF-WebP-Cli` → `AWJ-cli`
-- `AVIF-WebP-Studio` → `AWJ-studio`
+- `AVIF-WebP-Cli` / `AVIF-WebP-Studio` → `AWJ`
 
 最终输出：
 
-- `AWJ-cli.exe`
-- `AWJ-studio.exe`
+- `AWJ.exe`
 
 native AVIF helper 从旧 MVP 名称改为通用 helper 名称：
 
@@ -61,9 +59,9 @@ native AVIF helper 从旧 MVP 名称改为通用 helper 名称：
 
 Studio manifest 文件改名：
 
-- `src/ui/AVIF-WebP-Studio.manifest` → `src/ui/AWJ-studio.manifest`
+- `src/ui/AVIF-WebP-Studio.manifest` → `src/ui/AWJ.manifest`
 
-manifest 内部 assembly identity 改为 `AWJ-studio`。
+manifest 内部 assembly identity 改为 `AWJ`。
 
 ## 源码命名边界
 
@@ -103,10 +101,10 @@ AVIF-WebP-Cli.exe [选项]
 
 ```text
 AWJimage C++23
-AWJ-cli.exe [选项]
+AWJ.exe [选项]
 ```
 
-示例命令同步改为 `AWJ-cli.exe`。格式参数、AVIF/JXL/WebP 说明和 AVIF encoder 参数保持原语义。
+示例命令同步改为 `AWJ.exe`。格式参数、AVIF/JXL/WebP 说明和 AVIF encoder 参数保持原语义。
 
 ## 脚本、测试与文档
 
@@ -115,7 +113,7 @@ AWJ-cli.exe [选项]
 - `debug.ps1`
 - `release.ps1`
 - `scripts/test-cli-pixpin.ps1`
-- CTest 中引用 CLI target、helper target、Studio target 或 help banner 的地方
+- CTest 中引用 AWJ target、helper target 或 help banner 的地方
 - `tests/cli_native_avif_aom_tests.cpp` 中查找 CLI exe 的名字
 - `src/backends/native_backend.ixx` 中查找 helper exe 的名字
 
@@ -155,8 +153,7 @@ README、CHANGELOG、`docs/cpp-port.md`、`docs/magick-runtime.md` 中当前产�
 确认新名称出现并绑定正确：
 
 - `AWJimage`
-- `AWJ-cli`
-- `AWJ-studio`
+- `AWJ`
 - `AWJ-native-avif-helper`
 
 同时确认 AVIF 作为图像格式名仍存在。
@@ -165,8 +162,7 @@ README、CHANGELOG、`docs/cpp-port.md`、`docs/magick-runtime.md` 中当前产�
 
 至少构建受影响 target：
 
-- `AWJ-cli`
-- `AWJ-studio`
+- `AWJ`
 - `AWJ-native-avif-helper`
 
 至少运行关键验证：
@@ -198,7 +194,7 @@ README、CHANGELOG、`docs/cpp-port.md`、`docs/magick-runtime.md` 中当前产�
 - 本地目录为 `D:\Code\Cpp\AWJimage`。
 - GitHub 远端仓库为 `Dominic485649/AWJimage`。
 - 本地 `origin` 指向 `git@github.com:Dominic485649/AWJimage.git`。
-- 构建产物为 `AWJ-cli.exe`、`AWJ-studio.exe` 和 `AWJ-native-avif-helper.exe`。
+- 构建产物为 `AWJ.exe` 和 `AWJ-native-avif-helper.exe`。
 - UI 和 CLI 用户可见品牌为 AWJ。
 - AVIF/WebP/JXL 作为格式名保持正确。
 - 构建和关键测试通过。
