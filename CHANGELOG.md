@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.7.2 - 2026-06-05
+
+0.7.2 修复部分终端中 `AWJ.com --help`、`AWJ --help` 无输出的问题。
+
+- `AWJ.com` 不再只把当前标准输出句柄继承给 GUI subsystem 的 `AWJ.exe`，改为通过 stdout/stderr pipe 捕获子进程输出后写回当前终端。
+- 保留 `AWJ.com` 的等待和退出码透传语义，`--help` 返回 0，未知参数返回非 0。
+- `AWJ.exe` 仍保持 Windows GUI subsystem，双击启动 Studio 不弹出命令行窗口。
+
 ## 0.7.1 - 2026-06-05
 
 0.7.1 修复双击启动 `AWJ.exe` 时短暂弹出命令行窗口的问题，并保留命令行入口的等待、输出和退出码语义。

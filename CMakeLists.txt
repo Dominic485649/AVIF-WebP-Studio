@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.7.1
+    VERSION 0.7.2
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 

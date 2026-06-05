@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -15,6 +16,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -25,12 +27,23 @@ std::atomic<HANDLE> g_child_process{nullptr};
 
 constexpr UINT kControlExitCode = 0xC000013A;
 
+struct PipePair {
+  HANDLE read = nullptr;
+  HANDLE write = nullptr;
+};
+
+void close_if_valid(HANDLE handle) {
+  if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(handle);
+  }
+}
+
 BOOL WINAPI console_control_handler(DWORD control_type) {
   switch (control_type) {
     case CTRL_C_EVENT:
     case CTRL_BREAK_EVENT:
-      // The child AWJ.exe shares this console and runs the real CLI handler.
-      // Keep the shim alive so it can return the child's final exit code.
+      // The child AWJ.exe owns the real CLI cancellation path. Keep the shim
+      // alive so it can drain pipes and return the child's final exit code.
       return TRUE;
     case CTRL_CLOSE_EVENT:
     case CTRL_LOGOFF_EVENT:
@@ -65,6 +78,57 @@ std::wstring win32_error_message(DWORD error) {
     text.pop_back();
   }
   return text;
+}
+
+std::expected<PipePair, std::wstring> create_forwarding_pipe(
+    std::wstring_view label) {
+  SECURITY_ATTRIBUTES security{};
+  security.nLength = sizeof(security);
+  security.bInheritHandle = TRUE;
+
+  PipePair pipe{};
+  if (!CreatePipe(&pipe.read, &pipe.write, &security, 0)) {
+    return std::unexpected{std::format(L"创建 {} pipe 失败：{}", label,
+                                       win32_error_message(GetLastError()))};
+  }
+  if (!SetHandleInformation(pipe.read, HANDLE_FLAG_INHERIT, 0)) {
+    const auto error = GetLastError();
+    close_if_valid(pipe.read);
+    close_if_valid(pipe.write);
+    return std::unexpected{std::format(L"设置 {} pipe 继承属性失败：{}", label,
+                                       win32_error_message(error))};
+  }
+  return pipe;
+}
+
+void forward_pipe_to_handle(HANDLE pipe, HANDLE target) {
+  std::array<std::byte, 16 * 1024> buffer{};
+  bool can_write = target != nullptr && target != INVALID_HANDLE_VALUE;
+
+  while (true) {
+    DWORD bytes_read = 0;
+    const BOOL ok = ReadFile(pipe, buffer.data(),
+                             static_cast<DWORD>(buffer.size()), &bytes_read,
+                             nullptr);
+    if (!ok || bytes_read == 0) {
+      break;
+    }
+
+    DWORD offset = 0;
+    while (can_write && offset < bytes_read) {
+      DWORD bytes_written = 0;
+      const BOOL wrote = WriteFile(target, buffer.data() + offset,
+                                   bytes_read - offset, &bytes_written,
+                                   nullptr);
+      if (!wrote || bytes_written == 0) {
+        can_write = false;
+        break;
+      }
+      offset += bytes_written;
+    }
+  }
+
+  close_if_valid(pipe);
 }
 
 std::wstring quote_windows_command_arg(std::wstring_view arg) {
@@ -154,6 +218,9 @@ std::expected<fs::path, std::wstring> awj_exe_path() {
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+  SetConsoleOutputCP(CP_UTF8);
+  SetConsoleCP(CP_UTF8);
+
   const auto exe = awj_exe_path();
   if (!exe) {
     std::wcerr << exe.error() << L'\n';
@@ -180,32 +247,70 @@ int wmain(int argc, wchar_t* argv[]) {
     return 1;
   }
 
+  auto stdout_pipe = create_forwarding_pipe(L"stdout");
+  if (!stdout_pipe) {
+    std::wcerr << stdout_pipe.error() << L'\n';
+    return 1;
+  }
+  auto stderr_pipe = create_forwarding_pipe(L"stderr");
+  if (!stderr_pipe) {
+    close_if_valid(stdout_pipe->read);
+    close_if_valid(stdout_pipe->write);
+    std::wcerr << stderr_pipe.error() << L'\n';
+    return 1;
+  }
+
   SetConsoleCtrlHandler(console_control_handler, TRUE);
 
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   startup.dwFlags = STARTF_USESTDHANDLES;
   startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-  startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-  startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+  startup.hStdOutput = stdout_pipe->write;
+  startup.hStdError = stderr_pipe->write;
 
   PROCESS_INFORMATION process{};
   const auto cwd = exe->parent_path().wstring();
   const BOOL created = CreateProcessW(
       exe->c_str(), command_line.data(), nullptr, nullptr, TRUE, 0, nullptr,
       cwd.c_str(), &startup, &process);
+
+  close_if_valid(stdout_pipe->write);
+  stdout_pipe->write = nullptr;
+  close_if_valid(stderr_pipe->write);
+  stderr_pipe->write = nullptr;
+
   if (!created) {
-    std::wcerr << L"启动 AWJ.exe 失败：" << win32_error_message(GetLastError())
+    const auto error = GetLastError();
+    close_if_valid(stdout_pipe->read);
+    close_if_valid(stderr_pipe->read);
+    std::wcerr << L"启动 AWJ.exe 失败：" << win32_error_message(error)
                << L'\n';
     return 1;
   }
 
   CloseHandle(process.hThread);
   g_child_process.store(process.hProcess, std::memory_order_release);
+
+  std::thread stdout_thread{forward_pipe_to_handle, stdout_pipe->read,
+                            GetStdHandle(STD_OUTPUT_HANDLE)};
+  stdout_pipe->read = nullptr;
+  std::thread stderr_thread{forward_pipe_to_handle, stderr_pipe->read,
+                            GetStdHandle(STD_ERROR_HANDLE)};
+  stderr_pipe->read = nullptr;
+
   const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
+  g_child_process.store(nullptr, std::memory_order_release);
+
+  if (stdout_thread.joinable()) {
+    stdout_thread.join();
+  }
+  if (stderr_thread.joinable()) {
+    stderr_thread.join();
+  }
+
   if (wait != WAIT_OBJECT_0) {
     const auto error = GetLastError();
-    g_child_process.store(nullptr, std::memory_order_release);
     CloseHandle(process.hProcess);
     std::wcerr << L"等待 AWJ.exe 结束失败：" << win32_error_message(error)
                << L'\n';
@@ -215,13 +320,11 @@ int wmain(int argc, wchar_t* argv[]) {
   DWORD exit_code = 1;
   if (!GetExitCodeProcess(process.hProcess, &exit_code)) {
     const auto error = GetLastError();
-    g_child_process.store(nullptr, std::memory_order_release);
     CloseHandle(process.hProcess);
     std::wcerr << L"读取 AWJ.exe 退出码失败：" << win32_error_message(error)
                << L'\n';
     return 1;
   }
-  g_child_process.store(nullptr, std::memory_order_release);
   CloseHandle(process.hProcess);
   return static_cast<int>(exit_code);
 }
