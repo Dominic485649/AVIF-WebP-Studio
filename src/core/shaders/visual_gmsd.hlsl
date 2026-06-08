@@ -17,12 +17,16 @@ uint image_index(uint x, uint y) {
   return y * width + x;
 }
 
+uint candidate_image_index(uint candidate_index, uint x, uint y) {
+  return candidate_index * width * height + image_index(x, y);
+}
+
 float reference_at(uint x, uint y) {
   return reference_luma[image_index(min(x, width - 1u), min(y, height - 1u))];
 }
 
-float candidate_at(uint x, uint y) {
-  return candidate_luma[image_index(min(x, width - 1u), min(y, height - 1u))];
+float candidate_at(uint candidate_index, uint x, uint y) {
+  return candidate_luma[candidate_image_index(candidate_index, min(x, width - 1u), min(y, height - 1u))];
 }
 
 float reference_gradient(uint x, uint y) {
@@ -35,13 +39,13 @@ float reference_gradient(uint x, uint y) {
   return sqrt(dx * dx + dy * dy);
 }
 
-float candidate_gradient(uint x, uint y) {
+float candidate_gradient(uint candidate_index, uint x, uint y) {
   const uint left = x == 0u ? x : x - 1u;
   const uint right = min(x + 1u, width - 1u);
   const uint top = y == 0u ? y : y - 1u;
   const uint bottom = min(y + 1u, height - 1u);
-  const float dx = candidate_at(right, y) - candidate_at(left, y);
-  const float dy = candidate_at(x, bottom) - candidate_at(x, top);
+  const float dx = candidate_at(candidate_index, right, y) - candidate_at(candidate_index, left, y);
+  const float dy = candidate_at(candidate_index, x, bottom) - candidate_at(candidate_index, x, top);
   return sqrt(dx * dx + dy * dy);
 }
 
@@ -56,7 +60,7 @@ void main(uint3 group_id : SV_GroupID,
 
   if (dispatch_thread_id.x < width && dispatch_thread_id.y < height) {
     const float ref_grad = reference_gradient(dispatch_thread_id.x, dispatch_thread_id.y);
-    const float candidate_grad = candidate_gradient(dispatch_thread_id.x, dispatch_thread_id.y);
+    const float candidate_grad = candidate_gradient(group_id.z, dispatch_thread_id.x, dispatch_thread_id.y);
     const float c = 0.0026f;
     const float similarity = (2.0f * ref_grad * candidate_grad + c) /
                              (ref_grad * ref_grad + candidate_grad * candidate_grad + c);
@@ -80,7 +84,8 @@ void main(uint3 group_id : SV_GroupID,
   }
 
   if (local_index == 0u) {
-    partials[group_id.y * group_count_x + group_id.x] =
+    const uint partials_per_candidate = group_count_x * ((height + 15u) / 16u);
+    partials[group_id.z * partials_per_candidate + group_id.y * group_count_x + group_id.x] =
         float4(shared_sum[0], shared_sum_sq[0], shared_count[0], 0.0f);
   }
 }

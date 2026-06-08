@@ -36,7 +36,7 @@ enum class Preset {
   fast,
   fastest
 };
-enum class OutputFormat { avif, webp, jxl };
+enum class OutputFormat { avif, webp, jxl, jpgli };
 enum class BackendMode { native };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random };
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
@@ -65,6 +65,8 @@ constexpr int default_quality_for(OutputFormat format) noexcept {
       return encoding_defaults::default_webp_quality;
     case OutputFormat::jxl:
       return encoding_defaults::default_jxl_quality;
+    case OutputFormat::jpgli:
+      return encoding_defaults::default_jpegli_quality;
     case OutputFormat::avif:
     default:
       return encoding_defaults::default_avif_quality;
@@ -75,6 +77,8 @@ constexpr int default_speed_for(OutputFormat format) noexcept {
   switch (format) {
     case OutputFormat::jxl:
       return encoding_defaults::default_jxl_native_speed;
+    case OutputFormat::jpgli:
+      return encoding_defaults::default_jpegli_native_speed;
     case OutputFormat::avif:
       return encoding_defaults::default_avif_native_speed;
     case OutputFormat::webp:
@@ -104,6 +108,9 @@ struct AppConfig {
   std::optional<int> visual_quality{};
   std::optional<int> bit_depth{};
   std::optional<int> speed{};
+  int jpegli_progressive_level{2};
+  bool jpegli_optimize_huffman{true};
+  bool jpegli_xyb{};
   int max_jobs{default_max_jobs()};
   std::uint64_t memory_limit_bytes{
       encoding_defaults::default_memory_limit_bytes};
@@ -409,6 +416,9 @@ std::optional<OutputFormat> parse_output_format(std::wstring_view value) {
   if (lower == L"jxl") {
     return OutputFormat::jxl;
   }
+  if (lower == L"jpgli" || lower == L"jpegli") {
+    return OutputFormat::jpgli;
+  }
   return std::nullopt;
 }
 
@@ -532,6 +542,10 @@ bool avif_bit_depth_supported(int bit_depth) noexcept {
   return bit_depth == 8 || bit_depth == 10 || bit_depth == 12;
 }
 
+bool jpegli_progressive_level_supported(int level) noexcept {
+  return level >= 0 && level <= 2;
+}
+
 void apply_preset(AppConfig& cfg, Preset preset) {
   cfg.preset = preset;
   switch (preset) {
@@ -635,6 +649,25 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
             "JXL 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
       }
       break;
+    case OutputFormat::jpgli:
+      if (cfg.bit_depth && *cfg.bit_depth != 8) {
+        return std::unexpected{
+            "JPGLI 输出 JPEG 兼容 bitstream，当前仅支持 8-bit 输入写入；请把位深设为 8，或留空。"};
+      }
+      if (!config_detail::jpegli_progressive_level_supported(
+              cfg.jpegli_progressive_level)) {
+        return std::unexpected{
+            "JPGLI progressive level 只支持 0、1、2；0 表示顺序 JPEG。"};
+      }
+      if (cfg.jpegli_progressive_level > 0 && !cfg.jpegli_optimize_huffman) {
+        return std::unexpected{
+            "JPGLI 渐进 JPEG 需要优化哈夫曼表；若要关闭优化，请将渐进设为 0。"};
+      }
+      if (cfg.alpha_policy == AlphaModePolicy::force) {
+        return std::unexpected{
+            "JPGLI 不支持 alpha 输出；请使用 --alpha auto/off，或选择支持透明通道的格式。"};
+      }
+      break;
   }
   if (!visual_quality_weights_are_valid()) {
     return std::unexpected{
@@ -656,6 +689,18 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
   return {};
 }
 
+std::expected<void, std::string> validate_execution_config(
+    const AppConfig& cfg) {
+  if (cfg.output_format == OutputFormat::avif &&
+      cfg.avif_encoder == AvifEncoderMode::svt &&
+      cfg.chroma_mode != ChromaMode::auto_keep &&
+      cfg.chroma_mode != ChromaMode::yuv420) {
+    return std::unexpected{
+        "svt-av1-hdr AVIF encoder only supports 420 chroma；请使用 --chroma 420/auto，或改用 --avif-encoder aom。"};
+  }
+  return {};
+}
+
 std::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
                                                           bool quality_was_set,
                                                           bool preset_was_set) {
@@ -672,8 +717,8 @@ std::string help_text() {
   std::string help = R"(AWJimage C++23
 =======================
 
-默认后端：内置 native（libavif/AOM/zenrav1e/svt-av1-hdr/WebP/JXL）
-默认质量：AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@
+默认后端：内置 native（libavif/AOM/zenrav1e/svt-av1-hdr/WebP/JXL/JPGLI）
+默认质量：AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
 质量范围：q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；AVIF q100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源参数；显式 --avif-encoder svt 的 AVIF q100/visual-quality 100 是非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗
 
 用法:
@@ -682,16 +727,19 @@ std::string help_text() {
 常用选项:
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
-  -f, --format <avif|webp|jxl> 输出格式，默认 avif
-  -q, --quality <1-100>       编码质量，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@；JXL 100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL 100 为编码器无损；AVIF 100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样；显式 --avif-encoder svt 的 AVIF 100 为非像素级无损/最高质量，允许 RGB/YUV 与 420 chroma 转换损耗。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，AVIF 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时直通、其他输入走 AOM 无损；显式 --avif-encoder svt 时为非像素级无损/最高质量；1..99 自动搜索最小体积达标候选
+  -f, --format <avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
+  -q, --quality <1-100>       编码质量，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样；显式 --avif-encoder svt 的 AVIF 100 为非像素级无损/最高质量，允许 RGB/YUV 与 420 chroma 转换损耗。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时直通、其他输入走 AOM 无损；显式 --avif-encoder svt 时为非像素级无损/最高质量；1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用 Direct3D 11 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
   --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选
   --no-visual-quality-fallback visual_quality 搜索未达标时失败（默认）
-  -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片，WebP 固定 @WEBP_BIT_DEPTH@
-  --chroma <auto|444|422|420> AVIF 色度采样；显式 SVT 始终实际传 420，q100/visual-quality 100 也不承诺像素级无损；auto 按源参数和编码器能力选择；也可用 --444 / --422 / --420
+  -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPGLI 输出 JPEG 兼容 8-bit precision
+  --chroma <auto|444|422|420> AVIF/JPGLI 色度采样；AVIF auto 按源参数和编码器能力选择；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
+  --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
+  --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
+  --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
   --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；普通队列 auto 优先 svt-av1-hdr，必要时回退 AOM；超限大图移入 Studio 大图模式
   --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha 通道，auto 删除无效 alpha，off 总是删除 alpha
   --svtav1hdr-crf <0-63>     svt-av1-hdr 专家 CRF；未指定时使用通用 quality，避免默认 quality 与默认 CRF 同时生效
@@ -750,6 +798,7 @@ std::string help_text() {
   AWJ -i "D:\图片" -o Avifoutput -q q90
   AWJ -i input --format webp --template "{name}-{date}"
   AWJ -i input.png -o output.jxl --format jxl -q 90
+  AWJ -i input.png --format jpgli -q 95
   AWJ -i input --visual-quality 92 --summary
   AWJ -i input --chroma 444 --bit-depth 10
 )";
@@ -767,6 +816,8 @@ std::string help_text() {
               std::format("{}", default_quality_for(OutputFormat::webp)));
   replace_all(help, "@JXL_QUALITY@",
               std::format("{}", default_quality_for(OutputFormat::jxl)));
+  replace_all(help, "@JPEGLI_QUALITY@",
+              std::format("{}", default_quality_for(OutputFormat::jpgli)));
   replace_all(help, "@SVTAV1HDR_CRF@",
               std::format("{}", encoding_defaults::default_svtav1hdr_crf));
   replace_all(help, "@SVTAV1HDR_PRESET@",
@@ -843,7 +894,7 @@ std::expected<ParseResult, std::string> parse_arguments(
       const auto format = config_detail::parse_output_format(*value);
       if (!format) {
         return std::unexpected{
-            std::format("输出格式不支持: {}。可选值：avif、webp、jxl。",
+            std::format("输出格式不支持: {}。可选值：avif、webp、jxl、jpgli、jpegli。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.output_format = *format;
@@ -977,6 +1028,69 @@ std::expected<ParseResult, std::string> parse_arguments(
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.chroma_mode = *chroma;
+      continue;
+    }
+
+    if (lower == L"--jpegli-progressive-level" ||
+        lower == L"--jpgli-progressive-level" ||
+        lower == L"--jpegli-progressive_level" ||
+        lower == L"--jpgli-progressive_level") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto level =
+          config_detail::parse_int_range(*value, 0, 2, "jpegli-progressive-level");
+      if (!level) {
+        return std::unexpected{level.error()};
+      }
+      cfg.jpegli_progressive_level = *level;
+      if (cfg.jpegli_progressive_level > 0) {
+        cfg.jpegli_optimize_huffman = true;
+      }
+      continue;
+    }
+
+    if (lower == L"--jpegli-progressive" ||
+        lower == L"--jpgli-progressive") {
+      cfg.jpegli_progressive_level = 2;
+      cfg.jpegli_optimize_huffman = true;
+      continue;
+    }
+
+    if (lower == L"--no-jpegli-progressive" ||
+        lower == L"--no-jpgli-progressive") {
+      cfg.jpegli_progressive_level = 0;
+      continue;
+    }
+
+    if (lower == L"--jpegli-optimize-huffman" ||
+        lower == L"--jpgli-optimize-huffman" ||
+        lower == L"--jpegli-optimize-huffman-table" ||
+        lower == L"--jpgli-optimize-huffman-table") {
+      cfg.jpegli_optimize_huffman = true;
+      continue;
+    }
+
+    if (lower == L"--no-jpegli-optimize-huffman" ||
+        lower == L"--no-jpgli-optimize-huffman" ||
+        lower == L"--jpegli-fixed-huffman" ||
+        lower == L"--jpgli-fixed-huffman" ||
+        lower == L"--jpegli-fixed-code" ||
+        lower == L"--jpgli-fixed-code") {
+      cfg.jpegli_optimize_huffman = false;
+      continue;
+    }
+
+    if (lower == L"--jpegli-xyb" || lower == L"--jpgli-xyb" ||
+        lower == L"--jpegli-xyz" || lower == L"--jpgli-xyz") {
+      cfg.jpegli_xyb = true;
+      continue;
+    }
+
+    if (lower == L"--no-jpegli-xyb" || lower == L"--no-jpgli-xyb" ||
+        lower == L"--no-jpegli-xyz" || lower == L"--no-jpgli-xyz") {
+      cfg.jpegli_xyb = false;
       continue;
     }
 

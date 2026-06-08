@@ -31,6 +31,9 @@ import awj.decoder_common;
 import awj.decoder_registry;
 import awj.encoding_defaults;
 import awj.image;
+#if AWJ_HAS_JPEGLI
+import awj.jpegli_codec;
+#endif
 import awj.jxl_codec;
 import awj.large_image_plan;
 import awj.native_visual_search;
@@ -102,6 +105,12 @@ std::unique_ptr<ImageDecoder> decoder_for_output_format(OutputFormat format, int
       return std::make_unique<WebPImageDecoder>();
     case OutputFormat::jxl:
       return std::make_unique<JXLImageDecoder>(clamped_decode_threads);
+    case OutputFormat::jpgli:
+#if AWJ_HAS_JPEGLI
+      return std::make_unique<JpegliImageDecoder>();
+#else
+      return std::make_unique<UnsupportedDecoder>("jpegli");
+#endif
     case OutputFormat::avif:
       return std::make_unique<AvifImageDecoder>(clamped_decode_threads);
     default:
@@ -116,6 +125,12 @@ std::unique_ptr<ImageEncoder> encoder_for_output_format(OutputFormat format,
       return std::make_unique<WebPImageEncoder>();
     case OutputFormat::jxl:
       return std::make_unique<JXLImageEncoder>();
+    case OutputFormat::jpgli:
+#if AWJ_HAS_JPEGLI
+      return std::make_unique<JpegliImageEncoder>();
+#else
+      return nullptr;
+#endif
     case OutputFormat::avif:
       if (avif_encoder == AvifEncoderMode::zenrav1e) {
         return std::make_unique<ZenravifImageEncoder>();
@@ -1146,6 +1161,9 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
                               .visual_quality_gpu = cfg.visual_quality_gpu,
                               .jxl_jpeg_lossless_candidate = false,
                               .avif_tune_iq = encoding_defaults::default_avif_tune_iq,
+                              .jpegli_progressive_level = cfg.jpegli_progressive_level,
+                              .jpegli_optimize_huffman = cfg.jpegli_optimize_huffman,
+                              .jpegli_xyb = cfg.jpegli_xyb,
                               .svtav1hdr = SvtAv1HdrSettings{.crf = cfg.svtav1hdr_crf,
                                                             .preset = cfg.svtav1hdr_preset.value_or(encoding_defaults::default_svtav1hdr_preset),
                                                             .tune = cfg.svtav1hdr_tune,
@@ -1208,6 +1226,7 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.visual_quality_gpu_used = native.diagnostics.visual_quality_gpu_used;
   result.visual_quality_gpu_path = native.diagnostics.visual_quality_gpu_path;
   result.visual_quality_gpu_fallback_reason = native.diagnostics.visual_quality_gpu_fallback_reason;
+  result.visual_quality_search_trace = native.diagnostics.visual_quality_search_trace;
   result.encoder_experimental = native.diagnostics.encoder_experimental;
   result.encoder_license = native.diagnostics.encoder_license;
   result.integration_mode = native.diagnostics.integration_mode;
@@ -1246,11 +1265,22 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.raw_ms_ssim = native.raw_ms_ssim;
   result.gmsd_weight = GMSD_WEIGHT;
   result.msssim_weight = MSSSIM_WEIGHT;
-  result.command = std::format("native:{}:{} q{} speed={}",
+  const auto format_name = result.output_format.empty() ? std::string{"native"}
+                                                        : result.output_format;
+  result.command = std::format("native:{}:{}:{} q{} speed={}",
+                               format_name,
                                result.decoder_id,
                                native.diagnostics.encoder_id,
                                native.final_quality,
                                native.diagnostics.speed_mapping.user_speed);
+  if (native.diagnostics.encoder_id == "jpegli") {
+    result.command += std::format(" chroma={} bit-depth={} progressive={} huffman={} xyb={}",
+                                  result.applied_chroma.empty() ? "auto" : result.applied_chroma,
+                                  result.applied_bit_depth ? std::format("{}", *result.applied_bit_depth) : std::string{"8"},
+                                  native.diagnostics.jpegli_progressive_level,
+                                  native.diagnostics.jpegli_optimize_huffman ? "optimized" : "fixed",
+                                  native.diagnostics.jpegli_xyb ? "on" : "off");
+  }
 }
 
 void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResult& result);
@@ -1407,6 +1437,7 @@ export class NativeBackend final {
     auto result = EncodeResult{.index = image.index,
                                .input_path = image.path,
                                .output_path = output_path ? *output_path : planned_output_path,
+                               .output_format = output_format_name(cfg_.output_format),
                                .original_bytes = image.bytes,
                                .quality = cfg_.quality,
                                .requested_visual_quality = cfg_.visual_quality,
@@ -1490,7 +1521,7 @@ export class NativeBackend final {
     result.integration_mode = "avif-lossless-passthrough";
     result.encoder_threads = 1;
     result.memory_budget_bytes = resources_.memory_limit_bytes;
-    result.command = "native:avif-passthrough lossless";
+    result.command = "native:AVIF:avif-passthrough lossless";
     const auto finished = std::chrono::steady_clock::now();
     result.seconds = std::chrono::duration<double>(finished - started).count();
     result.processed = true;
@@ -1650,6 +1681,16 @@ export class NativeBackend final {
               : requested_avif_encoder;
       ChromaMode selection_requested_chroma = ChromaMode::auto_keep;
       if (explicit_svt) {
+        if (cfg_.chroma_mode != ChromaMode::auto_keep &&
+            cfg_.chroma_mode != ChromaMode::yuv420) {
+          prepared.settings.requested_chroma_mode = cfg_.chroma_mode;
+          prepared.settings.chroma_mode = ChromaMode::yuv420;
+          prepared.settings.chroma_reason =
+              "显式选择 SVT 但请求了非 420 chroma，已拒绝而不是静默降采样";
+          return prepare_failed(
+              "svt-av1-hdr AVIF encoder only supports 420 chroma；请使用 chroma=420/auto，或改用 AOM。",
+              prepared.settings);
+        }
         selection_requested_chroma = ChromaMode::yuv420;
         if (avif_lossless) {
           prepared.settings.chroma_reason =
@@ -1827,7 +1868,9 @@ export class NativeBackend final {
             cfg_.output_format, selection->applied_encoder);
       }
     } else {
-      if (cfg_.output_format == OutputFormat::jxl || cfg_.output_format == OutputFormat::webp) {
+      if (cfg_.output_format == OutputFormat::jxl ||
+          cfg_.output_format == OutputFormat::webp ||
+          cfg_.output_format == OutputFormat::jpgli) {
         native_backend_detail::populate_source_image_diagnostics(prepared.settings,
                                                                  decoded.image);
         const auto alpha_decision = native_backend_detail::populate_regular_alpha_decision(
@@ -1836,6 +1879,33 @@ export class NativeBackend final {
           return prepare_failed(alpha_decision.error(), prepared.settings);
         }
         native_backend_detail::populate_regular_color_decision(prepared.settings, cfg_);
+        if (cfg_.output_format == OutputFormat::jpgli) {
+          prepared.settings.user_chroma =
+              chroma_mode_name(prepared.settings.requested_chroma_mode);
+          prepared.settings.bit_depth = 8;
+          prepared.settings.bit_depth_reason =
+              cfg_.bit_depth ? "用户明确请求 JPGLI 8-bit 输出"
+                             : "JPGLI 输出 JPEG 兼容 8-bit precision";
+          prepared.settings.chroma_mode =
+              cfg_.chroma_mode == ChromaMode::auto_keep && !cfg_.jpegli_xyb
+                  ? ChromaMode::yuv444
+                  : cfg_.chroma_mode;
+          prepared.settings.chroma_reason =
+              cfg_.chroma_mode == ChromaMode::auto_keep
+                  ? (cfg_.jpegli_xyb ? "XYB 模式使用 Jpegli 默认 RGB/XYB 采样"
+                                     : "JPGLI auto 使用 Jpegli 默认无色度降采样")
+                  : "用户请求 JPGLI chroma";
+          if (cfg_.jpegli_xyb && !cfg_.strip_metadata) {
+            prepared.settings.applied_icc =
+                prepared.settings.source_has_icc ? "stripped-xyb" : "none";
+            prepared.settings.color_metadata_source =
+                prepared.settings.source_has_icc ? "xyb-no-source-icc" : "encoder-default";
+            prepared.settings.color_reason =
+                prepared.settings.source_has_icc
+                    ? "XYB 模式不写入源 ICC，避免源色彩配置与 XYB/RGB 量化模式冲突"
+                    : prepared.settings.color_reason;
+          }
+        }
       }
       prepared.encoder = native_backend_detail::encoder_for_output_format(
           cfg_.output_format, requested_avif_encoder);
@@ -1952,7 +2022,8 @@ export class NativeBackend final {
     native_backend_detail::copy_native_result(encoded, result);
     if (!decoded.decoder_id.empty()) {
       result.decoder_id = decoded.decoder_id;
-      result.command = std::format("native:{}:{} q{} speed={}",
+      result.command = std::format("native:{}:{}:{} q{} speed={}",
+                                   result.output_format,
                                    result.decoder_id,
                                    result.encoder_id,
                                    result.final_encoder_quality,
@@ -2005,6 +2076,13 @@ export class NativeBackend final {
             native_backend_detail::format_timing_share(result.visual_quality_metric_seconds,
                                                       result.visual_quality_search_seconds));
       });
+      if (!result.visual_quality_search_trace.empty()) {
+        native_backend_detail::log_info_noexcept(logger_, [&] {
+          return std::format("native vq trace: item={:04} {}",
+                             result.index + 1,
+                             result.visual_quality_search_trace);
+        });
+      }
     }
     return result;
   }

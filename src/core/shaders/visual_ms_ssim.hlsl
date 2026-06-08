@@ -38,8 +38,9 @@ void main(uint3 group_id : SV_GroupID,
 
   if (dispatch_thread_id.x < width && dispatch_thread_id.y < height) {
     const uint index = dispatch_thread_id.y * width + dispatch_thread_id.x;
+    const uint candidate_index = dispatch_thread_id.z * width * height + index;
     ref_value = reference_luma[index];
-    candidate_value = candidate_luma[index];
+    candidate_value = candidate_luma[candidate_index];
     count = 1.0f;
   }
 
@@ -73,6 +74,7 @@ void main(uint3 group_id : SV_GroupID,
     partial.count = shared_count[0];
     partial.padding0 = 0.0f;
     partial.padding1 = 0.0f;
-    partials[group_id.y * group_count_x + group_id.x] = partial;
+    const uint partials_per_candidate = group_count_x * ((height + 15u) / 16u);
+    partials[group_id.z * partials_per_candidate + group_id.y * group_count_x + group_id.x] = partial;
   }
 }

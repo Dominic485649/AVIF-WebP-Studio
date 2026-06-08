@@ -6,6 +6,7 @@ module;
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 export module awj.visual_quality;
@@ -55,6 +56,24 @@ struct VisualQualityCandidate {
 struct CandidateSelection {
   bool found{};
   VisualQualityCandidate candidate{};
+};
+
+struct VisualQualitySearchProbe {
+  int quality{};
+  std::uintmax_t bytes{};
+  double visual_score{};
+  bool target_met{};
+  std::string decision{};
+};
+
+struct VisualQualitySearchTrace {
+  int requested_visual_quality{};
+  int q_min{};
+  int q_max{};
+  int predicted_quality{};
+  bool fallback_used{};
+  std::string selection_reason{};
+  std::vector<VisualQualitySearchProbe> probes{};
 };
 
 namespace visual_quality_detail {

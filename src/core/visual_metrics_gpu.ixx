@@ -14,6 +14,7 @@ module;
 #include <memory>
 #include <mutex>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -212,6 +213,7 @@ struct GpuSessionState {
   std::vector<std::uint32_t> input_words{};
   bool candidate_luma_ready{};
   bool reference_ms_ssim_ready{};
+  std::size_t candidate_batch_size{1};
 };
 
 struct OneShotMetricState {
@@ -371,6 +373,18 @@ bool should_use_gpu_session(std::size_t width, std::size_t height) noexcept {
 
 bool should_use_gpu_one_shot(std::size_t width, std::size_t height) noexcept {
   return has_minimum_pixel_count(width, height, kMinimumGpuOneShotPixelCount);
+}
+
+std::expected<UINT, std::string> checked_dispatch_batch_size(
+    std::size_t batch_size,
+    std::string_view context) {
+  if (batch_size == 0 ||
+      batch_size > D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION ||
+      batch_size > static_cast<std::size_t>(std::numeric_limits<UINT>::max())) {
+    return std::unexpected{
+        std::format("{} batch size 超过 GPU dispatch 限制。", context)};
+  }
+  return static_cast<UINT>(batch_size);
 }
 
 class MappedSubresourceGuard {
@@ -755,7 +769,144 @@ std::expected<LumaDispatchInfo, std::string> write_luma_buffer(GpuSessionState& 
   gpu.immediate_context->CSSetShaderResources(0, 1, null_srvs);
   gpu.immediate_context->CSSetConstantBuffers(0, 1, null_cbs);
   gpu.immediate_context->CSSetShader(nullptr, nullptr, 0);
+  session.candidate_batch_size = 1;
   return *info;
+}
+
+std::expected<LumaDispatchInfo, std::string> write_luma_buffer_batch(
+    GpuSessionState& session,
+    std::span<const ImageBuffer> images,
+    ReusableStructuredBuffer& output) {
+  if (images.empty()) {
+    return std::unexpected{"Direct3D luma batch 输入为空。"};
+  }
+  const auto batch_size = checked_dispatch_batch_size(images.size(), "Direct3D luma");
+  if (!batch_size) {
+    return std::unexpected{batch_size.error()};
+  }
+
+  auto first_info = describe_luma_dispatch(images.front());
+  if (!first_info) {
+    return std::unexpected{first_info.error()};
+  }
+  for (std::size_t index = 1; index < images.size(); ++index) {
+    auto current = describe_luma_dispatch(images[index]);
+    if (!current) {
+      return std::unexpected{current.error()};
+    }
+    if (current->width != first_info->width ||
+        current->height != first_info->height ||
+        current->stride != first_info->stride ||
+        current->channels != first_info->channels ||
+        current->input_byte_count != first_info->input_byte_count ||
+        current->input_word_count != first_info->input_word_count ||
+        current->pixel_count != first_info->pixel_count) {
+      return std::unexpected{
+          "Direct3D luma batch 只支持尺寸、stride 和像素布局一致的候选。"};
+    }
+  }
+
+  if (first_info->input_word_count >
+          std::numeric_limits<std::size_t>::max() / images.size() ||
+      first_info->pixel_count >
+          std::numeric_limits<std::size_t>::max() / images.size() ||
+      first_info->input_word_count >
+          static_cast<std::size_t>(std::numeric_limits<UINT>::max()) /
+              images.size() ||
+      first_info->pixel_count >
+          static_cast<std::size_t>(std::numeric_limits<UINT>::max()) /
+              images.size()) {
+    return std::unexpected{"Direct3D luma batch buffer 超过 GPU 资源限制。"};
+  }
+  const auto total_input_words = first_info->input_word_count * images.size();
+  const auto total_output_pixels = first_info->pixel_count * images.size();
+
+  auto input_words = resize_uint32_buffer(session.input_words,
+                                          total_input_words,
+                                          "Direct3D luma batch");
+  if (!input_words) {
+    return std::unexpected{input_words.error()};
+  }
+  std::fill(session.input_words.begin(), session.input_words.end(), 0u);
+  for (std::size_t index = 0; index < images.size(); ++index) {
+    const auto& plane = images[index].planes.front();
+    auto* target = session.input_words.data() +
+                   index * first_info->input_word_count;
+    std::memcpy(target, plane.bytes.data(), first_info->input_byte_count);
+  }
+
+  auto& gpu = *session.gpu;
+  auto input_buffer = ensure_structured_buffer(gpu,
+                                               session.luma_input,
+                                               total_input_words,
+                                               sizeof(std::uint32_t),
+                                               D3D11_BIND_SHADER_RESOURCE,
+                                               "Direct3D luma batch 输入");
+  if (!input_buffer) {
+    return std::unexpected{input_buffer.error()};
+  }
+  auto output_buffer = ensure_structured_buffer(gpu,
+                                                output,
+                                                total_output_pixels,
+                                                sizeof(float),
+                                                D3D11_BIND_SHADER_RESOURCE |
+                                                    D3D11_BIND_UNORDERED_ACCESS,
+                                                "Direct3D luma batch 输出");
+  if (!output_buffer) {
+    return std::unexpected{output_buffer.error()};
+  }
+  auto constants_buffer = ensure_constant_buffer(gpu,
+                                                 session.luma_constants,
+                                                 sizeof(LumaConstants),
+                                                 "Direct3D luma batch");
+  if (!constants_buffer) {
+    return std::unexpected{constants_buffer.error()};
+  }
+
+  const LumaConstants constants{.width = first_info->width,
+                                .height = first_info->height,
+                                .stride = first_info->stride,
+                                .channels = first_info->channels};
+  const auto input_byte_count = total_input_words * sizeof(std::uint32_t);
+  const D3D11_BOX input_box{.left = 0,
+                            .top = 0,
+                            .front = 0,
+                            .right = static_cast<UINT>(input_byte_count),
+                            .bottom = 1,
+                            .back = 1};
+  gpu.immediate_context->UpdateSubresource(session.luma_input.buffer.Get(),
+                                           0,
+                                           &input_box,
+                                           session.input_words.data(),
+                                           0,
+                                           0);
+  gpu.immediate_context->UpdateSubresource(session.luma_constants.buffer.Get(),
+                                           0,
+                                           nullptr,
+                                           &constants,
+                                           0,
+                                           0);
+
+  ID3D11ShaderResourceView* shader_resources[]{session.luma_input.srv.Get()};
+  ID3D11UnorderedAccessView* unordered_views[]{output.uav.Get()};
+  ID3D11Buffer* constant_buffers[]{session.luma_constants.buffer.Get()};
+  gpu.immediate_context->CSSetShader(gpu.luma_shader.Get(), nullptr, 0);
+  gpu.immediate_context->CSSetShaderResources(0, 1, shader_resources);
+  gpu.immediate_context->CSSetUnorderedAccessViews(0, 1, unordered_views, nullptr);
+  gpu.immediate_context->CSSetConstantBuffers(0, 1, constant_buffers);
+  gpu.immediate_context->Dispatch(first_info->groups_x,
+                                  first_info->groups_y,
+                                  *batch_size);
+
+  ID3D11UnorderedAccessView* null_uavs[]{nullptr};
+  ID3D11ShaderResourceView* null_srvs[]{nullptr};
+  ID3D11Buffer* null_cbs[]{nullptr};
+  gpu.immediate_context->CSSetUnorderedAccessViews(0, 1, null_uavs, nullptr);
+  gpu.immediate_context->CSSetShaderResources(0, 1, null_srvs);
+  gpu.immediate_context->CSSetConstantBuffers(0, 1, null_cbs);
+  gpu.immediate_context->CSSetShader(nullptr, nullptr, 0);
+  session.candidate_batch_size = images.size();
+  return *first_info;
 }
 
 std::expected<LumaImage, std::string> read_luma_buffer(GpuSessionState& session,
@@ -858,11 +1009,21 @@ std::expected<void, std::string> dispatch_downsample(GpuSessionState& session,
                                                      ReusableStructuredBuffer& output,
                                                      const MetricLevelInfo& source_info,
                                                      const MetricLevelInfo& output_info,
-                                                     std::string_view context) {
+                                                     std::string_view context,
+                                                     std::size_t batch_size = 1) {
+  const auto checked_batch_size = checked_dispatch_batch_size(batch_size, context);
+  if (!checked_batch_size) {
+    return std::unexpected{checked_batch_size.error()};
+  }
+  if (output_info.pixel_count >
+      static_cast<std::size_t>(std::numeric_limits<UINT>::max()) /
+          batch_size) {
+    return std::unexpected{std::format("{} buffer 超过 GPU 资源限制。", context)};
+  }
   auto& gpu = *session.gpu;
   auto output_buffer = ensure_structured_buffer(gpu,
                                                 output,
-                                                output_info.pixel_count,
+                                                output_info.pixel_count * batch_size,
                                                 sizeof(float),
                                                 D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
                                                 context);
@@ -889,7 +1050,9 @@ std::expected<void, std::string> dispatch_downsample(GpuSessionState& session,
   gpu.immediate_context->CSSetShaderResources(0, 1, shader_resources);
   gpu.immediate_context->CSSetUnorderedAccessViews(0, 1, unordered_views, nullptr);
   gpu.immediate_context->CSSetConstantBuffers(0, 1, constant_buffers);
-  gpu.immediate_context->Dispatch(output_info.groups_x, output_info.groups_y, 1);
+  gpu.immediate_context->Dispatch(output_info.groups_x,
+                                  output_info.groups_y,
+                                  *checked_batch_size);
 
   ID3D11UnorderedAccessView* null_uavs[]{nullptr};
   ID3D11ShaderResourceView* null_srvs[]{nullptr};
@@ -901,7 +1064,9 @@ std::expected<void, std::string> dispatch_downsample(GpuSessionState& session,
   return {};
 }
 
-std::expected<void, std::string> build_ms_ssim_levels(GpuSessionState& session, bool reference) {
+std::expected<void, std::string> build_ms_ssim_levels(GpuSessionState& session,
+                                                      bool reference,
+                                                      std::size_t batch_size = 1) {
   auto level0 = make_metric_level_info(session.width, session.height, "MS-SSIM");
   if (!level0) {
     return std::unexpected{level0.error()};
@@ -926,7 +1091,8 @@ std::expected<void, std::string> build_ms_ssim_levels(GpuSessionState& session, 
                                             previous,
                                             *next,
                                             reference ? "Direct3D MS-SSIM reference downsample"
-                                                      : "Direct3D MS-SSIM candidate downsample");
+                                                      : "Direct3D MS-SSIM candidate downsample",
+                                            reference ? 1 : batch_size);
       if (!downsample) {
         return std::unexpected{downsample.error()};
       }
@@ -974,13 +1140,24 @@ std::expected<std::size_t, std::string> ssim_partial_count_for_level(const Metri
 
 std::expected<std::size_t, std::string> dispatch_ssim_level_session(GpuSessionState& session,
                                                                     std::size_t level,
-                                                                    std::size_t readback_byte_offset) {
+                                                                    std::size_t readback_byte_offset,
+                                                                    std::size_t batch_size = 1) {
   const auto& level_info = session.ms_ssim_levels[level];
+  const auto checked_batch_size = checked_dispatch_batch_size(batch_size, "Direct3D MS-SSIM");
+  if (!checked_batch_size) {
+    return std::unexpected{checked_batch_size.error()};
+  }
   auto partial_count = ssim_partial_count_for_level(level_info);
   if (!partial_count) {
     return std::unexpected{partial_count.error()};
   }
-  const std::size_t byte_count = *partial_count * sizeof(SsimPartial);
+  if (*partial_count >
+      static_cast<std::size_t>(std::numeric_limits<UINT>::max()) /
+          batch_size / sizeof(SsimPartial)) {
+    return std::unexpected{"Direct3D MS-SSIM partial buffer 超过 GPU 资源限制。"};
+  }
+  const std::size_t total_partial_count = *partial_count * batch_size;
+  const std::size_t byte_count = total_partial_count * sizeof(SsimPartial);
   if (!session.ssim_readback.buffer ||
       readback_byte_offset > static_cast<std::size_t>(std::numeric_limits<UINT>::max()) ||
       byte_count > static_cast<std::size_t>(std::numeric_limits<UINT>::max()) - readback_byte_offset) {
@@ -990,7 +1167,7 @@ std::expected<std::size_t, std::string> dispatch_ssim_level_session(GpuSessionSt
   auto& gpu = *session.gpu;
   auto partial_buffer = ensure_structured_buffer(gpu,
                                                  session.ssim_partial,
-                                                 *partial_count,
+                                                 total_partial_count,
                                                  sizeof(SsimPartial),
                                                  D3D11_BIND_UNORDERED_ACCESS,
                                                  "Direct3D MS-SSIM partial");
@@ -1006,7 +1183,7 @@ std::expected<std::size_t, std::string> dispatch_ssim_level_session(GpuSessionSt
   const SsimConstants constants{.width = level_info.width,
                                 .height = level_info.height,
                                 .group_count_x = level_info.groups_x,
-                                .reserved0 = 0};
+                                .reserved0 = static_cast<std::uint32_t>(batch_size)};
   gpu.immediate_context->UpdateSubresource(session.ssim_constants.buffer.Get(), 0, nullptr,
                                            &constants, 0, 0);
 
@@ -1018,7 +1195,9 @@ std::expected<std::size_t, std::string> dispatch_ssim_level_session(GpuSessionSt
   gpu.immediate_context->CSSetShaderResources(0, 2, shader_resources);
   gpu.immediate_context->CSSetUnorderedAccessViews(0, 1, unordered_views, nullptr);
   gpu.immediate_context->CSSetConstantBuffers(0, 1, constant_buffers);
-  gpu.immediate_context->Dispatch(level_info.groups_x, level_info.groups_y, 1);
+  gpu.immediate_context->Dispatch(level_info.groups_x,
+                                  level_info.groups_y,
+                                  *checked_batch_size);
 
   ID3D11UnorderedAccessView* null_uavs[]{nullptr};
   ID3D11ShaderResourceView* null_srvs[]{nullptr, nullptr};
@@ -1128,6 +1307,280 @@ std::expected<double, std::string> compute_ms_ssim_session(GpuSessionState& sess
   }
   return std::clamp(value, 0.0, 1.0);
 }
+
+std::expected<std::vector<double>, std::string> compute_ms_ssim_session_batch(
+    GpuSessionState& session,
+    std::size_t batch_size) {
+  if (!session.reference_luma.srv || !session.candidate_luma.srv || !session.candidate_luma_ready) {
+    return std::unexpected{"Direct3D MS-SSIM 输入为空。"};
+  }
+  const auto checked_batch_size = checked_dispatch_batch_size(batch_size, "Direct3D MS-SSIM");
+  if (!checked_batch_size) {
+    return std::unexpected{checked_batch_size.error()};
+  }
+  if (!session.reference_ms_ssim_ready) {
+    auto reference_levels = build_ms_ssim_levels(session, true);
+    if (!reference_levels) {
+      return std::unexpected{reference_levels.error()};
+    }
+    session.reference_ms_ssim_ready = true;
+  }
+  auto candidate_levels = build_ms_ssim_levels(session, false, batch_size);
+  if (!candidate_levels) {
+    return std::unexpected{candidate_levels.error()};
+  }
+
+  std::array<std::size_t, kMsSsimWeights.size()> partial_offsets{};
+  std::array<std::size_t, kMsSsimWeights.size()> partial_counts{};
+  std::size_t total_partial_count = 0;
+  for (std::size_t level = 0; level < kMsSsimWeights.size(); ++level) {
+    auto partial_count = ssim_partial_count_for_level(session.ms_ssim_levels[level]);
+    if (!partial_count) {
+      return std::unexpected{partial_count.error()};
+    }
+    if (*partial_count >
+        std::numeric_limits<std::size_t>::max() / batch_size) {
+      return std::unexpected{"Direct3D MS-SSIM 回读 buffer 超过 GPU 资源限制。"};
+    }
+    const auto level_total = *partial_count * batch_size;
+    partial_offsets[level] = total_partial_count;
+    partial_counts[level] = *partial_count;
+    if (total_partial_count >
+        std::numeric_limits<std::size_t>::max() - level_total) {
+      return std::unexpected{"Direct3D MS-SSIM 回读 buffer 超过 GPU 资源限制。"};
+    }
+    total_partial_count += level_total;
+  }
+  if (total_partial_count == 0 ||
+      total_partial_count >
+          static_cast<std::size_t>(std::numeric_limits<UINT>::max()) /
+              sizeof(SsimPartial)) {
+    return std::unexpected{"Direct3D MS-SSIM 回读 buffer 超过 GPU 资源限制。"};
+  }
+
+  auto& gpu = *session.gpu;
+  auto readback = ensure_readback_buffer(gpu,
+                                         session.ssim_readback,
+                                         total_partial_count * sizeof(SsimPartial),
+                                         "Direct3D MS-SSIM");
+  if (!readback) {
+    return std::unexpected{readback.error()};
+  }
+
+  for (std::size_t level = 0; level < kMsSsimWeights.size(); ++level) {
+    auto dispatched = dispatch_ssim_level_session(
+        session,
+        level,
+        partial_offsets[level] * sizeof(SsimPartial),
+        batch_size);
+    if (!dispatched) {
+      return std::unexpected{dispatched.error()};
+    }
+  }
+
+  D3D11_MAPPED_SUBRESOURCE mapped{};
+  const HRESULT map_result = gpu.immediate_context->Map(session.ssim_readback.buffer.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+  if (FAILED(map_result)) {
+    return std::unexpected{format_hresult("Direct3D MS-SSIM 回读失败", map_result)};
+  }
+
+  const MappedSubresourceGuard map_guard{gpu.immediate_context.Get(),
+                                         session.ssim_readback.buffer.Get()};
+  const auto* partials = static_cast<const SsimPartial*>(mapped.pData);
+
+  std::vector<double> values;
+  try {
+    values.assign(batch_size, 1.0);
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"Direct3D MS-SSIM batch 结果内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"Direct3D MS-SSIM batch 结果数量超过运行时限制。"};
+  }
+
+  for (std::size_t candidate_index = 0; candidate_index < batch_size; ++candidate_index) {
+    double value = 1.0;
+    for (std::size_t level = 0; level < kMsSsimWeights.size(); ++level) {
+      double sum_ref = 0.0;
+      double sum_candidate = 0.0;
+      double sum_ref_sq = 0.0;
+      double sum_candidate_sq = 0.0;
+      double sum_cross = 0.0;
+      double count = 0.0;
+      const auto base = partial_offsets[level] +
+                        candidate_index * partial_counts[level];
+      for (std::size_t index = 0; index < partial_counts[level]; ++index) {
+        const auto& partial = partials[base + index];
+        sum_ref += static_cast<double>(partial.sum_ref);
+        sum_candidate += static_cast<double>(partial.sum_candidate);
+        sum_ref_sq += static_cast<double>(partial.sum_ref_sq);
+        sum_candidate_sq += static_cast<double>(partial.sum_candidate_sq);
+        sum_cross += static_cast<double>(partial.sum_cross);
+        count += static_cast<double>(partial.count);
+      }
+      const double ssim = ssim_from_partials(sum_ref,
+                                             sum_candidate,
+                                             sum_ref_sq,
+                                             sum_candidate_sq,
+                                             sum_cross,
+                                             count);
+      value *= std::pow(std::clamp(ssim, 1e-9, 1.0), kMsSsimWeights[level]);
+    }
+    values[candidate_index] = std::clamp(value, 0.0, 1.0);
+  }
+  return values;
+}
+
+std::expected<std::vector<double>, std::string> compute_gmsd_session_batch(
+    GpuSessionState& session,
+    std::size_t batch_size) {
+  if (!session.reference_luma.srv || !session.candidate_luma.srv ||
+      session.width == 0 || session.height == 0 || !session.candidate_luma_ready) {
+    return std::unexpected{"Direct3D GMSD 输入为空。"};
+  }
+  const auto checked_batch_size = checked_dispatch_batch_size(batch_size, "Direct3D GMSD");
+  if (!checked_batch_size) {
+    return std::unexpected{checked_batch_size.error()};
+  }
+  if (session.width > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
+      session.height > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
+      session.width > std::numeric_limits<std::size_t>::max() / session.height) {
+    return std::unexpected{"Direct3D GMSD 输入尺寸超过 GPU 资源限制。"};
+  }
+
+  const std::size_t pixel_count = session.width * session.height;
+  if (pixel_count == 0 ||
+      pixel_count > static_cast<std::size_t>(std::numeric_limits<UINT>::max()) / sizeof(float)) {
+    return std::unexpected{"Direct3D GMSD 输入 buffer 超过 GPU 资源限制。"};
+  }
+
+  const std::uint32_t width = static_cast<std::uint32_t>(session.width);
+  const std::uint32_t height = static_cast<std::uint32_t>(session.height);
+  const std::uint32_t groups_x = dispatch_group_count(width);
+  const std::uint32_t groups_y = dispatch_group_count(height);
+  if (groups_x > D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION ||
+      groups_y > D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION ||
+      groups_y > std::numeric_limits<std::uint32_t>::max() / groups_x) {
+    return std::unexpected{"Direct3D GMSD dispatch 尺寸超过 GPU 资源限制。"};
+  }
+
+  const std::size_t partial_count = static_cast<std::size_t>(groups_x) * groups_y;
+  if (partial_count == 0 ||
+      partial_count >
+          static_cast<std::size_t>(std::numeric_limits<UINT>::max()) /
+              batch_size / sizeof(GmsdPartial)) {
+    return std::unexpected{"Direct3D GMSD partial buffer 超过 GPU 资源限制。"};
+  }
+  const auto total_partial_count = partial_count * batch_size;
+
+  auto& gpu = *session.gpu;
+  auto partial_buffer = ensure_structured_buffer(gpu,
+                                                 session.gmsd_partial,
+                                                 total_partial_count,
+                                                 sizeof(GmsdPartial),
+                                                 D3D11_BIND_UNORDERED_ACCESS,
+                                                 "Direct3D GMSD partial");
+  if (!partial_buffer) {
+    return std::unexpected{partial_buffer.error()};
+  }
+  const auto readback_byte_count = total_partial_count * sizeof(GmsdPartial);
+  auto readback = ensure_readback_buffer(gpu,
+                                         session.gmsd_readback,
+                                         readback_byte_count,
+                                         "Direct3D GMSD");
+  if (!readback) {
+    return std::unexpected{readback.error()};
+  }
+  auto constants_buffer = ensure_constant_buffer(gpu,
+                                                 session.gmsd_constants,
+                                                 sizeof(GmsdConstants),
+                                                 "Direct3D GMSD");
+  if (!constants_buffer) {
+    return std::unexpected{constants_buffer.error()};
+  }
+
+  const GmsdConstants constants{.width = width,
+                                .height = height,
+                                .group_count_x = groups_x,
+                                .reserved0 = static_cast<std::uint32_t>(batch_size)};
+  gpu.immediate_context->UpdateSubresource(session.gmsd_constants.buffer.Get(),
+                                           0,
+                                           nullptr,
+                                           &constants,
+                                           0,
+                                           0);
+
+  ID3D11ShaderResourceView* shader_resources[]{session.reference_luma.srv.Get(),
+                                               session.candidate_luma.srv.Get()};
+  ID3D11UnorderedAccessView* unordered_views[]{session.gmsd_partial.uav.Get()};
+  ID3D11Buffer* constant_buffers[]{session.gmsd_constants.buffer.Get()};
+  gpu.immediate_context->CSSetShader(gpu.gmsd_shader.Get(), nullptr, 0);
+  gpu.immediate_context->CSSetShaderResources(0, 2, shader_resources);
+  gpu.immediate_context->CSSetUnorderedAccessViews(0, 1, unordered_views, nullptr);
+  gpu.immediate_context->CSSetConstantBuffers(0, 1, constant_buffers);
+  gpu.immediate_context->Dispatch(groups_x, groups_y, *checked_batch_size);
+
+  ID3D11UnorderedAccessView* null_uavs[]{nullptr};
+  ID3D11ShaderResourceView* null_srvs[]{nullptr, nullptr};
+  ID3D11Buffer* null_cbs[]{nullptr};
+  gpu.immediate_context->CSSetUnorderedAccessViews(0, 1, null_uavs, nullptr);
+  gpu.immediate_context->CSSetShaderResources(0, 2, null_srvs);
+  gpu.immediate_context->CSSetConstantBuffers(0, 1, null_cbs);
+  gpu.immediate_context->CSSetShader(nullptr, nullptr, 0);
+
+  const D3D11_BOX source_box{.left = 0,
+                             .top = 0,
+                             .front = 0,
+                             .right = static_cast<UINT>(readback_byte_count),
+                             .bottom = 1,
+                             .back = 1};
+  gpu.immediate_context->CopySubresourceRegion(session.gmsd_readback.buffer.Get(),
+                                               0,
+                                               0,
+                                               0,
+                                               0,
+                                               session.gmsd_partial.buffer.Get(),
+                                               0,
+                                               &source_box);
+
+  D3D11_MAPPED_SUBRESOURCE mapped{};
+  const HRESULT map_result = gpu.immediate_context->Map(session.gmsd_readback.buffer.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+  if (FAILED(map_result)) {
+    return std::unexpected{format_hresult("Direct3D GMSD 回读失败", map_result)};
+  }
+
+  const MappedSubresourceGuard map_guard{gpu.immediate_context.Get(),
+                                         session.gmsd_readback.buffer.Get()};
+  const auto* partials = static_cast<const GmsdPartial*>(mapped.pData);
+
+  std::vector<double> values;
+  try {
+    values.resize(batch_size);
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"Direct3D GMSD batch 结果内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"Direct3D GMSD batch 结果数量超过运行时限制。"};
+  }
+  for (std::size_t candidate_index = 0; candidate_index < batch_size; ++candidate_index) {
+    double sum = 0.0;
+    double sum_sq = 0.0;
+    double count = 0.0;
+    const auto base = candidate_index * partial_count;
+    for (std::size_t index = 0; index < partial_count; ++index) {
+      const auto& partial = partials[base + index];
+      sum += static_cast<double>(partial.sum);
+      sum_sq += static_cast<double>(partial.sum_sq);
+      count += static_cast<double>(partial.count);
+    }
+    if (count <= 0.0) {
+      return std::unexpected{"Direct3D GMSD 输入为空。"};
+    }
+    const double mean = sum / count;
+    const double variance = std::max(0.0, sum_sq / count - mean * mean);
+    values[candidate_index] = std::sqrt(variance);
+  }
+  return values;
+}
+
 std::expected<double, std::string> compute_gmsd_session(GpuSessionState& session) {
   if (!session.reference_luma.srv || !session.candidate_luma.srv ||
       session.width == 0 || session.height == 0 || !session.candidate_luma_ready) {
@@ -1525,6 +1978,94 @@ class AcceleratedVisualMetricSession {
       return std::unexpected{ms_ssim.error()};
     }
     return make_visual_metric_result(*gmsd, *ms_ssim);
+  }
+
+  std::expected<std::vector<VisualMetricResult>, std::string>
+  calculate_candidate_metrics_batch(
+      std::span<const ImageBuffer> candidate_images,
+      AcceleratedVisualMetricTiming* timing = nullptr) {
+    if (candidate_images.empty()) {
+      return std::unexpected{"Direct3D visual metric batch 输入为空。"};
+    }
+    if (state_ == nullptr) {
+      return std::unexpected{"Direct3D visual metric session 不可用。"};
+    }
+    if (candidate_images.size() == 1) {
+      auto single = calculate_candidate_metrics(candidate_images.front(), timing);
+      if (!single) {
+        return std::unexpected{single.error()};
+      }
+      std::vector<VisualMetricResult> results;
+      try {
+        results.push_back(*single);
+      } catch (const std::bad_alloc&) {
+        return std::unexpected{"Direct3D visual metric batch 结果内存不足。"};
+      } catch (const std::length_error&) {
+        return std::unexpected{"Direct3D visual metric batch 结果数量超过运行时限制。"};
+      }
+      return results;
+    }
+
+    auto& state = *static_cast<visual_metrics_gpu_detail::GpuSessionState*>(state_.get());
+    std::lock_guard lock{state.gpu->mutex};
+    state.candidate_luma_ready = false;
+    for (const auto& image : candidate_images) {
+      if (image.width != state.width || image.height != state.height) {
+        return std::unexpected{"Direct3D metric batch 输入尺寸不一致。"};
+      }
+    }
+
+    auto started = visual_metrics_gpu_detail::Clock::now();
+    auto info = visual_metrics_gpu_detail::write_luma_buffer_batch(
+        state,
+        candidate_images,
+        state.candidate_luma);
+    if (timing != nullptr) {
+      timing->luma_seconds += visual_metrics_gpu_detail::elapsed_seconds(started);
+    }
+    if (!info) {
+      return std::unexpected{info.error()};
+    }
+    state.candidate_luma_ready = true;
+
+    started = visual_metrics_gpu_detail::Clock::now();
+    auto gmsd = visual_metrics_gpu_detail::compute_gmsd_session_batch(
+        state,
+        candidate_images.size());
+    if (timing != nullptr) {
+      timing->gmsd_seconds += visual_metrics_gpu_detail::elapsed_seconds(started);
+    }
+    if (!gmsd) {
+      return std::unexpected{gmsd.error()};
+    }
+
+    started = visual_metrics_gpu_detail::Clock::now();
+    auto ms_ssim = visual_metrics_gpu_detail::compute_ms_ssim_session_batch(
+        state,
+        candidate_images.size());
+    if (timing != nullptr) {
+      timing->ms_ssim_seconds += visual_metrics_gpu_detail::elapsed_seconds(started);
+    }
+    if (!ms_ssim) {
+      return std::unexpected{ms_ssim.error()};
+    }
+    if (gmsd->size() != candidate_images.size() ||
+        ms_ssim->size() != candidate_images.size()) {
+      return std::unexpected{"Direct3D visual metric batch 结果数量不一致。"};
+    }
+
+    std::vector<VisualMetricResult> results;
+    try {
+      results.reserve(candidate_images.size());
+      for (std::size_t index = 0; index < candidate_images.size(); ++index) {
+        results.push_back(make_visual_metric_result((*gmsd)[index], (*ms_ssim)[index]));
+      }
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"Direct3D visual metric batch 结果内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"Direct3D visual metric batch 结果数量超过运行时限制。"};
+    }
+    return results;
   }
 
  private:

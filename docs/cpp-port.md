@@ -11,7 +11,8 @@
 - AVIF：libavif/AOM；libavif SVT backend；实验 `zenrav1e` 通过静态 Rust bridge 显式启用。
 - WebP：libwebp。
 - JXL：libjxl。
-- PNG/JPEG/TIFF/GIF/WIC/RAW：作为输入解码路径参与批处理和 metadata 透传。
+- JPGLI：google/jpegli，提供 Jpegli 编码器与解码器；输出为 JPEG 兼容 bitstream，默认扩展名为 `.jpg`，用户可见格式和诊断显示为 `JPGLI` / `jpegli`。
+- PNG/JPEG/TIFF/GIF/WIC/RAW：作为输入解码路径参与批处理和 metadata 透传；JPEG 兼容输入优先尝试 Jpegli decoder，失败后按现有策略回退 libjpeg-turbo/WIC。
 
 Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方向，不应恢复为默认内部后端或随 Release 输出携带。
 
@@ -31,16 +32,18 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - 批量扫描文件或目录，支持 `jpg/jpeg/png/webp/bmp/dib/rle/tif/tiff/gif/jxl/avif/awsraw`、常见 RAW 扩展以及 `heic/heif/jxr/wdp/hdp`。
 - 输出名模板 `{name}` / `{index}` / `{ext}` / `{date}` / `{time}` / `{datetime}` / `{unix}` / `{rand}` / `{hash}` / `{hash8}` / `{params}`，CLI 默认 `{name}`。
 - 输入为文件夹时保留原始子文件夹结构。
-- 输出格式可选 AVIF、WebP 或 JXL。
+- 输出格式可选 AVIF、WebP、JXL 或 JPGLI。
 - `fast` / `balanced` / `best` / `extreme` 预设。
-- AVIF 默认 q90、WebP/JXL 默认 q95，仍支持 `q90` 风格质量参数。
-- 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；AVIF auto/q100 走直通或 AOM 严格无损，显式 SVT q100/visual-quality 100 为非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗。
+- AVIF 默认 q90、WebP/JXL/JPGLI 默认 q95，仍支持 `q90` 风格质量参数。
+- 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF auto/q100 走直通或 AOM 严格无损，显式 SVT q100/visual-quality 100 为非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗。
 - AVIF 采样支持 `auto/444/422/420`，位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`；显式 SVT 始终实际使用 420 chroma，且只支持 8/10-bit。
 - JXL 不支持手动 chroma sampling，位深留空保持原片，可通过 native libjxl effort/speed 控制压缩成本。
 - WebP 固定 8-bit；有损 WebP 为 Y'CbCr 4:2:0，无损 WebP 为 ARGB。
+- JPGLI 固定 8-bit RGB JPEG 兼容输出，不提供手动 chroma/alpha 输出入口；ICC、EXIF、XMP 按现有保留/剥离规则处理。
 - 并行处理，处理时优先调度大文件。
 - 重名输出支持覆盖、跳过、追加时间后缀、追加随机后缀。
 - 日志与 `summary.csv` 可选生成。
+- JPGLI 输出文件默认 `.jpg`；`summary.csv` 明确记录 `format=JPGLI`、`encoder_id=jpegli`，避免把它误读为普通 JPG 输出入口。
 - 单张失败继续处理后续图片。
 
 ## 新增内容
@@ -50,6 +53,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - UI 支持跟随 Windows 应用主题，也可以手动切换浅色/深色。
 - `run_batch(config, progress_callback, stop_token)` 批处理服务，CLI/UI 共用。
 - 大图模式、视觉质量搜索、AVIF encoder registry、资源规划和 Direct3D 11 GPU 视觉指标路径。
+- JPGLI/Jpegli native codec、JPEG 兼容输入的 Jpegli-first decoder registry 和 summary 格式诊断列。
 - visual_quality shader 在 CMake 构建期由 Windows SDK `fxc.exe` 预编译并内嵌 bytecode；Release 不需要最终用户运行时编译 shader，也不携带 `.cso` sidecar。
 - 批量编码时只降低转换工作线程 CPU 优先级，避免 UI/CLI 启动阶段在高负载下被系统调度饿住。
 - Release 默认保留 `/O2`、函数级裁剪、常量合并、链接器裁剪和 x64-v3/AVX2 代码生成；`.\release.ps1 -EnableLto` 可显式启用 IPO/LTO，但默认关闭以优先保证静态依赖组合的运行稳定性。
@@ -65,7 +69,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 ## 简化的部分
 
 - 移除了内置 ImageMagick/MagickWand 和 ffmpeg/ffprobe 后端；当前质量搜索以 native 视觉质量评分为主。
-- 质量参数改为各 native encoder 的质量入口，AVIF/WebP/JXL 由统一配置再映射到具体库。
+- 质量参数改为各 native encoder 的质量入口，AVIF/WebP/JXL/JPGLI 由统一配置再映射到具体库。
 - 不再默认缩放到固定长边，避免用户误以为编码质量差其实是分辨率被改动。
 - 不再提交 Scoop/ImageMagick 二进制，仓库只保留外部集成所需的说明和历史脚本。
 - Slint 默认静态链接，减少 UI 分发时 DLL 数量。
@@ -75,7 +79,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - `awj.config`：参数结构、预设、帮助文本、命令行解析。数值解析使用 vcpkg 的 `scnlib`。
 - `awj.core`：UTF-8/宽字符转换、图片扫描、输出路径规划、日志、CSV 和少量 Win32 工具。
 - `awj.image` / `awj.codec`：共享图像缓冲、metadata、codec capability 和 encode/decode 数据结构。
-- `awj.decoder_registry` / `awj.*_codec`：native 格式解码、编码与 metadata 透传。
+- `awj.decoder_registry` / `awj.*_codec`：native 格式解码、编码与 metadata 透传；`awj.jpegli_codec` 负责 JPGLI/Jpegli encode/decode 与 JPEG 兼容 metadata marker 处理。
 - `awj.avif_registry`：AVIF encoder 能力注册与选择策略。
 - `awj.native_backend`：native decoder/encoder 调度、SVT/libavif/zenrav1e 静态集成、临时文件和输出写入边界。
 - `awj.pipeline`：多线程调度、进度事件和汇总。

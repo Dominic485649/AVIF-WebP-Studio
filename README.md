@@ -5,6 +5,7 @@ AWJimage 是一个 Windows C++23 / Slint 批量图片转换工具。当前内置
 - AVIF：libavif/AOM；实验 `zenrav1e` 静态链接进主程序但仍需显式启用；`svt-av1-hdr` 通过 libavif SVT backend 静态链接进主程序
 - WebP：libwebp
 - JXL：libjxl
+- JPGLI：google/jpegli；使用 Jpegli 生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
 
 内置 ImageMagick/MagickWand 后端已经移除，Release 输出不再携带 ImageMagick XML、许可文件或模块目录。Magick 与 ffmpeg 以后只能作为外部集成重新引入；当前版本不处理该环节。
 
@@ -32,6 +33,8 @@ cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 
 `svt-av1-hdr` 已作为源码依赖构建并静态链接进主程序，Release 不需要 `SvtAv1EncApp.exe`、DLL 或其他 SVT sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
+`AWJ_ENABLE_JPEGLI` 默认开启，CMake 会拉取 google/jpegli 并静态链接 `jpegli-static`。JPGLI 没有独立容器格式，AWJ 的 UI、CLI、summary 和日志统一显示 `JPGLI` / `jpegli`，但输出文件扩展名默认保持 `.jpg`，以兼容系统缩略图和常见图片查看器。
+
 构建 visual_quality GPU 指标路径时，CMake 会调用 Windows SDK 的 `fxc.exe` 预编译 Direct3D 11 compute shader，并把 bytecode 内嵌进程序。构建机需要安装 Windows SDK；最终用户运行 Release 不需要 `fxc.exe`、`d3dcompiler` 或 `.cso` sidecar。
 
 ## visual_quality GPU 指标路径
@@ -48,11 +51,16 @@ GPU 不可用、小图低于收益阈值、资源超限或 GPU readback/shader �
 AWJ -i "D:\图片" -o Avifoutput --format avif -q q90
 AWJ -i input.png --format webp --template "{name}-{date}"
 AWJ -i input.png -o output.jxl --format jxl -q 90
+AWJ -i input.png --format jpgli -q 95 --summary
 AWJ -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
 AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 ```
 
 `zenrav1e` 是实验编码器：必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`。默认 `auto` 不会选择实验编码器。
+
+`--format jpgli` 和 `--format jpegli` 是 JPGLI 入口；`--format jpg` 不作为新增入口。启用 `--summary` 后，`summary.csv` 会记录 `format=JPGLI`、`encoder_id=jpegli`，输出路径仍通常是 `.jpg`。
+
+Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片。
 
 ## 测试
 

@@ -16,6 +16,7 @@ module;
 export module awj.decoder_registry;
 
 import awj.avif_aom_codec;
+import awj.bmp_codec;
 import awj.codec;
 import awj.config;
 import awj.core;
@@ -23,6 +24,10 @@ import awj.gif_codec;
 import awj.image;
 import awj.large_image_plan;
 import awj.jpeg_codec;
+#if AWJ_HAS_JPEGLI
+import awj.jpegli_codec;
+#endif
+import awj.jxr_codec;
 import awj.jxl_codec;
 import awj.libraw_codec;
 import awj.png_codec;
@@ -75,16 +80,29 @@ bool try_select_wic_fallback(const fs::path& path,
 
 std::string fallback_error(std::string_view primary_context,
                            const std::string& primary_error,
+                           std::string_view fallback_context,
                            const std::string& fallback_error) {
-  return std::format("{}: {}；WIC 兜底失败: {}",
+  return std::format("{}: {}；{}失败: {}",
                      primary_context,
                      primary_error,
+                     fallback_context,
                      fallback_error);
 }
 
 bool is_unsupported_multi_image_error(std::string_view error) noexcept {
   return error.starts_with("暂不支持动画 ") || error.starts_with("暂不支持多图 ") ||
          error.starts_with("暂不支持多帧 ") || error.starts_with("暂不支持多页 ");
+}
+
+bool selected_jpegli_decoder(const DecoderSelection& selection) noexcept {
+  return selection.decoder != nullptr && selection.decoder->id() == "jpegli";
+}
+
+std::string with_jpeg_turbo_fallback_error(std::string primary_error,
+                                           const std::string& fallback_error) {
+  return std::format("{}；libjpeg-turbo 回退失败: {}",
+                     std::move(primary_error),
+                     fallback_error);
 }
 
 }  // namespace decoder_registry_detail
@@ -99,7 +117,12 @@ export std::expected<DecoderSelection, std::string> select_decoder_for_path(
         decoder_registry_detail::try_select<JXLImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<AvifImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<PngImageDecoder>(path, selection, decode_threads) ||
+        decoder_registry_detail::try_select<BmpImageDecoder>(path, selection, decode_threads) ||
+#if AWJ_HAS_JPEGLI
+        decoder_registry_detail::try_select<JpegliImageDecoder>(path, selection, decode_threads) ||
+#endif
         decoder_registry_detail::try_select<JpegImageDecoder>(path, selection, decode_threads) ||
+        decoder_registry_detail::try_select<JxrImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<GifImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<TiffImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<RawImageDecoder>(path, selection, decode_threads) ||
@@ -149,16 +172,33 @@ export std::expected<ImageDecodeResult, std::string> decode_image_for_path(
       return std::unexpected{decoded.error()};
     }
 
+    auto primary_error = decoded.error();
+    if (decoder_registry_detail::selected_jpegli_decoder(*selected)) {
+      DecoderSelection jpeg_turbo{};
+      const auto decode_threads = std::max(1, options.decode_threads);
+      if (decoder_registry_detail::try_select<JpegImageDecoder>(path,
+                                                                jpeg_turbo,
+                                                                decode_threads)) {
+        auto jpeg_turbo_decoded = jpeg_turbo.decoder->decode(path);
+        if (jpeg_turbo_decoded) {
+          jpeg_turbo_decoded->used_fallback = true;
+          return jpeg_turbo_decoded;
+        }
+        primary_error = decoder_registry_detail::with_jpeg_turbo_fallback_error(
+            std::move(primary_error), jpeg_turbo_decoded.error());
+      }
+    }
+
     DecoderSelection fallback{};
     const auto decode_threads = std::max(1, options.decode_threads);
     if (!decoder_registry_detail::try_select_wic_fallback(path, fallback, decode_threads)) {
-      return std::unexpected{decoded.error()};
+      return std::unexpected{primary_error};
     }
 
     auto fallback_decoded = fallback.decoder->decode(path);
     if (!fallback_decoded) {
       return std::unexpected{decoder_registry_detail::fallback_error(
-          "原生解码失败", decoded.error(), fallback_decoded.error())};
+          "原生解码失败", primary_error, "WIC 兜底", fallback_decoded.error())};
     }
     fallback_decoded->used_fallback = true;
     return fallback_decoded;
@@ -193,16 +233,32 @@ export std::expected<ImageDimensions, std::string> probe_image_dimensions_for_pa
       return std::unexpected{dimensions.error()};
     }
 
+    auto primary_error = dimensions.error();
+    if (decoder_registry_detail::selected_jpegli_decoder(*selected)) {
+      DecoderSelection jpeg_turbo{};
+      const auto decode_threads = std::max(1, options.decode_threads);
+      if (decoder_registry_detail::try_select<JpegImageDecoder>(path,
+                                                                jpeg_turbo,
+                                                                decode_threads)) {
+        auto jpeg_turbo_dimensions = jpeg_turbo.decoder->probe_dimensions(path);
+        if (jpeg_turbo_dimensions) {
+          return jpeg_turbo_dimensions;
+        }
+        primary_error = decoder_registry_detail::with_jpeg_turbo_fallback_error(
+            std::move(primary_error), jpeg_turbo_dimensions.error());
+      }
+    }
+
     DecoderSelection fallback{};
     const auto decode_threads = std::max(1, options.decode_threads);
     if (!decoder_registry_detail::try_select_wic_fallback(path, fallback, decode_threads)) {
-      return std::unexpected{dimensions.error()};
+      return std::unexpected{primary_error};
     }
 
     auto fallback_dimensions = fallback.decoder->probe_dimensions(path);
     if (!fallback_dimensions) {
       return std::unexpected{decoder_registry_detail::fallback_error(
-          "原生尺寸探测失败", dimensions.error(), fallback_dimensions.error())};
+          "原生尺寸探测失败", primary_error, "WIC 兜底", fallback_dimensions.error())};
     }
     return fallback_dimensions;
   } catch (const std::bad_alloc&) {

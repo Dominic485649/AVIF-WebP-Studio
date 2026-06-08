@@ -143,6 +143,9 @@ struct EncodeDiagnostics {
   std::optional<int> svtav1hdr_keyint{};
   std::string svtav1hdr_hdr_metadata{};
   std::string svtav1hdr_note{};
+  int jpegli_progressive_level{2};
+  bool jpegli_optimize_huffman{true};
+  bool jpegli_xyb{};
   SpeedMapping speed_mapping{};
   int encoder_threads{};
   std::uint64_t memory_budget_bytes{};
@@ -151,6 +154,7 @@ struct EncodeDiagnostics {
   bool visual_quality_gpu_used{};
   std::string visual_quality_gpu_path{};
   std::string visual_quality_gpu_fallback_reason{};
+  std::string visual_quality_search_trace{};
   EncodeTimingDiagnostics timing{};
 };
 
@@ -203,10 +207,14 @@ struct NativeEncodeSettings {
   bool visual_quality_gpu{true};
   bool jxl_jpeg_lossless_candidate{};
   bool avif_tune_iq{encoding_defaults::default_avif_tune_iq};
+  int jpegli_progressive_level{2};
+  bool jpegli_optimize_huffman{true};
+  bool jpegli_xyb{};
   SvtAv1HdrSettings svtav1hdr{};
   ResourcePlan resources{};
   std::optional<GridPlan> avif_grid_plan{};
   std::span<const std::byte> jxl_rgb8_input{};
+  std::span<const std::byte> jpegli_rgb8_input{};
 };
 
 struct NativeEncodeResult {
@@ -225,8 +233,13 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
   return EncodeDiagnostics{.user_encoder_id = settings.user_encoder_id,
                            .user_chroma = settings.user_chroma,
                            .source_chroma = settings.source_chroma,
+                           .requested_chroma = chroma_mode_name(settings.requested_chroma_mode),
+                           .applied_chroma = chroma_mode_name(settings.chroma_mode),
                            .chroma_reason = settings.chroma_reason,
                            .source_bit_depth = settings.source_bit_depth,
+                           .requested_bit_depth = settings.requested_bit_depth,
+                           .applied_bit_depth = settings.bit_depth,
+                           .bit_depth_reason = settings.bit_depth_reason,
                            .alpha_policy = settings.alpha_policy_name.empty()
                                                ? alpha_mode_policy_name(settings.requested_alpha_policy)
                                                : settings.alpha_policy_name,
@@ -251,6 +264,9 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .applied_hdr_metadata = settings.applied_hdr_metadata,
                            .color_metadata_source = settings.color_metadata_source,
                            .color_reason = settings.color_reason,
+                           .jpegli_progressive_level = settings.jpegli_progressive_level,
+                           .jpegli_optimize_huffman = settings.jpegli_optimize_huffman,
+                           .jpegli_xyb = settings.jpegli_xyb,
                            .visual_quality_gpu_requested = settings.visual_quality && settings.visual_quality_gpu,
                            .visual_quality_gpu_path = settings.visual_quality ? (settings.visual_quality_gpu ? "requested" : "cpu-disabled") : "not-requested"};
 }
@@ -324,12 +340,21 @@ export SpeedMapping map_jxl_speed_to_effort(int speed) {
                       .codec_key = "jxl:effort"};
 }
 
+export SpeedMapping map_jpegli_speed(int speed) {
+  speed = std::clamp(speed, 0, 10);
+  return SpeedMapping{.user_speed = speed,
+                      .codec_value = speed,
+                      .codec_key = "jpegli:quality-speed"};
+}
+
 export SpeedMapping map_speed_for_format(OutputFormat format, int speed) {
   switch (format) {
     case OutputFormat::webp:
       return map_webp_speed_to_method(speed);
     case OutputFormat::jxl:
       return map_jxl_speed_to_effort(speed);
+    case OutputFormat::jpgli:
+      return map_jpegli_speed(speed);
     case OutputFormat::avif:
     default:
       return map_avif_speed_to_svt_preset(speed);

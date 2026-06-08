@@ -95,6 +95,7 @@ struct EncodeResult {
   std::size_t index{};
   fs::path input_path{};
   fs::path output_path{};
+  std::string output_format{};
   std::uintmax_t original_bytes{};
   std::uintmax_t output_bytes{};
   int quality{};
@@ -180,6 +181,7 @@ struct EncodeResult {
   bool visual_quality_gpu_used{};
   std::string visual_quality_gpu_path{};
   std::string visual_quality_gpu_fallback_reason{};
+  std::string visual_quality_search_trace{};
   bool quality_overridden_by_visual_quality{false};
   bool lossless{false};
   bool processed{false};
@@ -680,6 +682,8 @@ std::wstring output_extension_for(OutputFormat format) {
       return L".webp";
     case OutputFormat::jxl:
       return L".jxl";
+    case OutputFormat::jpgli:
+      return L".jpg";
   }
   return L".avif";
 }
@@ -692,6 +696,8 @@ std::string output_format_name(OutputFormat format) {
       return "WEBP";
     case OutputFormat::jxl:
       return "JXL";
+    case OutputFormat::jpgli:
+      return "JPGLI";
   }
   return "AVIF";
 }
@@ -1407,6 +1413,13 @@ std::wstring encode_params_token_for(const AppConfig& cfg) {
   if (cfg.bit_depth) {
     token += std::format(L"_{}", *cfg.bit_depth);
   }
+  if (cfg.output_format == OutputFormat::jpgli) {
+    token += std::format(L"_p{}", cfg.jpegli_progressive_level);
+    token += cfg.jpegli_optimize_huffman ? L"_hopt" : L"_hfix";
+    if (cfg.jpegli_xyb) {
+      token += L"_xyb";
+    }
+  }
   return token;
 }
 
@@ -1721,7 +1734,7 @@ std::expected<void, std::string> write_csv(
   SummaryCsvWriter csv{std::move(*created), report_path};
 
   csv << "\xEF\xBB\xBF";
-  csv << "index,input,output,input_sha256,output_sha256,original_bytes,output_"
+  csv << "index,input,output,format,encoder_id,input_sha256,output_sha256,original_bytes,output_"
          "bytes,ratio,quality,speed,"
          "requested_visual_quality,visual_score,raw_gmsd,raw_ms_ssim,"
          "gmsd_quality_score,msssim_quality_score,gmsd_weight,msssim_weight,"
@@ -1755,7 +1768,7 @@ std::expected<void, std::string> write_csv(
          "applied_color_primaries,applied_transfer_characteristics,applied_"
          "matrix_coefficients,applied_color_range,"
          "source_has_icc,applied_icc,source_has_hdr_metadata,applied_hdr_"
-         "metadata,color_metadata_source,color_reason\n";
+         "metadata,color_metadata_source,color_reason,visual_quality_search_trace\n";
 
   for (const auto& result : results) {
     const double ratio = result.original_bytes == 0
@@ -1820,6 +1833,8 @@ std::expected<void, std::string> write_csv(
         << core_detail::csv_escape(display_path_for_report(result.input_path))
         << ','
         << core_detail::csv_escape(display_path_for_report(result.output_path))
+        << ',' << core_detail::csv_escape(result.output_format)
+        << ',' << core_detail::csv_escape(result.encoder_id)
         << ',' << input_sha256 << ',' << output_sha256 << ','
         << result.original_bytes << ',' << result.output_bytes << ','
         << std::format("{:.4f}", ratio) << ',' << result.quality << ',' << speed
@@ -1905,7 +1920,8 @@ std::expected<void, std::string> write_csv(
         << (result.source_has_hdr_metadata ? "true" : "false") << ','
         << core_detail::csv_escape(result.applied_hdr_metadata) << ','
         << core_detail::csv_escape(result.color_metadata_source) << ','
-        << core_detail::csv_escape(result.color_reason) << '\n';
+        << core_detail::csv_escape(result.color_reason) << ','
+        << core_detail::csv_escape(result.visual_quality_search_trace) << '\n';
   }
 
   if (auto closed = csv.close(); !closed) {

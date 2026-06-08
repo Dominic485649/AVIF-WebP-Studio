@@ -1,5 +1,28 @@
 # 更新日志
 
+## 0.8.0 - 2026-06-09
+
+0.8.0 是一次以 JPGLI 高级编码选项、BMP/JXR native codec、Visual Quality GPU 指标优化和四文件发布清理为核心的版本更新。
+
+- JPGLI 新增 progressive level、Huffman 优化和 XYB 相关配置；CLI、Studio、config 校验、summary 和回归测试同步支持。
+- 新增 BMP 与 JXR native codec 注册、WIC 解码路径和对应 codec 测试，扩展输入格式覆盖范围。
+- 优化 Visual Quality GPU 指标链路，改进 downsample、luma、GMSD 与 MS-SSIM shader 的计算稳定性和诊断输出。
+- 改进 Studio 交互和任务状态展示，补充格式、质量、视觉质量、取消和内存限制相关提示。
+- Release 构建清理规则收敛为 `AWJ.exe`、`AWJ.com` 及两个 `.sha256` 文件；测试可执行文件改输出到独立 tests 目录，避免污染发布目录。
+- 清理旧设计文档残留，并补充本轮严格审查记录。
+
+## 0.7.3 - 2026-06-07
+
+0.7.3 新增 JPGLI/Jpegli native codec 路径，并同步 Studio/CLI 入口、诊断和文档。
+
+- 新增 `AWJ_ENABLE_JPEGLI` CMake 选项，默认拉取并静态链接 google/jpegli 的 `jpegli-static`。
+- CLI 新增 `--format jpgli` / `--format jpegli`，Studio 格式下拉新增 `JPGLI`；输出扩展名默认保持 `.jpg`，但 UI、命令、summary 和日志均显示 `JPGLI` / `jpegli`。
+- 新增 `JpegliImageEncoder` 与 `JpegliImageDecoder`，支持 encode/decode、`decode_memory`、质量与速度映射，以及 ICC/EXIF/XMP metadata 保留/剥离。
+- JPEG 兼容输入优先尝试 Jpegli decoder，失败后回退 libjpeg-turbo/WIC。
+- `summary.csv` 新增显式 `encoder_id` 列，并保留旧 `encoder_selected` 列；JPGLI 输出记录 `format=JPGLI`、`encoder_id=jpegli`。
+- 改进 Studio JPGLI 相关默认质量、固定 8-bit 位深、拖拽队列提示和任务列表格式显示。
+- 补充 JPGLI codec、config、decoder registry、native pipeline、资源规划和 summary 安全回归测试。
+
 ## 0.7.2 - 2026-06-05
 
 0.7.2 修复部分终端中 `AWJ.com --help`、`AWJ --help` 无输出的问题。

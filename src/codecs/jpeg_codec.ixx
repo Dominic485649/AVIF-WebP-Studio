@@ -33,11 +33,18 @@ export namespace awj {
 
 namespace jpeg_detail {
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
 struct ErrorManager {
   jpeg_error_mgr pub{};
   jmp_buf jump{};
   char message[JMSG_LENGTH_MAX]{};
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 void error_exit(j_common_ptr cinfo) {
   auto* error = reinterpret_cast<ErrorManager*>(cinfo->err);
@@ -522,6 +529,10 @@ export class JpegImageDecoder final : public ImageDecoder {
       }
 
       jpeg_decompress_struct cinfo{};
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324 4611)
+#endif
       jpeg_detail::ErrorManager error{};
       cinfo.err = jpeg_std_error(&error.pub);
       error.pub.error_exit = jpeg_detail::error_exit;
@@ -529,6 +540,9 @@ export class JpegImageDecoder final : public ImageDecoder {
       if (setjmp(error.jump) != 0) {
         return std::unexpected{std::format("JPEG 读取尺寸失败: {}", error.message)};
       }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
       jpeg_create_decompress(&cinfo);
       cleanup.created = true;
       if (auto metadata_budget = jpeg_detail::validate_saved_metadata_budget_from_file(
@@ -574,6 +588,10 @@ export class JpegImageDecoder final : public ImageDecoder {
       }
 
       jpeg_decompress_struct cinfo{};
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324 4611)
+#endif
       jpeg_detail::ErrorManager error{};
       cinfo.err = jpeg_std_error(&error.pub);
       error.pub.error_exit = jpeg_detail::error_exit;
@@ -581,6 +599,9 @@ export class JpegImageDecoder final : public ImageDecoder {
       if (setjmp(error.jump) != 0) {
         return std::unexpected{std::format("JPEG 解码失败: {}", error.message)};
       }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
       if (bytes->size() > static_cast<std::size_t>(std::numeric_limits<unsigned long>::max())) {
         return std::unexpected{"JPEG 文件超过 libjpeg API 限制。"};

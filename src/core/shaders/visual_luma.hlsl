@@ -19,9 +19,13 @@ void main(uint3 id : SV_DispatchThreadID) {
     return;
   }
 
-  const uint base = id.y * stride + id.x * channels;
+  const uint input_byte_count = (height - 1u) * stride + width * channels;
+  const uint input_word_stride = (input_byte_count + 3u) >> 2;
+  const uint input_base = id.z * input_word_stride * 4u;
+  const uint output_base = id.z * width * height;
+  const uint base = input_base + id.y * stride + id.x * channels;
   const float r = (float)load_byte(base + 0u);
   const float g = (float)load_byte(base + 1u);
   const float b = (float)load_byte(base + 2u);
-  output_luma[id.y * width + id.x] = (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255.0f;
+  output_luma[output_base + id.y * width + id.x] = (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255.0f;
 }

@@ -1,7 +1,9 @@
 #include <cstdio>
+#include <string>
 #include <string_view>
 
 import awj.codec;
+import awj.encoding_defaults;
 import awj.resource_planner;
 
 namespace {
@@ -28,9 +30,11 @@ int main() {
                                 .memory_limit_bytes = 0,
                                 .estimated_bytes_per_file = 1,
                                 .av1_encoder = true});
+  constexpr int single_av1_expected_threads =
+      awj::encoding_defaults::default_av1_encoder_thread_cap;
   if (single_av1.file_parallelism != 1 ||
-      single_av1.encoder_threads_per_file != 12) {
-    return fail("单文件 AV1 未获得完整自动线程预算。");
+      single_av1.encoder_threads_per_file != single_av1_expected_threads) {
+    return fail("单文件 AV1 未按线程 cap 与系统余量规划 encoder 线程。");
   }
 
   const auto batch_av1 = awj::plan_resources(
@@ -57,8 +61,10 @@ int main() {
   const auto avif_speed = awj::map_speed_for_format(awj::OutputFormat::avif, 10);
   const auto webp_speed = awj::map_speed_for_format(awj::OutputFormat::webp, 10);
   const auto jxl_speed = awj::map_speed_for_format(awj::OutputFormat::jxl, 10);
+  const auto jpegli_speed = awj::map_speed_for_format(awj::OutputFormat::jpgli, 10);
   if (avif_speed.codec_value != 0 || webp_speed.codec_value != 0 ||
-      jxl_speed.codec_value != 3) {
+      jxl_speed.codec_value != 3 || jpegli_speed.codec_value != 10 ||
+      jpegli_speed.codec_key != "jpegli:quality-speed") {
     return fail("speed=10 未映射到最快 codec 档位。");
   }
 

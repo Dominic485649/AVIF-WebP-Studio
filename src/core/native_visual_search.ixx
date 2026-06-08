@@ -20,6 +20,7 @@ module;
 export module awj.native_visual_search;
 
 import awj.codec;
+import awj.config;
 import awj.core;
 import awj.encoding_defaults;
 import awj.image;
@@ -120,9 +121,18 @@ make_visual_quality_byte_buffer(std::size_t byte_count,
   return buffer;
 }
 
-std::expected<std::vector<std::byte>, std::string> make_jxl_rgb8_input_cache(
+bool output_format_uses_rgb8_cache(OutputFormat format) noexcept {
+  return format == OutputFormat::jxl || format == OutputFormat::jpgli;
+}
+
+std::string_view rgb8_cache_context(OutputFormat format) noexcept {
+  return format == OutputFormat::jpgli ? "JPGLI visual_quality RGB"
+                                       : "JXL visual_quality RGB";
+}
+
+std::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
     const ImageBuffer& image, const NativeEncodeSettings& settings) {
-  if (settings.output_format != OutputFormat::jxl ||
+  if (!output_format_uses_rgb8_cache(settings.output_format) ||
       settings.applied_alpha == "kept") {
     return std::vector<std::byte>{};
   }
@@ -130,38 +140,38 @@ std::expected<std::vector<std::byte>, std::string> make_jxl_rgb8_input_cache(
       image.planes.empty()) {
     return std::vector<std::byte>{};
   }
+  const auto context = rgb8_cache_context(settings.output_format);
   if (image.width == 0 ||
       image.width > std::numeric_limits<std::size_t>::max() / 3) {
-    return std::unexpected{"JXL visual_quality RGB 输入宽度无效。"};
+    return std::unexpected{std::format("{} 输入宽度无效。", context)};
   }
   const auto rgb_stride =
-      checked_visual_quality_stride(image.width, 3, "JXL visual_quality RGB");
+      checked_visual_quality_stride(image.width, 3, context);
   if (!rgb_stride) {
     return std::unexpected{rgb_stride.error()};
   }
   const auto rgb_size = checked_visual_quality_image_bytes(
-      *rgb_stride, image.height, "JXL visual_quality RGB");
+      *rgb_stride, image.height, context);
   if (!rgb_size) {
     return std::unexpected{rgb_size.error()};
   }
   const auto rgba_stride =
-      checked_visual_quality_stride(image.width, 4, "JXL visual_quality RGB");
+      checked_visual_quality_stride(image.width, 4, context);
   if (!rgba_stride) {
     return std::unexpected{rgba_stride.error()};
   }
   const auto& plane = image.planes.front();
   const auto rgba_size = checked_visual_quality_image_bytes(
-      plane.stride, image.height, "JXL visual_quality RGB");
+      plane.stride, image.height, context);
   if (!rgba_size) {
     return std::unexpected{rgba_size.error()};
   }
   if (plane.stride < *rgba_stride || plane.bytes.size() < *rgba_size) {
     return std::unexpected{
-        "JXL visual_quality RGB 输入 RGBA buffer 尺寸无效。"};
+        std::format("{} 输入 RGBA buffer 尺寸无效。", context)};
   }
 
-  auto rgb =
-      make_visual_quality_byte_buffer(*rgb_size, "JXL visual_quality RGB");
+  auto rgb = make_visual_quality_byte_buffer(*rgb_size, context);
   if (!rgb) {
     return std::unexpected{rgb.error()};
   }
@@ -180,21 +190,74 @@ std::expected<std::vector<std::byte>, std::string> make_jxl_rgb8_input_cache(
   return rgb;
 }
 
-std::expected<std::span<const std::byte>, std::string> make_jxl_rgb8_input_view(
+std::expected<std::span<const std::byte>, std::string> make_rgb8_input_view(
     const ImageBuffer& image, const NativeEncodeSettings& settings,
     std::vector<std::byte>& cache) {
-  if (settings.output_format != OutputFormat::jxl ||
+  if (!output_format_uses_rgb8_cache(settings.output_format) ||
       settings.applied_alpha == "kept") {
     return std::span<const std::byte>{};
   }
   if (cache.empty()) {
-    auto prepared = make_jxl_rgb8_input_cache(image, settings);
+    auto prepared = make_rgb8_input_cache(image, settings);
     if (!prepared) {
       return std::unexpected{prepared.error()};
     }
     cache = std::move(*prepared);
   }
   return std::span<const std::byte>{cache};
+}
+
+void append_visual_quality_probe(VisualQualitySearchTrace& trace,
+                                 const VisualQualityCandidate& candidate,
+                                 int requested) {
+  try {
+    trace.probes.push_back(
+        VisualQualitySearchProbe{.quality = candidate.quality,
+                                 .bytes = candidate.bytes,
+                                 .visual_score = candidate.visual_score,
+                                 .target_met = visual_quality_candidate_meets_target(candidate, requested),
+                                 .decision = visual_quality_candidate_meets_target(candidate, requested)
+                                                 ? "达标，继续向更低质量收缩"
+                                                 : "未达标，继续向更高质量扩展"});
+  } catch (...) {
+    // Trace 是诊断信息，不应影响编码结果。
+  }
+}
+
+std::string format_visual_quality_trace(const VisualQualitySearchTrace& trace) {
+  std::string text;
+  try {
+    text = std::format("requested={} range=q{}..q{} predicted=q{}",
+                       trace.requested_visual_quality,
+                       trace.q_min,
+                       trace.q_max,
+                       trace.predicted_quality);
+    if (!trace.probes.empty()) {
+      text += " probes=[";
+      for (std::size_t index = 0; index < trace.probes.size(); ++index) {
+        const auto& probe = trace.probes[index];
+        if (index != 0) {
+          text += "; ";
+        }
+        text += std::format("q{}:{} vq={:.2f} bytes={} ({})",
+                            probe.quality,
+                            probe.target_met ? "pass" : "fail",
+                            probe.visual_score,
+                            probe.bytes,
+                            probe.decision);
+      }
+      text += "]";
+    }
+    if (!trace.selection_reason.empty()) {
+      text += std::format(" selected={}", trace.selection_reason);
+    }
+    if (trace.fallback_used) {
+      text += " fallback=true";
+    }
+  } catch (...) {
+    return {};
+  }
+  return text;
 }
 
 }  // namespace native_visual_search_detail
@@ -486,6 +549,10 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       std::clamp(range.q_min, ENCODER_QUALITY_MIN, ENCODER_QUALITY_MAX - 1);
   const int search_q_max =
       std::clamp(range.q_max, search_q_min, ENCODER_QUALITY_MAX - 1);
+  VisualQualitySearchTrace search_trace{.requested_visual_quality = requested,
+                                        .q_min = search_q_min,
+                                        .q_max = search_q_max,
+                                        .predicted_quality = search_q_min};
   const auto search_started = native_visual_search_detail::Clock::now();
   auto timing = native_visual_search_detail::make_visual_quality_timing();
   if (range.lossless) {
@@ -509,6 +576,8 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     encoded->diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
     encoded->diagnostics.visual_quality_gpu_used = false;
     encoded->diagnostics.visual_quality_gpu_path = "lossless-bypass";
+    encoded->diagnostics.visual_quality_search_trace =
+        "requested=100 range=lossless selected=q100 lossless-bypass";
     return NativeVisualQualitySearchResult{
         .encode_result = std::move(*encoded),
         .candidate = VisualQualityCandidate{.quality = 100,
@@ -593,7 +662,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     return std::nullopt;
   };
 
-  std::vector<std::byte> jxl_rgb8_input_cache;
+  std::vector<std::byte> rgb8_input_cache;
   bool gpu_session_available = metric_session.has_value();
 
   auto evaluate_quality =
@@ -609,12 +678,16 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     // visual_quality 搜索只使用可复用 session；session 不可用时直接 CPU，
     // 避免每个候选反复尝试失败的 one-shot GPU 初始化。
     candidate_settings.visual_quality_gpu = gpu_session_available;
-    auto jxl_rgb8_input = native_visual_search_detail::make_jxl_rgb8_input_view(
-        reference_image, candidate_settings, jxl_rgb8_input_cache);
-    if (!jxl_rgb8_input) {
-      return std::unexpected{jxl_rgb8_input.error()};
+    auto rgb8_input = native_visual_search_detail::make_rgb8_input_view(
+        reference_image, candidate_settings, rgb8_input_cache);
+    if (!rgb8_input) {
+      return std::unexpected{rgb8_input.error()};
     }
-    candidate_settings.jxl_rgb8_input = *jxl_rgb8_input;
+    if (candidate_settings.output_format == OutputFormat::jxl) {
+      candidate_settings.jxl_rgb8_input = *rgb8_input;
+    } else if (candidate_settings.output_format == OutputFormat::jpgli) {
+      candidate_settings.jpegli_rgb8_input = *rgb8_input;
+    }
     auto candidate = evaluate_visual_quality_candidate(
         reference_luma, reference_image, encoder, decoder, candidate_settings,
         quality, candidate_path, metric_session ? &*metric_session : nullptr,
@@ -654,18 +727,32 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       }
     }
     retain_candidate_result(std::move(*candidate));
+    native_visual_search_detail::append_visual_quality_probe(
+        search_trace, candidate_summary, requested);
     return candidate_summary;
   };
 
   CandidateSelection selected{};
   bool target_met = false;
 
-  // 先用 visual_quality 的曲线预测窗口定位大致范围，再在窗口内做
-  // lower-bound 二分。lossy q 限定为 1..99；q100 保留给 lossless 特例。
-  // 这样完整 1..99 区间最坏也只需 7 次评估，避免 q_min 命中时 1 次
-  // 早停、未命中时又额外评估 q_max/high+1 导致 8/9 次的跳变。
+  // 先探测曲线窗口中心作为预测点，再按达标方向收缩搜索窗口。
+  // lossy q 限定为 1..99；q100 保留给 lossless 特例。
   int low = search_q_min - 1;
   int high = search_q_max;
+  const int predicted_quality = std::clamp(
+      native_visual_search_detail::midpoint_quality(low, high),
+      search_q_min,
+      search_q_max);
+  search_trace.predicted_quality = predicted_quality;
+  auto predicted_candidate = evaluate_quality(predicted_quality);
+  if (!predicted_candidate) {
+    return std::unexpected{predicted_candidate.error()};
+  }
+  if (visual_quality_candidate_meets_target(*predicted_candidate, requested)) {
+    high = predicted_quality;
+  } else {
+    low = predicted_quality;
+  }
   while (low + 1 < high) {
     const int midpoint =
         native_visual_search_detail::midpoint_quality(low, high);
@@ -689,6 +776,13 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     selected =
         select_smallest_passing_visual_quality_candidate(candidates, requested);
     target_met = selected.found;
+    if (target_met) {
+      search_trace.selection_reason = std::format(
+          "smallest-passing q{} vq={:.2f} bytes={}",
+          selected.candidate.quality,
+          selected.candidate.visual_score,
+          selected.candidate.bytes);
+    }
   } else {
     if (!settings.visual_quality_fallback) {
       const auto closest = select_closest_visual_quality_candidate(candidates);
@@ -704,6 +798,14 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
                       requested)};
     }
     selected = select_closest_visual_quality_candidate(candidates);
+    if (selected.found) {
+      search_trace.fallback_used = true;
+      search_trace.selection_reason = std::format(
+          "closest-fallback q{} vq={:.2f} bytes={}",
+          selected.candidate.quality,
+          selected.candidate.visual_score,
+          selected.candidate.bytes);
+    }
   }
 
   if (!selected.found) {
@@ -741,6 +843,8 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   encoded.diagnostics.visual_quality_gpu_used = gpu_used;
   encoded.diagnostics.visual_quality_gpu_path = gpu_requested ? (gpu_used ? gpu_path : "cpu-fallback") : "cpu-disabled";
   encoded.diagnostics.visual_quality_gpu_fallback_reason = gpu_fallback_reason;
+  encoded.diagnostics.visual_quality_search_trace =
+      native_visual_search_detail::format_visual_quality_trace(search_trace);
 
   return NativeVisualQualitySearchResult{.encode_result = std::move(encoded),
                                          .candidate = selected.candidate,

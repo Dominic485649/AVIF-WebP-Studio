@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -72,6 +73,12 @@ int main() {
       result->encode_result.final_quality > 99) {
     return fail("native visual quality search result invalid.");
   }
+  if (result->encode_result.diagnostics.visual_quality_search_trace.find("predicted=q") ==
+          std::string::npos ||
+      result->encode_result.diagnostics.visual_quality_search_trace.find("selected=") ==
+          std::string::npos) {
+    return fail("native visual quality search did not record an explanatory trace.");
+  }
 
   auto lossless = awj::encode_with_native_visual_quality_search(
       make_test_image(), encoder, decoder,
@@ -91,6 +98,10 @@ int main() {
   if (!lossless->encode_result.lossless || lossless->encode_result.final_quality != 100 ||
       lossless->encode_result.search_attempt_count != 1) {
     return fail("native visual quality lossless path invalid.");
+  }
+  if (lossless->encode_result.diagnostics.visual_quality_search_trace.find("lossless-bypass") ==
+      std::string::npos) {
+    return fail("native visual quality lossless path did not record trace.");
   }
 
   return 0;

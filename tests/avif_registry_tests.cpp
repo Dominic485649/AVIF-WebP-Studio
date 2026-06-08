@@ -1,6 +1,8 @@
 #include <iostream>
+#include <initializer_list>
 #include <optional>
 #include <string>
+#include <string_view>
 
 import awj.avif_registry;
 import awj.config;
@@ -11,6 +13,16 @@ namespace {
 int fail(const char* message) {
   std::cerr << message << '\n';
   return 1;
+}
+
+bool contains_any(std::string_view text,
+                  std::initializer_list<std::string_view> needles) {
+  for (const auto needle : needles) {
+    if (text.find(needle) != std::string_view::npos) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -157,7 +169,7 @@ int main() {
       .requested_bit_depth = 8,
       .pixel_count = 1024,
       .speed = awj::default_speed_for(awj::OutputFormat::avif)});
-  if (rejected || rejected.error().find("not available") == std::string::npos) {
+  if (rejected || !contains_any(rejected.error(), {"not available", "不可用"})) {
     return fail("explicit SVT request was not rejected clearly when unavailable.");
   }
 
@@ -167,7 +179,7 @@ int main() {
       .requested_bit_depth = 10,
       .pixel_count = 1024,
       .speed = awj::encoding_defaults::default_zenrav1e_preset});
-  if (rejected || rejected.error().find("not available") == std::string::npos) {
+  if (rejected || !contains_any(rejected.error(), {"not available", "不可用"})) {
     return fail("explicit zenrav1e request was not blocked clearly when bridge is unavailable.");
   }
 
@@ -192,7 +204,7 @@ int main() {
           .pixel_count = 1024,
           .speed = awj::encoding_defaults::default_zenrav1e_preset},
       experimental_capabilities);
-  if (gated_zen || gated_zen.error().find("experimental") == std::string::npos) {
+  if (gated_zen || !contains_any(gated_zen.error(), {"experimental", "实验"})) {
     return fail("explicit zenrav1e request should require experimental encoders to be enabled.");
   }
 
@@ -214,7 +226,7 @@ int main() {
   auto diagnostics = awj::diagnostics_from_avif_selection(*selected);
   if (diagnostics.encoder_id != "zenrav1e" ||
       diagnostics.speed_mapping.codec_key != "zenravif:speed" ||
-      diagnostics.bit_depth_reason.find("explicit") == std::string::npos) {
+      !contains_any(diagnostics.bit_depth_reason, {"explicit", "明确请求"})) {
     return fail("zenrav1e diagnostics are incomplete.");
   }
 
@@ -233,7 +245,7 @@ int main() {
   diagnostics = awj::diagnostics_from_avif_selection(*selected);
   if (diagnostics.encoder_id != "aom" || diagnostics.speed_mapping.codec_key != "aom:cpu-used" ||
       diagnostics.applied_chroma != "422" || diagnostics.applied_bit_depth != 10 ||
-      diagnostics.bit_depth_reason.find("explicit") == std::string::npos) {
+      !contains_any(diagnostics.bit_depth_reason, {"explicit", "明确请求"})) {
     return fail("AOM diagnostics are incomplete.");
   }
 
@@ -246,7 +258,7 @@ int main() {
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       unavailable_svt_capabilities);
-  if (rejected || rejected.error().find("not available") == std::string::npos) {
+  if (rejected || !contains_any(rejected.error(), {"not available", "不可用"})) {
     return fail("explicit SVT unavailable request was not rejected clearly.");
   }
 
@@ -317,7 +329,7 @@ int main() {
           .pixel_count = awj::encoding_defaults::svt_safe_max_pixels + 1,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       svt_capabilities);
-  if (rejected || rejected.error().find("over") == std::string::npos) {
+  if (rejected || !contains_any(rejected.error(), {"over", "超过"})) {
     return fail("SVT over-pixel-limit rejection was not explicit.");
   }
 

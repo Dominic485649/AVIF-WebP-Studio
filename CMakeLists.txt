@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.7.2
+    VERSION 0.8.0
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -11,17 +11,20 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(AVIF_STATIC_SLINT "Link Slint statically so AWJ does not need slint_cpp.dll" ON)
+option(AVIF_STATIC_SLINT "Link Slint statically so AWJ does not need slint_cpp.dll" OFF)
 option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bundles when all dependencies allow it" ON)
 option(AVIF_ENABLE_RELEASE_IPO "Enable interprocedural optimization for Release builds when the compiler supports it" OFF)
 option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targets" ON)
 option(AWJ_ENABLE_X64_V3 "Enable x64-v3/AVX2 code generation for project targets in Release builds" OFF)
 option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into AWJ" ON)
 option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into AWJ" ON)
+option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 set(AWJ_SVTAV1HDR_GIT_REPOSITORY "https://github.com/juliobbv-p/svt-av1-hdr.git" CACHE STRING "svt-av1-hdr repository")
 set(AWJ_SVTAV1HDR_GIT_TAG "b90fe2474a0c464121c0724d073f01953f792034" CACHE STRING "svt-av1-hdr git tag or commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
 set(AWJ_LIBAVIF_GIT_TAG "6543b22b5bc706c53f038a16fe515f921556d9b3" CACHE STRING "libavif git tag or commit")
+set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
+set(AWJ_JPEGLI_GIT_TAG "509a25915d9f9774217917a1227bbec7f75e9976" CACHE STRING "google/jpegli git tag or commit")
 
 set(AVIF_RELEASE_IPO_SUPPORTED OFF)
 if(AVIF_ENABLE_RELEASE_IPO)
@@ -61,6 +64,22 @@ else()
     set(VCPKG_TRIPLET "${AVIF_DEFAULT_VCPKG_TRIPLET}" CACHE STRING "vcpkg target triplet")
 endif()
 set(VCPKG_TARGET_TRIPLET "${VCPKG_TRIPLET}" CACHE STRING "vcpkg target triplet" FORCE)
+set(AWJ_VCPKG_LIBRARY_CONFIG "" CACHE STRING
+    "vcpkg library configuration used by upstream single-config Find modules")
+set_property(CACHE AWJ_VCPKG_LIBRARY_CONFIG PROPERTY STRINGS
+    Debug Release RelWithDebInfo MinSizeRel)
+if(NOT AWJ_VCPKG_LIBRARY_CONFIG)
+    get_filename_component(AWJ_BINARY_CONFIG_NAME "${CMAKE_BINARY_DIR}" NAME)
+    if(AWJ_BINARY_CONFIG_NAME MATCHES "^(Debug|Release|RelWithDebInfo|MinSizeRel)$")
+        set(AWJ_VCPKG_LIBRARY_CONFIG "${AWJ_BINARY_CONFIG_NAME}" CACHE STRING
+            "vcpkg library configuration used by upstream single-config Find modules"
+            FORCE)
+    else()
+        set(AWJ_VCPKG_LIBRARY_CONFIG "Release" CACHE STRING
+            "vcpkg library configuration used by upstream single-config Find modules"
+            FORCE)
+    endif()
+endif()
 if(VCPKG_ROOT AND NOT CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg[.]cmake")
     list(PREPEND CMAKE_PREFIX_PATH "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}")
 endif()
@@ -76,6 +95,7 @@ foreach(package_dir_var IN ITEMS scn_DIR FastFloat_DIR)
 endforeach()
 
 message(STATUS "AWJimage vcpkg triplet: ${VCPKG_TRIPLET}")
+message(STATUS "AWJimage vcpkg library config: ${AWJ_VCPKG_LIBRARY_CONFIG}")
 message(STATUS "AWJimage MSVC runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}")
 
 find_package(scn CONFIG REQUIRED)
@@ -90,6 +110,7 @@ find_package(libyuv CONFIG REQUIRED)
 
 set(AWJ_SVTAV1HDR_AVAILABLE OFF)
 set(AWJ_SVTAV1HDR_STATIC_DEFINE 0)
+set(AWJ_JPEGLI_AVAILABLE OFF)
 
 set(AVIF_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TRIPLET}")
 function(avif_find_vcpkg_library out_var library_name)
@@ -102,12 +123,28 @@ function(avif_find_vcpkg_library out_var library_name)
         NAMES ${library_name}
         PATHS "${AVIF_VCPKG_INSTALLED_DIR}/debug/lib"
         NO_DEFAULT_PATH)
+    set(${out_var}_RELEASE "${${out_var}_RELEASE}" PARENT_SCOPE)
+    set(${out_var}_DEBUG "${${out_var}_DEBUG}" PARENT_SCOPE)
     if(${out_var}_DEBUG)
         set(${out_var}
             "$<$<CONFIG:Debug>:${${out_var}_DEBUG}>$<$<NOT:$<CONFIG:Debug>>:${${out_var}_RELEASE}>"
             PARENT_SCOPE)
     else()
         set(${out_var} "${${out_var}_RELEASE}" PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(awj_force_single_config_vcpkg_library cache_var release_var debug_var)
+    set(release_library "${${release_var}}")
+    set(debug_library "${${debug_var}}")
+    set(selected_library "${release_library}")
+    if(AWJ_VCPKG_LIBRARY_CONFIG STREQUAL "Debug" AND debug_library)
+        set(selected_library "${debug_library}")
+    endif()
+    if(selected_library AND NOT selected_library MATCHES "-NOTFOUND$")
+        set(${cache_var} "${selected_library}" CACHE FILEPATH
+            "AWJ-selected ${cache_var} for ${AWJ_VCPKG_LIBRARY_CONFIG}"
+            FORCE)
     endif()
 endfunction()
 
@@ -123,6 +160,25 @@ avif_find_vcpkg_library(JXL_BROTLI_ENC_LIBRARY brotlienc)
 avif_find_vcpkg_library(JXL_BROTLI_DEC_LIBRARY brotlidec)
 avif_find_vcpkg_library(JXL_BROTLI_COMMON_LIBRARY brotlicommon)
 avif_find_vcpkg_library(JXL_LCMS_LIBRARY lcms2)
+avif_find_vcpkg_library(AWJ_AOM_LIBRARY aom)
+avif_find_vcpkg_library(AWJ_LIBYUV_LIBRARY yuv)
+awj_force_single_config_vcpkg_library(AOM_LIBRARY
+    AWJ_AOM_LIBRARY_RELEASE
+    AWJ_AOM_LIBRARY_DEBUG)
+awj_force_single_config_vcpkg_library(LIBYUV_LIBRARY
+    AWJ_LIBYUV_LIBRARY_RELEASE
+    AWJ_LIBYUV_LIBRARY_DEBUG)
+set(HWY_INCLUDE_DIR "${JXL_INCLUDE_DIR}" CACHE PATH
+    "AWJ-selected Highway include directory"
+    FORCE)
+set(HWY_LIBRARY "${JXL_HIGHWAY_LIBRARY_RELEASE}" CACHE FILEPATH
+    "AWJ-selected Highway release library"
+    FORCE)
+if(JXL_HIGHWAY_LIBRARY_DEBUG)
+    set(HWY_DEBUG_LIBRARY "${JXL_HIGHWAY_LIBRARY_DEBUG}" CACHE FILEPATH
+        "AWJ-selected Highway debug library"
+        FORCE)
+endif()
 add_library(JXL::jxl INTERFACE IMPORTED)
 target_include_directories(JXL::jxl INTERFACE "${JXL_INCLUDE_DIR}")
 target_compile_definitions(JXL::jxl INTERFACE
@@ -203,6 +259,12 @@ function(awj_add_sha256_post_build target)
                 "-DAWJ_SHA256_NAME=$<TARGET_FILE_NAME:${target}>"
                 -P "${AWJ_WRITE_SHA256_SCRIPT}"
         VERBATIM)
+endfunction()
+
+function(awj_suppress_msvc_warnings target)
+    if(MSVC AND TARGET ${target})
+        target_compile_options(${target} PRIVATE ${ARGN})
+    endif()
 endfunction()
 
 function(avif_copy_slint_runtime target)
@@ -295,7 +357,7 @@ if(AWJ_ENABLE_SVTAV1HDR)
     set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     set(BUILD_APPS OFF CACHE BOOL "" FORCE)
-    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTING OFF)
     set(BUILD_DEC OFF CACHE BOOL "" FORCE)
     set(COMPILE_C_ONLY ON CACHE BOOL "" FORCE)
     set(ENABLE_AVX512 OFF CACHE BOOL "" FORCE)
@@ -304,6 +366,7 @@ if(AWJ_ENABLE_SVTAV1HDR)
         GIT_REPOSITORY ${AWJ_SVTAV1HDR_GIT_REPOSITORY}
         GIT_TAG ${AWJ_SVTAV1HDR_GIT_TAG})
     FetchContent_MakeAvailable(SvtAv1Hdr)
+    awj_suppress_msvc_warnings(CODEC /wd4244)
     if(TARGET SvtAv1Enc)
         set(AWJ_SVTAV1HDR_AVAILABLE ON)
         set(AWJ_SVTAV1HDR_STATIC_DEFINE 1)
@@ -316,7 +379,7 @@ if(AWJ_ENABLE_SVTAV1HDR)
     else()
         message(FATAL_ERROR "svt-av1-hdr FetchContent did not provide SvtAv1Enc.")
     endif()
-    set(BUILD_TESTING ${AWJ_PARENT_BUILD_TESTING} CACHE BOOL "" FORCE)
+    set(BUILD_TESTING ${AWJ_PARENT_BUILD_TESTING})
 endif()
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
@@ -337,8 +400,52 @@ FetchContent_Declare(libavif
     GIT_TAG ${AWJ_LIBAVIF_GIT_TAG})
 FetchContent_MakeAvailable(libavif)
 
+if(AWJ_ENABLE_JPEGLI)
+    set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
+    set(BUILD_TESTING OFF)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_TOOLS OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_DEVTOOLS OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_JPEGLI_LIBJPEG OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_INSTALL_JPEGLI_LIBJPEG OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_DOXYGEN OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_MANPAGES OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_BENCHMARK OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_FUZZERS OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_JNI OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_OPENEXR OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_SJPEG OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_ENABLE_WASM_THREADS OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_BUNDLE_LIBPNG OFF CACHE BOOL "" FORCE)
+    set(JPEGXL_FORCE_SYSTEM_HWY ON CACHE BOOL "" FORCE)
+    set(JPEGXL_FORCE_SYSTEM_LCMS2 ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(Jpegli
+        GIT_REPOSITORY ${AWJ_JPEGLI_GIT_REPOSITORY}
+        GIT_TAG ${AWJ_JPEGLI_GIT_TAG}
+        GIT_SUBMODULES third_party/libjpeg-turbo
+        PATCH_COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIR=<SOURCE_DIR>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_jpegli_allocator.cmake")
+    FetchContent_MakeAvailable(Jpegli)
+    if(TARGET jpegli-static)
+        set(AWJ_JPEGLI_AVAILABLE ON)
+        if(MSVC)
+            target_compile_options(jpegli-static PRIVATE /utf-8 /wd4267 /wd4244 /wd4100)
+        endif()
+    else()
+        message(FATAL_ERROR "google/jpegli FetchContent did not provide jpegli-static.")
+    endif()
+    set(BUILD_TESTING ${AWJ_PARENT_BUILD_TESTING})
+else()
+    message(STATUS "JPGLI/Jpegli codec support disabled by AWJ_ENABLE_JPEGLI=OFF.")
+endif()
+
 if(AVIF_STATIC_SLINT)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+else()
+    set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 endif()
 set(SLINT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SLINT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -372,6 +479,10 @@ function(avif_add_slint_sources target slint_file)
         VERBATIM)
 
     target_sources(${target} PRIVATE "${generated_header}" "${generated_cpp}")
+    if(MSVC)
+        set_source_files_properties("${generated_cpp}" PROPERTIES
+            COMPILE_OPTIONS "/wd4060;/wd4099;/wd4201;/wd4244;/wd4267;/wd4305;/wd4458;/wd4624")
+    endif()
     target_include_directories(${target} PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>")
 endfunction()
 
@@ -428,6 +539,7 @@ target_link_libraries(awj_native_codecs PUBLIC
     GIF::GIF
     TIFF::TIFF
     libraw::raw_r
+    ole32
     windowscodecs)
 target_sources(awj_native_codecs
     PUBLIC
@@ -437,12 +549,24 @@ target_sources(awj_native_codecs
             src/codecs/webp_codec.ixx
             src/codecs/jxl_codec.ixx
             src/codecs/png_codec.ixx
+            src/codecs/bmp_codec.ixx
             src/codecs/jpeg_codec.ixx
+            src/codecs/jxr_codec.ixx
             src/codecs/gif_codec.ixx
             src/codecs/tiff_codec.ixx
             src/codecs/libraw_codec.ixx
             src/codecs/raw_codec.ixx
             src/codecs/wic_codec.ixx)
+target_compile_definitions(awj_native_codecs PUBLIC
+    AWJ_HAS_JPEGLI=$<BOOL:${AWJ_JPEGLI_AVAILABLE}>)
+if(AWJ_JPEGLI_AVAILABLE)
+    target_link_libraries(awj_native_codecs PUBLIC jpegli-static)
+    target_include_directories(awj_native_codecs PRIVATE "${jpegli_SOURCE_DIR}")
+    target_sources(awj_native_codecs
+        PUBLIC
+            FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
+                src/codecs/jpegli_codec.ixx)
+endif()
 
 set(ZENRAVIF_BRIDGE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.toml")
 set(ZENRAVIF_BRIDGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/src/lib.rs")
@@ -573,6 +697,20 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_jxl_codec_tests)
     target_link_libraries(awj_jxl_codec_tests PRIVATE awj_native_codecs)
 
+    add_executable(awj_bmp_codec_tests tests/bmp_codec_tests.cpp)
+    avif_enable_common_options(awj_bmp_codec_tests)
+    target_link_libraries(awj_bmp_codec_tests PRIVATE awj_native_codecs)
+
+    add_executable(awj_jxr_codec_tests tests/jxr_codec_tests.cpp)
+    avif_enable_common_options(awj_jxr_codec_tests)
+    target_link_libraries(awj_jxr_codec_tests PRIVATE awj_native_codecs)
+
+    if(AWJ_JPEGLI_AVAILABLE)
+        add_executable(awj_jpegli_codec_tests tests/jpegli_codec_tests.cpp)
+        avif_enable_common_options(awj_jpegli_codec_tests)
+        target_link_libraries(awj_jpegli_codec_tests PRIVATE awj_native_codecs)
+    endif()
+
     add_executable(awj_native_visual_search_tests tests/native_visual_search_tests.cpp)
     avif_enable_common_options(awj_native_visual_search_tests)
     target_link_libraries(awj_native_visual_search_tests PRIVATE awj_native_visual_search awj_native_codecs)
@@ -601,6 +739,31 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_cli_native_avif_aom_tests)
     target_link_libraries(awj_cli_native_avif_aom_tests PRIVATE awj_native_backend)
 
+    set(AWJ_TEST_TARGETS
+        awj_visual_quality_tests
+        awj_config_defaults_tests
+        awj_resource_planner_tests
+        awj_visual_metrics_tests
+        awj_webp_codec_tests
+        awj_avif_aom_codec_tests
+        awj_avif_registry_tests
+        awj_jxl_codec_tests
+        awj_bmp_codec_tests
+        awj_jxr_codec_tests
+        awj_native_visual_search_tests
+        awj_decoder_registry_tests
+        awj_native_pipeline_tests
+        awj_pipeline_security_tests
+        awj_memory_cancel_tests
+        awj_cli_config_entry
+        awj_cli_native_avif_aom_tests)
+    if(AWJ_JPEGLI_AVAILABLE)
+        list(APPEND AWJ_TEST_TARGETS awj_jpegli_codec_tests)
+    endif()
+    foreach(test_target IN LISTS AWJ_TEST_TARGETS)
+        awj_set_runtime_directory(${test_target} "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    endforeach()
+
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
     add_test(NAME config_defaults_core COMMAND awj_config_defaults_tests)
     add_test(NAME resource_planner_core COMMAND awj_resource_planner_tests)
@@ -609,6 +772,11 @@ if(BUILD_TESTING)
     add_test(NAME avif_aom_codec_core COMMAND awj_avif_aom_codec_tests)
     add_test(NAME avif_registry_core COMMAND awj_avif_registry_tests)
     add_test(NAME jxl_codec_core COMMAND awj_jxl_codec_tests)
+    add_test(NAME bmp_codec_core COMMAND awj_bmp_codec_tests)
+    add_test(NAME jxr_codec_core COMMAND awj_jxr_codec_tests)
+    if(AWJ_JPEGLI_AVAILABLE)
+        add_test(NAME jpegli_codec_core COMMAND awj_jpegli_codec_tests)
+    endif()
     add_test(NAME native_visual_search_core COMMAND awj_native_visual_search_tests)
     add_test(NAME decoder_registry_core COMMAND awj_decoder_registry_tests)
     add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
@@ -667,6 +835,10 @@ add_executable(AWJ WIN32
     src/ui/main.cpp
     src/ui/AWJ.manifest
     src/ui/AWJ.rc)
+if(MSVC)
+    set_source_files_properties(src/ui/main.cpp PROPERTIES
+        COMPILE_OPTIONS "/wd4099;/wd4201;/wd4624")
+endif()
 avif_enable_common_options(AWJ)
 target_compile_definitions(AWJ PRIVATE AWJ_UNIFIED_EXE)
 if(MSVC)

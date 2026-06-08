@@ -391,9 +391,16 @@ export class PngImageDecoder final : public ImageDecoder {
       png_detail::ReadState state{.data = bytes->data(), .size = bytes->size()};
       png_set_read_fn(png.get(), &state, png_detail::read_callback);
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4611)
+#endif
       if (setjmp(png_jmpbuf(png.get())) != 0) {
         return std::unexpected{std::format("PNG 解码失败: {}", display_path_for_user(path))};
       }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
       png_read_info(png.get(), info.get());
       png_uint_32 width = 0;

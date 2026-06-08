@@ -2,13 +2,18 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <iterator>
+#include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <windows.h>
 
 import awj.config;
 import awj.core;
+import awj.encoding_defaults;
 import awj.image;
 import awj.native_backend;
 import awj.resource_planner;
@@ -26,6 +31,12 @@ int fail(std::string_view message) {
   std::fwrite(message.data(), 1, message.size(), stderr);
   std::fputc('\n', stderr);
   terminate_test_process(1);
+}
+
+std::string read_text(const std::filesystem::path& path) {
+  std::ifstream stream{path, std::ios::binary};
+  return std::string{std::istreambuf_iterator<char>{stream},
+                     std::istreambuf_iterator<char>{}};
 }
 
 awj::ImageBuffer make_test_image() {
@@ -129,6 +140,47 @@ int main() {
     return fail("native backend JXL result metadata invalid.");
   }
 
+#if AWJ_HAS_JPEGLI
+  cfg.output_format = awj::OutputFormat::jpgli;
+  cfg.quality = awj::encoding_defaults::default_jpegli_quality;
+  cfg.bit_depth = 8;
+  cfg.visual_quality = {};
+  awj::NativeBackend jpegli_backend{cfg, logger, awj::ResourcePlan{
+                                                     .file_parallelism = 1,
+                                                     .encoder_threads_per_file = 1,
+                                                     .global_thread_budget = 1}};
+  auto jpegli_result = jpegli_backend.encode(awj::ImageFile{.index = 0,
+                                                            .path = input,
+                                                            .bytes = input_bytes});
+  if (!jpegli_result.ok || jpegli_result.skipped || jpegli_result.canceled) {
+    return fail(jpegli_result.message.empty() ? "native backend JPGLI encode failed."
+                                              : jpegli_result.message);
+  }
+  const auto jpegli_output_file = output / "input.jpg";
+  if (!std::filesystem::exists(jpegli_output_file)) {
+    return fail("native backend did not create JPGLI .jpg output file.");
+  }
+  if (jpegli_result.output_path != jpegli_output_file ||
+      jpegli_result.output_bytes == 0 ||
+      jpegli_result.output_format != "JPGLI" ||
+      jpegli_result.encoder_id != "jpegli" ||
+      jpegli_result.command.find("JPGLI") == std::string::npos) {
+    return fail("native backend JPGLI result metadata invalid.");
+  }
+  const auto jpegli_summary_dir = output / "jpegli-summary";
+  if (auto csv_ok = awj::write_csv(
+          jpegli_summary_dir,
+          std::span<const awj::EncodeResult>{&jpegli_result, 1});
+      !csv_ok) {
+    return fail(csv_ok.error());
+  }
+  const auto jpegli_summary_csv = read_text(jpegli_summary_dir / "summary.csv");
+  if (jpegli_summary_csv.find("format,encoder_id") == std::string::npos ||
+      jpegli_summary_csv.find("JPGLI,jpegli") == std::string::npos) {
+    return fail("native backend JPGLI summary diagnostics invalid.");
+  }
+#endif
+
   cfg.output_format = awj::OutputFormat::avif;
   cfg.avif_encoder = awj::AvifEncoderMode::automatic;
   cfg.chroma_mode = awj::ChromaMode::yuv444;
@@ -173,8 +225,14 @@ int main() {
       !avif_visual_result.lossless ||
       avif_visual_result.final_encoder_quality != 100 ||
       avif_visual_result.command.find("aom") == std::string::npos ||
-      avif_visual_result.requested_encoder_id != "auto") {
-    return fail("native backend AVIF visual_quality did not use shared lossless auto search path.");
+      avif_visual_result.requested_encoder_id != "aom") {
+    return fail(std::format(
+        "native backend AVIF visual_quality did not use shared lossless auto search path: attempts={} lossless={} final_q={} command={} requested_encoder={}",
+        avif_visual_result.search_attempt_count,
+        avif_visual_result.lossless ? "true" : "false",
+        avif_visual_result.final_encoder_quality,
+        avif_visual_result.command,
+        avif_visual_result.requested_encoder_id));
   }
 
   // 下一次启动会清理该目录；这里直接退出以避开第三方静态析构阶段的访问违规。

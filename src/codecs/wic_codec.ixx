@@ -43,7 +43,47 @@ struct ComReleaser {
 template <class T>
 using ComPtr = std::unique_ptr<T, ComReleaser>;
 
+struct ComApartment {
+  ComApartment() noexcept
+      : init{CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE)},
+        should_uninitialize{SUCCEEDED(init)} {}
+
+  ~ComApartment() {
+    if (should_uninitialize) {
+      CoUninitialize();
+    }
+  }
+
+  ComApartment(const ComApartment&) = delete;
+  ComApartment& operator=(const ComApartment&) = delete;
+
+  ComApartment(ComApartment&& other) noexcept
+      : init{other.init}, should_uninitialize{other.should_uninitialize} {
+    other.should_uninitialize = false;
+  }
+
+  ComApartment& operator=(ComApartment&& other) noexcept {
+    if (this != &other) {
+      if (should_uninitialize) {
+        CoUninitialize();
+      }
+      init = other.init;
+      should_uninitialize = other.should_uninitialize;
+      other.should_uninitialize = false;
+    }
+    return *this;
+  }
+
+  [[nodiscard]] bool usable() const noexcept {
+    return SUCCEEDED(init) || init == RPC_E_CHANGED_MODE;
+  }
+
+  HRESULT init{S_FALSE};
+  bool should_uninitialize{};
+};
+
 struct ProbeFrameResult {
+  ComApartment com{};
   ComPtr<IWICImagingFactory> factory{};
   ComPtr<IWICBitmapDecoder> decoder{};
   ComPtr<IWICBitmapFrameDecode> frame{};
@@ -76,6 +116,10 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
   }
 
   ProbeFrameResult result{};
+  if (!result.com.usable()) {
+    return std::unexpected{std::format("WIC COM 初始化失败: {}", hresult_message(result.com.init))};
+  }
+
   IWICImagingFactory* raw_factory = nullptr;
   HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(&raw_factory));
@@ -110,7 +154,7 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
     return std::unexpected{std::format("WIC 读取首帧失败: {}", hresult_message(hr))};
   }
   result.frame.reset(raw_frame);
-  return result;
+  return std::move(result);
 }
 
 struct PixelFormatDetails {

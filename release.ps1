@@ -13,6 +13,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $PSCommandPath
 $BuildDir = Join-Path $Repo "build\x64\Release"
+$OutputDir = Join-Path $Repo "bin\x64\Release"
 
 if (-not $VcpkgRoot) {
     if ($env:VCPKG_ROOT) {
@@ -54,6 +55,9 @@ function Ensure-VcpkgPackage([string]$Root, [string]$Triplet, [string]$Port, [st
 if ($StaticRuntime -and $DynamicRuntime) {
     throw "不能同时指定 -StaticRuntime 和 -DynamicRuntime。"
 }
+if ($SharedSlint) {
+    throw "Release 产物必须只包含 AWJ.exe、AWJ.com 和两个 sha256；请不要使用 -SharedSlint。"
+}
 
 $UseStaticRuntime = -not [bool]$DynamicRuntime
 if ($StaticRuntime) {
@@ -91,6 +95,11 @@ $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { '
 $ConfigureArgs += "-DAWJ_ENABLE_ZENRAVIF=$(if ($DisableZenravif) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAWJ_ENABLE_SVTAV1HDR=$(if ($DisableSvtAv1Hdr) { 'OFF' } else { 'ON' })"
 
+$ReleaseFiles = @("AWJ.exe", "AWJ.com", "AWJ.exe.sha256", "AWJ.com.sha256")
+if (Test-Path $OutputDir) {
+    Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $ReleaseFiles -notcontains $_.Name } | Remove-Item -Recurse -Force
+}
+
 cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake 配置失败，退出码 $LASTEXITCODE。"
@@ -101,16 +110,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "Release 构建失败，退出码 $LASTEXITCODE。"
 }
 
-$OutputDir = Join-Path $Repo "bin\x64\Release"
-$Keep = @("AWJ.exe", "AWJ.com", "AWJ.pdb", "AWJ-com.pdb", "AWJ.exe.sha256", "AWJ.com.sha256", "slint_cpp.dll")
 if (Test-Path $OutputDir) {
-    Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $Keep -notcontains $_.Name } | Remove-Item -Recurse -Force
-    if (-not $SharedSlint) {
-        foreach ($Name in @("slint_cpp.dll", "slint-compiler.exe", "slint_compiler.pdb")) {
-            $Path = Join-Path $OutputDir $Name
-            if (Test-Path $Path) { Remove-Item -LiteralPath $Path -Force }
-        }
-    }
+    Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $ReleaseFiles -notcontains $_.Name } | Remove-Item -Recurse -Force
 }
 
 Write-Host ""

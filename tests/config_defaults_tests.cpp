@@ -49,7 +49,9 @@ int main() {
       awj::default_quality_for(awj::OutputFormat::webp) !=
           awj::encoding_defaults::default_webp_quality ||
       awj::default_quality_for(awj::OutputFormat::jxl) !=
-          awj::encoding_defaults::default_jxl_quality) {
+          awj::encoding_defaults::default_jxl_quality ||
+      awj::default_quality_for(awj::OutputFormat::jpgli) !=
+          awj::encoding_defaults::default_jpegli_quality) {
     return fail("format quality defaults mismatch.");
   }
 
@@ -58,7 +60,9 @@ int main() {
       awj::default_speed_for(awj::OutputFormat::avif) !=
           awj::encoding_defaults::default_avif_native_speed ||
       awj::default_speed_for(awj::OutputFormat::jxl) !=
-          awj::encoding_defaults::default_jxl_native_speed) {
+          awj::encoding_defaults::default_jxl_native_speed ||
+      awj::default_speed_for(awj::OutputFormat::jpgli) !=
+          awj::encoding_defaults::default_jpegli_native_speed) {
     return fail("format speed defaults mismatch.");
   }
 
@@ -78,6 +82,48 @@ int main() {
     return fail("CLI JXL default quality mismatch.");
   }
 
+  parsed = awj::parse_arguments({L"--format", L"jpgli"});
+  if (!parsed || parsed->config.output_format != awj::OutputFormat::jpgli ||
+      parsed->config.quality != awj::encoding_defaults::default_jpegli_quality) {
+    return fail("CLI JPGLI format alias did not parse.");
+  }
+
+  parsed = awj::parse_arguments({L"--format", L"jpegli"});
+  if (!parsed || parsed->config.output_format != awj::OutputFormat::jpgli) {
+    return fail("CLI Jpegli format alias did not parse.");
+  }
+
+  parsed = awj::parse_arguments(
+      {L"--format", L"jpgli", L"--chroma", L"422",
+       L"--jpegli-progressive-level", L"0", L"--jpegli-fixed-huffman",
+       L"--jpegli-xyb"});
+  if (!parsed || parsed->config.output_format != awj::OutputFormat::jpgli ||
+      parsed->config.chroma_mode != awj::ChromaMode::yuv422 ||
+      parsed->config.jpegli_progressive_level != 0 ||
+      parsed->config.jpegli_optimize_huffman ||
+      !parsed->config.jpegli_xyb) {
+    return fail("CLI JPGLI advanced options did not parse.");
+  }
+
+  parsed = awj::parse_arguments(
+      {L"--format", L"jpgli", L"--jpegli-progressive-level", L"2",
+       L"--jpegli-fixed-huffman"});
+  if (parsed ||
+      parsed.error().find("渐进 JPEG 需要优化哈夫曼表") == std::string::npos) {
+    return fail("CLI JPGLI invalid progressive/fixed huffman combination was not rejected.");
+  }
+
+  parsed = awj::parse_arguments({L"--format", L"jpg"});
+  if (parsed || parsed.error().find("输出格式不支持") == std::string::npos) {
+    return fail("CLI should not accept plain jpg as the JPGLI entry.");
+  }
+
+  parsed = awj::parse_arguments({L"--format", L"jpgli", L"--alpha", L"force"});
+  if (parsed ||
+      parsed.error().find("JPGLI 不支持 alpha 输出") == std::string::npos) {
+    return fail("CLI did not reject forced alpha for JPGLI.");
+  }
+
   parsed = awj::parse_arguments({L"--format", L"webp", L"--quality", L"82"});
   if (!parsed) {
     std::cerr << parsed.error() << '\n';
@@ -92,7 +138,7 @@ int main() {
     std::cerr << parsed.error() << '\n';
     return 1;
   }
-  if (parsed->config.visual_quality != 25 ||
+  if (parsed->config.visual_quality.value_or(-1) != 25 ||
       parsed->config.encode_timeout_minutes !=
           awj::encoding_defaults::preset_fast_timeout_minutes) {
     return fail("preset defaults mismatch.");
@@ -112,21 +158,22 @@ int main() {
        L"--transfer-characteristics", L"16", L"--matrix-coefficients", L"9",
        L"--color-range", L"0"});
   if (!parsed || parsed->config.avif_encoder != awj::AvifEncoderMode::svt ||
-      parsed->config.svtav1hdr_crf != 28 ||
-      parsed->config.svtav1hdr_preset != 4 ||
+      parsed->config.svtav1hdr_crf.value_or(-1) != 28 ||
+      parsed->config.svtav1hdr_preset.value_or(-1) != 4 ||
       parsed->config.svtav1hdr_tune != "iq" ||
-      parsed->config.svtav1hdr_keyint != 1 ||
-      parsed->config.color_primaries != 9 ||
-      parsed->config.transfer_characteristics != 16 ||
-      parsed->config.matrix_coefficients != 9 ||
-      parsed->config.color_range != 0) {
+      parsed->config.svtav1hdr_keyint.value_or(-1) != 1 ||
+      parsed->config.color_primaries.value_or(-1) != 9 ||
+      parsed->config.transfer_characteristics.value_or(-1) != 16 ||
+      parsed->config.matrix_coefficients.value_or(-1) != 9 ||
+      parsed->config.color_range.value_or(-1) != 0) {
     return fail("CLI svt-av1-hdr options did not parse.");
   }
 
   parsed =
       awj::parse_arguments({L"--avif-encoder", L"svt", L"--chroma", L"444"});
-  if (parsed || parsed.error().find("only supports 420") == std::string::npos) {
-    return fail("CLI did not reject SVT with 444 chroma.");
+  if (!parsed || parsed->config.avif_encoder != awj::AvifEncoderMode::svt ||
+      parsed->config.chroma_mode != awj::ChromaMode::yuv444) {
+    return fail("CLI did not preserve explicit SVT chroma request for diagnostics.");
   }
 
   parsed = awj::parse_arguments({L"--avif-encoder", L"zenrav1e"});
@@ -159,11 +206,8 @@ int main() {
 
   parsed = awj::parse_arguments(
       {L"--backend", L"magick", L"--magick-path", L"tools"});
-  if (parsed ||
-      parsed.error().find("转换适配器尚未启用") == std::string::npos) {
-    return fail(
-        "CLI did not reject external Magick adapter while preserving path "
-        "config.");
+  if (parsed || parsed.error().find("未知参数") == std::string::npos) {
+    return fail("CLI still accepts removed external Magick adapter options.");
   }
 
   parsed = awj::parse_arguments({L"--max-resolution", L"1600"});
@@ -172,16 +216,21 @@ int main() {
   }
 
   const auto help = awj::help_text();
-  if (help.find(std::format("AVIF 默认 {}",
+  if (help.find(std::format("AVIF q{}",
                             awj::encoding_defaults::default_avif_quality)) ==
           std::string::npos ||
-      help.find(std::format("WebP/JXL 默认 {}",
+      help.find(std::format("WebP q{}",
                             awj::encoding_defaults::default_webp_quality)) ==
           std::string::npos ||
+      help.find(std::format("JPGLI q{}",
+                            awj::encoding_defaults::default_jpegli_quality)) ==
+          std::string::npos ||
+      help.find("jpgli|jpegli") == std::string::npos ||
+      help.find("--jpegli-progressive-level") == std::string::npos ||
       help.find("--avif-encoder") == std::string::npos ||
       help.find("--experimental-encoders") == std::string::npos ||
       help.find("默认开启") == std::string::npos ||
-      help.find("opaque 420 <=10-bit") == std::string::npos ||
+      help.find("zenrav1e") == std::string::npos ||
       help.find("--svtav1hdr-crf") == std::string::npos ||
       help.find("--svtav1hdr-keyint") == std::string::npos ||
       help.find("--max-resolution") != std::string::npos) {

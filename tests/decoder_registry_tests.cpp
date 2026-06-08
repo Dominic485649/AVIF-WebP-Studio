@@ -19,8 +19,36 @@ int main() {
   }
 
   auto jpeg = awj::select_decoder_for_path("sample.jpeg", {.allow_wic_fallback = true});
-  if (!jpeg || jpeg->fallback || jpeg->decoder->id() != "libjpeg-turbo") {
+  if (!jpeg || jpeg->fallback) {
+    return fail("JPEG did not select a native decoder before WIC.");
+  }
+#if AWJ_HAS_JPEGLI
+  if (jpeg->decoder->id() != "jpegli") {
+    return fail("JPEG did not select Jpegli before libjpeg-turbo/WIC.");
+  }
+#else
+  if (jpeg->decoder->id() != "libjpeg-turbo") {
     return fail("JPEG did not select libjpeg-turbo before WIC.");
+  }
+#endif
+  auto jpeg_without_wic = awj::select_decoder_for_path("sample.jfif",
+                                                       {.allow_wic_fallback = false});
+  if (!jpeg_without_wic || jpeg_without_wic->fallback) {
+    return fail("JPEG series should be native with WIC fallback disabled.");
+  }
+
+  for (const char* path : {"sample.bmp", "sample.dib", "sample.rle"}) {
+    auto bmp = awj::select_decoder_for_path(path, {.allow_wic_fallback = false});
+    if (!bmp || bmp->fallback || bmp->decoder->id() != "awj-bmp") {
+      return fail("BMP series did not select the native BMP decoder.");
+    }
+  }
+
+  for (const char* path : {"sample.jxr", "sample.wdp", "sample.hdp"}) {
+    auto jxr = awj::select_decoder_for_path(path, {.allow_wic_fallback = false});
+    if (!jxr || jxr->fallback || jxr->decoder->id() != "windows-jxr") {
+      return fail("JXR series did not select the Windows native JXR decoder.");
+    }
   }
 
   auto gif = awj::select_decoder_for_path("sample.gif", {.allow_wic_fallback = true});

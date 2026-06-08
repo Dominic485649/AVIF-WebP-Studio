@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <stop_token>
 #include <string_view>
@@ -24,6 +25,16 @@ int fail(std::string_view message) {
   std::fwrite(message.data(), 1, message.size(), stderr);
   std::fputc('\n', stderr);
   return 1;
+}
+
+bool contains_any(std::string_view text,
+                  std::initializer_list<std::string_view> needles) {
+  for (const auto needle : needles) {
+    if (text.find(needle) != std::string_view::npos) {
+      return true;
+    }
+  }
+  return false;
 }
 
 awj::ImageBuffer make_test_image(std::size_t width = 4, std::size_t height = 4) {
@@ -106,7 +117,7 @@ int main() {
   auto raw = awj::read_raw_image_file(raw_path);
   std::error_code ec;
   std::filesystem::remove(raw_path, ec);
-  if (raw || raw.error().find("invalid") == std::string::npos) {
+  if (raw || !contains_any(raw.error(), {"invalid", "无效"})) {
     return fail("malformed raw dimensions were not rejected.");
   }
 

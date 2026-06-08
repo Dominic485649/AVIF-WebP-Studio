@@ -101,6 +101,10 @@ int run_cli(int argc, wchar_t* argv[]) {
     if (parsed->should_exit) {
       return parsed->exit_code;
     }
+    if (auto valid = awj::validate_execution_config(parsed->config); !valid) {
+      print_line(std::format("[FAIL] {}", valid.error()));
+      return 1;
+    }
     std::jthread studio_cancel_watcher;
     UniqueWin32Handle studio_cancel_event;
     if (!parsed->config.studio_cancel_event_name.empty()) {

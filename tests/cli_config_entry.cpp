@@ -49,6 +49,10 @@ int run_config_cli(int argc, wchar_t* argv[]) {
     if (parsed->should_exit) {
       return parsed->exit_code;
     }
+    if (auto valid = awj::validate_execution_config(parsed->config); !valid) {
+      print_line(std::format("[FAIL] {}", valid.error()));
+      return 1;
+    }
 
     print_line("[OK] config parsed.");
     return 0;
