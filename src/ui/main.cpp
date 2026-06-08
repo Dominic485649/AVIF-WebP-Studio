@@ -16,6 +16,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -57,6 +59,8 @@ import awj.pipeline;
 import awj.resource_planner;
 
 namespace {
+constexpr std::string_view kStudioConfigFileName = "AWJ.jsonc";
+
 awj::LargeImageDecision manual_large_image_decision(
     awj::ImageDimensions dimensions, bool grid_available,
     bool zenrav1e_available) {
@@ -137,6 +141,37 @@ struct StudioChildProcess {
   }
 };
 
+struct StudioConfigSnapshot {
+  int input_mode_index{};
+  int format_index{};
+  int preset_index{};
+  int avif_encoder_index{};
+  int chroma_index{};
+  int jpegli_progressive_index{};
+  int alpha_policy_index{};
+  int collision_index{};
+  int theme_index{};
+  int selected_large_image_action_index{};
+  bool experimental_encoders{};
+  bool visual_quality_gpu{};
+  bool visual_quality_fallback{};
+  bool allow_wic_fallback{};
+  bool jpegli_optimize_huffman{};
+  bool jpegli_xyb{};
+  bool strip_metadata{};
+  bool write_summary{};
+  bool write_log{};
+  std::string quality_text{};
+  std::string visual_quality_text{};
+  std::string bit_depth_text{};
+  std::string threads_text{};
+  std::string memory_limit_text{};
+  std::string speed_text{};
+  std::string template_text{};
+
+  bool operator==(const StudioConfigSnapshot&) const = default;
+};
+
 struct UiState {
   std::jthread worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
@@ -145,6 +180,9 @@ struct UiState {
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   slint::Timer theme_timer{};
   slint::Timer update_timer{};
+  slint::Timer config_timer{};
+  std::optional<StudioConfigSnapshot> config_defaults{};
+  std::optional<StudioConfigSnapshot> last_config_snapshot{};
   std::uint64_t run_id{};
   std::uint64_t next_queue_id{1};
   std::mutex mutex{};
@@ -368,6 +406,684 @@ std::string text_from_wide(std::wstring_view text) {
 }
 
 std::string text_from_int(int value) { return std::format("{}", value); }
+
+int CALLBACK enum_font_family_proc(const LOGFONTW*, const TEXTMETRICW*, DWORD,
+                                   LPARAM param) {
+  *reinterpret_cast<bool*>(param) = true;
+  return 0;
+}
+
+bool system_font_available(std::wstring_view family) noexcept {
+  if (family.empty()) {
+    return false;
+  }
+  HDC dc = GetDC(nullptr);
+  if (dc == nullptr) {
+    return false;
+  }
+  LOGFONTW query{};
+  query.lfCharSet = DEFAULT_CHARSET;
+  const auto length =
+      std::min<std::size_t>(family.size(), std::size(query.lfFaceName) - 1);
+  std::copy_n(family.begin(), length, query.lfFaceName);
+  bool found = false;
+  EnumFontFamiliesExW(dc, &query, enum_font_family_proc,
+                      reinterpret_cast<LPARAM>(&found), 0);
+  ReleaseDC(nullptr, dc);
+  return found;
+}
+
+std::string select_system_ui_font_family() {
+  const std::array<std::wstring_view, 8> candidates{
+      L"鸿蒙黑体",       L"HarmonyOS Sans SC", L"Microsoft YaHei UI",
+      L"Microsoft YaHei", L"微软雅黑",          L"Segoe UI",
+      L"SimHei",         L"SimSun"};
+  for (const auto family : candidates) {
+    if (system_font_available(family)) {
+      return awj::utf8_from_wide(family);
+    }
+  }
+  return {};
+}
+
+void apply_system_ui_font(AwjStudio& app) {
+  const auto family = select_system_ui_font_family();
+  if (family.empty()) {
+    app.set_ui_font_family({});
+    app.set_ui_font_label(to_shared("系统默认字体"));
+    return;
+  }
+  app.set_ui_font_family(to_shared(family));
+  app.set_ui_font_label(to_shared(std::format("{}（系统）", family)));
+}
+
+std::filesystem::path studio_config_path() {
+  if (auto directory = awj::executable_directory()) {
+    return *directory / awj::wide_from_utf8(std::string{kStudioConfigFileName});
+  }
+  return {};
+}
+
+StudioConfigSnapshot capture_studio_config(const AwjStudio& app) {
+  return StudioConfigSnapshot{
+      .input_mode_index = app.get_input_mode_index(),
+      .format_index = app.get_format_index(),
+      .preset_index = app.get_preset_index(),
+      .avif_encoder_index = app.get_avif_encoder_index(),
+      .chroma_index = app.get_chroma_index(),
+      .jpegli_progressive_index = app.get_jpegli_progressive_index(),
+      .alpha_policy_index = app.get_alpha_policy_index(),
+      .collision_index = app.get_collision_index(),
+      .theme_index = app.get_theme_index(),
+      .selected_large_image_action_index =
+          app.get_selected_large_image_action_index(),
+      .experimental_encoders = app.get_experimental_encoders(),
+      .visual_quality_gpu = app.get_visual_quality_gpu(),
+      .visual_quality_fallback = app.get_visual_quality_fallback(),
+      .allow_wic_fallback = app.get_allow_wic_fallback(),
+      .jpegli_optimize_huffman = app.get_jpegli_optimize_huffman(),
+      .jpegli_xyb = app.get_jpegli_xyb(),
+      .strip_metadata = app.get_strip_metadata(),
+      .write_summary = app.get_write_summary(),
+      .write_log = app.get_write_log(),
+      .quality_text = shared_to_string(app.get_quality_text()),
+      .visual_quality_text = shared_to_string(app.get_visual_quality_text()),
+      .bit_depth_text = shared_to_string(app.get_bit_depth_text()),
+      .threads_text = shared_to_string(app.get_threads_text()),
+      .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
+      .speed_text = shared_to_string(app.get_speed_text()),
+      .template_text = shared_to_string(app.get_template_text())};
+}
+
+std::string strip_jsonc_comments(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  bool in_string = false;
+  bool escaped = false;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char ch = text[i];
+    if (in_string) {
+      out.push_back(ch);
+      if (escaped) {
+        escaped = false;
+      } else if (ch == '\\') {
+        escaped = true;
+      } else if (ch == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (ch == '"') {
+      in_string = true;
+      out.push_back(ch);
+      continue;
+    }
+    if (ch == '/' && i + 1 < text.size() && text[i + 1] == '/') {
+      while (i < text.size() && text[i] != '\n') {
+        ++i;
+      }
+      if (i < text.size()) {
+        out.push_back('\n');
+      }
+      continue;
+    }
+    if (ch == '/' && i + 1 < text.size() && text[i + 1] == '*') {
+      i += 2;
+      while (i + 1 < text.size() && !(text[i] == '*' && text[i + 1] == '/')) {
+        out.push_back(text[i] == '\n' ? '\n' : ' ');
+        ++i;
+      }
+      if (i + 1 < text.size()) {
+        ++i;
+      }
+      continue;
+    }
+    out.push_back(ch);
+  }
+  return out;
+}
+
+struct JsonConfigValue {
+  enum class Kind { boolean, integer, string };
+  Kind kind{};
+  bool boolean{};
+  int integer{};
+  std::string string{};
+};
+
+void skip_json_ws(std::string_view text, std::size_t& pos) noexcept {
+  while (pos < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
+    ++pos;
+  }
+}
+
+std::expected<std::string, std::string> parse_json_string(std::string_view text,
+                                                          std::size_t& pos) {
+  if (pos >= text.size() || text[pos] != '"') {
+    return std::unexpected{"期望字符串。"};
+  }
+  ++pos;
+  std::string out;
+  while (pos < text.size()) {
+    const char ch = text[pos++];
+    if (ch == '"') {
+      return out;
+    }
+    if (ch != '\\') {
+      out.push_back(ch);
+      continue;
+    }
+    if (pos >= text.size()) {
+      return std::unexpected{"字符串转义不完整。"};
+    }
+    const char esc = text[pos++];
+    switch (esc) {
+      case '"':
+      case '\\':
+      case '/':
+        out.push_back(esc);
+        break;
+      case 'b':
+        out.push_back('\b');
+        break;
+      case 'f':
+        out.push_back('\f');
+        break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      default:
+        return std::unexpected{"不支持的字符串转义。"};
+    }
+  }
+  return std::unexpected{"字符串未闭合。"};
+}
+
+std::expected<JsonConfigValue, std::string> parse_json_value(
+    std::string_view text, std::size_t& pos) {
+  skip_json_ws(text, pos);
+  if (pos >= text.size()) {
+    return std::unexpected{"配置值不完整。"};
+  }
+  if (text[pos] == '"') {
+    auto value = parse_json_string(text, pos);
+    if (!value) {
+      return std::unexpected{value.error()};
+    }
+    return JsonConfigValue{.kind = JsonConfigValue::Kind::string,
+                           .string = std::move(*value)};
+  }
+  if (text.substr(pos, 4) == "true") {
+    pos += 4;
+    return JsonConfigValue{.kind = JsonConfigValue::Kind::boolean,
+                           .boolean = true};
+  }
+  if (text.substr(pos, 5) == "false") {
+    pos += 5;
+    return JsonConfigValue{.kind = JsonConfigValue::Kind::boolean};
+  }
+  const std::size_t start = pos;
+  if (text[pos] == '-') {
+    ++pos;
+  }
+  while (pos < text.size() &&
+         std::isdigit(static_cast<unsigned char>(text[pos])) != 0) {
+    ++pos;
+  }
+  if (pos == start || (pos == start + 1 && text[start] == '-')) {
+    return std::unexpected{"配置值只支持布尔、整数或字符串。"};
+  }
+  const auto parsed = scn::scan_int<int>(text.substr(start, pos - start));
+  if (!parsed) {
+    return std::unexpected{"整数配置值无效。"};
+  }
+  return JsonConfigValue{.kind = JsonConfigValue::Kind::integer,
+                         .integer = parsed->value()};
+}
+
+std::expected<std::unordered_map<std::string, JsonConfigValue>, std::string>
+parse_jsonc_config(std::string_view source) {
+  const auto text = strip_jsonc_comments(source);
+  std::string_view view{text};
+  std::unordered_map<std::string, JsonConfigValue> values;
+  std::size_t pos = 0;
+  skip_json_ws(view, pos);
+  if (pos >= view.size()) {
+    return values;
+  }
+  if (view[pos++] != '{') {
+    return std::unexpected{"配置文件根节点必须是对象。"};
+  }
+  while (true) {
+    skip_json_ws(view, pos);
+    if (pos < view.size() && view[pos] == '}') {
+      ++pos;
+      break;
+    }
+    auto key = parse_json_string(view, pos);
+    if (!key) {
+      return std::unexpected{key.error()};
+    }
+    skip_json_ws(view, pos);
+    if (pos >= view.size() || view[pos++] != ':') {
+      return std::unexpected{"配置项缺少冒号。"};
+    }
+    auto value = parse_json_value(view, pos);
+    if (!value) {
+      return std::unexpected{value.error()};
+    }
+    values.insert_or_assign(std::move(*key), std::move(*value));
+    skip_json_ws(view, pos);
+    if (pos < view.size() && view[pos] == ',') {
+      ++pos;
+      continue;
+    }
+    if (pos < view.size() && view[pos] == '}') {
+      ++pos;
+      break;
+    }
+    return std::unexpected{"配置项之间缺少逗号。"};
+  }
+  skip_json_ws(view, pos);
+  if (pos != view.size()) {
+    return std::unexpected{"配置对象后存在多余内容。"};
+  }
+  return values;
+}
+
+std::expected<int, std::string> config_int(
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key, int minimum, int maximum) {
+  const auto it = values.find(std::string{key});
+  if (it == values.end()) {
+    return std::unexpected{""};
+  }
+  if (it->second.kind != JsonConfigValue::Kind::integer) {
+    return std::unexpected{std::format("{} 必须是整数。", key)};
+  }
+  if (it->second.integer < minimum || it->second.integer > maximum) {
+    return std::unexpected{
+        std::format("{} 范围必须在 {} 到 {} 之间。", key, minimum, maximum)};
+  }
+  return it->second.integer;
+}
+
+std::expected<bool, std::string> config_bool(
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key) {
+  const auto it = values.find(std::string{key});
+  if (it == values.end()) {
+    return std::unexpected{""};
+  }
+  if (it->second.kind != JsonConfigValue::Kind::boolean) {
+    return std::unexpected{std::format("{} 必须是布尔值。", key)};
+  }
+  return it->second.boolean;
+}
+
+std::expected<std::string, std::string> config_string(
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key) {
+  const auto it = values.find(std::string{key});
+  if (it == values.end()) {
+    return std::unexpected{""};
+  }
+  if (it->second.kind != JsonConfigValue::Kind::string) {
+    return std::unexpected{std::format("{} 必须是字符串。", key)};
+  }
+  return it->second.string;
+}
+
+template <class Setter>
+std::expected<void, std::string> apply_config_int(
+    AwjStudio& app,
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key, int minimum, int maximum, Setter setter) {
+  auto value = config_int(values, key, minimum, maximum);
+  if (!value) {
+    return value.error().empty() ? std::expected<void, std::string>{}
+                                 : std::unexpected{value.error()};
+  }
+  (app.*setter)(*value);
+  return {};
+}
+
+template <class Setter>
+std::expected<void, std::string> apply_config_bool(
+    AwjStudio& app,
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key, Setter setter) {
+  auto value = config_bool(values, key);
+  if (!value) {
+    return value.error().empty() ? std::expected<void, std::string>{}
+                                 : std::unexpected{value.error()};
+  }
+  (app.*setter)(*value);
+  return {};
+}
+
+template <class Setter>
+std::expected<void, std::string> apply_config_string(
+    AwjStudio& app,
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key, Setter setter) {
+  auto value = config_string(values, key);
+  if (!value) {
+    return value.error().empty() ? std::expected<void, std::string>{}
+                                 : std::unexpected{value.error()};
+  }
+  (app.*setter)(to_shared(*value));
+  return {};
+}
+
+std::expected<void, std::string> apply_studio_config_file(AwjStudio& app) {
+  const auto path = studio_config_path();
+  if (path.empty()) {
+    return {};
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec) || ec) {
+    return {};
+  }
+  std::ifstream input{path, std::ios::binary};
+  if (!input) {
+    return std::unexpected{"无法读取 Studio 配置文件。"};
+  }
+  std::string source{std::istreambuf_iterator<char>{input},
+                     std::istreambuf_iterator<char>{}};
+  auto values = parse_jsonc_config(source);
+  if (!values) {
+    return std::unexpected{values.error()};
+  }
+
+  const auto apply = [&](auto result) -> std::expected<void, std::string> {
+    if (!result) {
+      return std::unexpected{result.error()};
+    }
+    return {};
+  };
+
+  if (auto result = apply(apply_config_int(app, *values, "input_mode_index", 0,
+                                           1, &AwjStudio::set_input_mode_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(app, *values, "format_index", 0, 3,
+                                           &AwjStudio::set_format_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(app, *values, "preset_index", 0, 5,
+                                           &AwjStudio::set_preset_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(
+          app, *values, "avif_encoder_index", 0, 3,
+          &AwjStudio::set_avif_encoder_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(app, *values, "chroma_index", 0, 3,
+                                           &AwjStudio::set_chroma_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(
+          app, *values, "jpegli_progressive_index", 0, 2,
+          &AwjStudio::set_jpegli_progressive_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(
+          app, *values, "alpha_policy_index", 0, 2,
+          &AwjStudio::set_alpha_policy_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(app, *values, "collision_index", 0,
+                                           3, &AwjStudio::set_collision_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(app, *values, "theme_index", 0, 2,
+                                           &AwjStudio::set_theme_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_int(
+          app, *values, "selected_large_image_action_index", 0, 1,
+          &AwjStudio::set_selected_large_image_action_index));
+      !result) {
+    return result;
+  }
+
+  if (auto result = apply(apply_config_bool(
+          app, *values, "experimental_encoders",
+          &AwjStudio::set_experimental_encoders));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(
+          app, *values, "visual_quality_gpu",
+          &AwjStudio::set_visual_quality_gpu));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(
+          app, *values, "visual_quality_fallback",
+          &AwjStudio::set_visual_quality_fallback));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(
+          app, *values, "allow_wic_fallback",
+          &AwjStudio::set_allow_wic_fallback));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(
+          app, *values, "jpegli_optimize_huffman",
+          &AwjStudio::set_jpegli_optimize_huffman));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(app, *values, "jpegli_xyb",
+                                            &AwjStudio::set_jpegli_xyb));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(app, *values, "strip_metadata",
+                                            &AwjStudio::set_strip_metadata));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(app, *values, "write_summary",
+                                            &AwjStudio::set_write_summary));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(app, *values, "write_log",
+                                            &AwjStudio::set_write_log));
+      !result) {
+    return result;
+  }
+
+  if (auto result = apply(apply_config_string(app, *values, "quality_text",
+                                              &AwjStudio::set_quality_text));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_string(
+          app, *values, "visual_quality_text",
+          &AwjStudio::set_visual_quality_text));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_string(app, *values, "bit_depth_text",
+                                              &AwjStudio::set_bit_depth_text));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_string(app, *values, "threads_text",
+                                              &AwjStudio::set_threads_text));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_string(
+          app, *values, "memory_limit_text",
+          &AwjStudio::set_memory_limit_text));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_string(app, *values, "speed_text",
+                                              &AwjStudio::set_speed_text));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_string(app, *values, "template_text",
+                                              &AwjStudio::set_template_text));
+      !result) {
+    return result;
+  }
+  return {};
+}
+
+std::string json_escape(std::string_view value) {
+  std::string out;
+  out.reserve(value.size() + 8);
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out.push_back(ch);
+        break;
+    }
+  }
+  return out;
+}
+
+void append_json_config_line(std::vector<std::string>& lines,
+                             std::string_view key, std::string value) {
+  lines.push_back(std::format("  \"{}\": {}", key, value));
+}
+
+std::expected<void, std::string> write_studio_config_file(
+    const StudioConfigSnapshot& current,
+    const StudioConfigSnapshot& defaults) try {
+  const auto path = studio_config_path();
+  if (path.empty()) {
+    return std::unexpected{"无法定位程序同目录配置文件路径。"};
+  }
+  std::vector<std::string> lines;
+  const auto add_int = [&](std::string_view key, int value, int fallback) {
+    if (value != fallback) {
+      append_json_config_line(lines, key, std::format("{}", value));
+    }
+  };
+  const auto add_bool = [&](std::string_view key, bool value, bool fallback) {
+    if (value != fallback) {
+      append_json_config_line(lines, key, value ? "true" : "false");
+    }
+  };
+  const auto add_string = [&](std::string_view key, const std::string& value,
+                              const std::string& fallback) {
+    if (value != fallback) {
+      append_json_config_line(lines, key,
+                              std::format("\"{}\"", json_escape(value)));
+    }
+  };
+
+  add_int("input_mode_index", current.input_mode_index,
+          defaults.input_mode_index);
+  add_int("format_index", current.format_index, defaults.format_index);
+  add_int("preset_index", current.preset_index, defaults.preset_index);
+  add_int("avif_encoder_index", current.avif_encoder_index,
+          defaults.avif_encoder_index);
+  add_int("chroma_index", current.chroma_index, defaults.chroma_index);
+  add_int("jpegli_progressive_index", current.jpegli_progressive_index,
+          defaults.jpegli_progressive_index);
+  add_int("alpha_policy_index", current.alpha_policy_index,
+          defaults.alpha_policy_index);
+  add_int("collision_index", current.collision_index, defaults.collision_index);
+  add_int("theme_index", current.theme_index, defaults.theme_index);
+  add_int("selected_large_image_action_index",
+          current.selected_large_image_action_index,
+          defaults.selected_large_image_action_index);
+
+  add_bool("experimental_encoders", current.experimental_encoders,
+           defaults.experimental_encoders);
+  add_bool("visual_quality_gpu", current.visual_quality_gpu,
+           defaults.visual_quality_gpu);
+  add_bool("visual_quality_fallback", current.visual_quality_fallback,
+           defaults.visual_quality_fallback);
+  add_bool("allow_wic_fallback", current.allow_wic_fallback,
+           defaults.allow_wic_fallback);
+  add_bool("jpegli_optimize_huffman", current.jpegli_optimize_huffman,
+           defaults.jpegli_optimize_huffman);
+  add_bool("jpegli_xyb", current.jpegli_xyb, defaults.jpegli_xyb);
+  add_bool("strip_metadata", current.strip_metadata, defaults.strip_metadata);
+  add_bool("write_summary", current.write_summary, defaults.write_summary);
+  add_bool("write_log", current.write_log, defaults.write_log);
+
+  add_string("quality_text", current.quality_text, defaults.quality_text);
+  add_string("visual_quality_text", current.visual_quality_text,
+             defaults.visual_quality_text);
+  add_string("bit_depth_text", current.bit_depth_text,
+             defaults.bit_depth_text);
+  add_string("threads_text", current.threads_text, defaults.threads_text);
+  add_string("memory_limit_text", current.memory_limit_text,
+             defaults.memory_limit_text);
+  add_string("speed_text", current.speed_text, defaults.speed_text);
+  add_string("template_text", current.template_text, defaults.template_text);
+
+  std::ofstream output{path, std::ios::binary | std::ios::trunc};
+  if (!output) {
+    return std::unexpected{"无法写入程序同目录配置文件。"};
+  }
+  output << "{\n";
+  output << "  // AWJ Studio runtime config. Only values that differ from "
+            "built-in defaults are written.\n";
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    output << lines[i];
+    if (i + 1 < lines.size()) {
+      output << ',';
+    }
+    output << '\n';
+  }
+  output << "}\n";
+  if (!output) {
+    return std::unexpected{"程序同目录配置文件写入不完整。"};
+  }
+  return {};
+} catch (const std::bad_alloc&) {
+  return std::unexpected{"写入 Studio 配置时内存不足。"};
+} catch (const std::length_error&) {
+  return std::unexpected{"写入 Studio 配置时数据超过运行时限制。"};
+} catch (const std::filesystem::filesystem_error&) {
+  return std::unexpected{"写入 Studio 配置时发生文件系统错误。"};
+}
 
 std::string queue_status_label(QueueItemStatus status) {
   switch (status) {
@@ -2110,7 +2826,9 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   return std::unexpected{"Studio 配置解析文件系统访问失败。"};
 }
 
-std::optional<std::filesystem::path> choose_path(bool pick_folder) {
+enum class PathPickerMode { image_file, folder };
+
+std::optional<std::filesystem::path> choose_path(PathPickerMode mode) {
   ComApartment apartment;
   if (!apartment.usable()) {
     return std::nullopt;
@@ -2134,13 +2852,14 @@ std::optional<std::filesystem::path> choose_path(bool pick_folder) {
     return std::nullopt;
   }
   options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
-  options |= pick_folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST;
+  options |= mode == PathPickerMode::folder ? FOS_PICKFOLDERS
+                                            : FOS_FILEMUSTEXIST;
   hr = dialog->SetOptions(options);
   if (FAILED(hr)) {
     return std::nullopt;
   }
 
-  if (!pick_folder) {
+  if (mode == PathPickerMode::image_file) {
     const COMDLG_FILTERSPEC filters[] = {
         {L"图片文件",
          L"*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.webp;*.bmp;*.dib;*.rle;*.tif;*."
@@ -2176,6 +2895,11 @@ std::optional<std::filesystem::path> choose_path(bool pick_folder) {
   // SIGDN_FILESYSPATH 返回 CoTaskMemAlloc 缓冲区，复制进 filesystem::path
   // 后立即交还给 COM 分配器。
   return std::filesystem::path{path.get()};
+}
+
+std::optional<std::filesystem::path> choose_path(bool pick_folder) {
+  return choose_path(pick_folder ? PathPickerMode::folder
+                                 : PathPickerMode::image_file);
 }
 
 std::filesystem::path effective_output_dir(const AwjStudio& app) {
@@ -3135,10 +3859,20 @@ int run_studio_ui() {
     app->set_task_rows(state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
     initialize_ui_defaults(*app);
+    apply_system_ui_font(*app);
     app->set_threads_text({});
     app->set_selected_large_image_action_index(0);
     app->set_system_dark_mode(windows_prefers_dark_mode());
+    state->config_defaults = capture_studio_config(*app);
+    std::optional<std::string> config_warning;
+    if (auto loaded = apply_studio_config_file(*app); !loaded) {
+      config_warning = std::format("读取 Studio 配置失败：{}", loaded.error());
+    }
     sync_template_flags(*app);
+    state->last_config_snapshot = capture_studio_config(*app);
+    if (config_warning) {
+      app->set_status_text(to_shared(*config_warning));
+    }
 
     app->on_clear_tasks([weak, state] {
       run_ui_callback(weak, "清空任务失败", [&] {
@@ -3212,6 +3946,33 @@ int run_studio_ui() {
             if (auto app = weak.lock()) {
               (*app)->set_system_dark_mode(windows_prefers_dark_mode());
             }
+          });
+        });
+
+    std::weak_ptr<UiState> weak_state = state;
+    state->config_timer.start(
+        slint::TimerMode::Repeated, std::chrono::milliseconds{800},
+        [weak, weak_state] {
+          run_ui_callback(weak, "保存 Studio 配置失败", [&] {
+            auto state = weak_state.lock();
+            auto app = weak.lock();
+            if (!state || !app || !state->config_defaults) {
+              return;
+            }
+            auto current = capture_studio_config(**app);
+            if (state->last_config_snapshot &&
+                current == *state->last_config_snapshot) {
+              return;
+            }
+            if (auto saved =
+                    write_studio_config_file(current, *state->config_defaults);
+                !saved) {
+              (*app)->set_status_text(
+                  to_shared(std::format("保存 Studio 配置失败：{}",
+                                        saved.error())));
+              return;
+            }
+            state->last_config_snapshot = std::move(current);
           });
         });
 

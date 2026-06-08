@@ -271,6 +271,10 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .visual_quality_gpu_path = settings.visual_quality ? (settings.visual_quality_gpu ? "requested" : "cpu-disabled") : "not-requested"};
 }
 
+struct DecodeOptions {
+  std::optional<bool> copy_metadata_payloads{};
+};
+
 class ImageDecoder {
  public:
   virtual ~ImageDecoder() = default;
@@ -279,7 +283,8 @@ class ImageDecoder {
   virtual std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const = 0;
   virtual std::expected<ImageDecodeResult, std::string> decode_memory(
-      std::span<const std::byte>, std::string_view) const {
+      std::span<const std::byte>, std::string_view,
+      DecodeOptions = {}) const {
     return std::unexpected{"该解码器不支持内存解码。"};
   }
   virtual std::expected<ImageDimensions, std::string> probe_dimensions(

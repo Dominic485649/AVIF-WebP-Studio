@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.8.0
+    VERSION 0.8.1
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -474,7 +474,9 @@ function(avif_add_slint_sources target slint_file)
                 -f cpp
                 -o "${generated_header}"
                 "--cpp-file=${generated_cpp}"
-        DEPENDS Slint::slint-compiler "${slint_absolute}"
+        DEPENDS
+            Slint::slint-compiler
+            "${slint_absolute}"
         COMMENT "Generating ${slint_base}.h"
         VERBATIM)
 
@@ -848,6 +850,7 @@ target_link_libraries(AWJ PRIVATE
     awj_core
     Slint::Slint
     dwmapi
+    gdi32
     ole32
     shell32
     uxtheme

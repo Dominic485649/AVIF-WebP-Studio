@@ -66,6 +66,8 @@ using RunnerPtr = std::unique_ptr<void, RunnerDeleter>;
 
 constexpr std::size_t min_basic_info_probe_bytes = 16 * 1024;
 constexpr std::size_t max_basic_info_probe_bytes = 1024 * 1024;
+constexpr std::size_t min_encoder_output_buffer_bytes = 16 * 1024;
+constexpr std::size_t max_initial_encoder_output_buffer_bytes = 1024 * 1024;
 constexpr std::size_t max_metadata_box_bytes = 64 * 1024 * 1024;
 constexpr std::size_t max_metadata_box_count = 16;
 constexpr JxlBoxType exif_box_type{'E', 'x', 'i', 'f'};
@@ -478,14 +480,26 @@ std::expected<void, std::string> attach_encoder_runner(JxlEncoder* encoder,
   return {};
 }
 
+std::size_t initial_encoder_output_buffer_size(
+    std::size_t input_size_hint) noexcept {
+  if (input_size_hint == 0) {
+    return min_encoder_output_buffer_bytes;
+  }
+  const auto scaled_hint = std::max(min_encoder_output_buffer_bytes,
+                                    input_size_hint / 8);
+  return std::min(scaled_hint, max_initial_encoder_output_buffer_bytes);
+}
+
 std::expected<std::vector<std::byte>, std::string> collect_encoder_output(
     JxlEncoder* encoder,
+    std::size_t input_size_hint = 0,
     std::stop_token stop_token = {}) {
   std::vector<std::byte> output;
+  const auto initial_size = initial_encoder_output_buffer_size(input_size_hint);
   try {
-    output.resize(16 * 1024);
+    output.resize(initial_size);
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"JXL 编码输出缓冲区内存不足，需要 16384 字节。"};
+    return std::unexpected{"JXL 编码输出缓冲区内存不足。"};
   } catch (const std::length_error&) {
     return std::unexpected{"JXL 编码输出缓冲区尺寸超过运行时限制。"};
   }
@@ -643,8 +657,10 @@ export class JXLImageDecoder final : public ImageDecoder {
 
   std::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte> bytes,
-      std::string_view source_name) const override {
-    return decode_bytes(bytes, source_name, decode_threads_, false);
+      std::string_view source_name,
+      DecodeOptions options = {}) const override {
+    return decode_bytes(bytes, source_name, decode_threads_,
+                        options.copy_metadata_payloads.value_or(false));
   }
 
   std::expected<ImageDecodeResult, std::string> decode(
@@ -1001,7 +1017,8 @@ export class JXLImageEncoder final : public ImageEncoder {
       }
       JxlEncoderCloseInput(encoder.get());
 
-      auto output = jxl_detail::collect_encoder_output(encoder.get(), stop_token);
+      auto output = jxl_detail::collect_encoder_output(
+          encoder.get(), jpeg_bytes.size(), stop_token);
       if (!output) {
         return std::unexpected{output.error()};
       }
@@ -1072,6 +1089,7 @@ export class JXLImageEncoder final : public ImageEncoder {
       }
 
       const bool keep_alpha = settings.applied_alpha == "kept";
+      std::size_t encoder_input_size_hint = 0;
       JxlBasicInfo info{};
       JxlEncoderInitBasicInfo(&info);
       info.xsize = static_cast<std::uint32_t>(image.width);
@@ -1149,6 +1167,7 @@ export class JXLImageEncoder final : public ImageEncoder {
         if (stop_token.stop_requested()) {
           return std::unexpected{"任务已取消。"};
         }
+        encoder_input_size_hint = *size;
         if (JxlEncoderAddImageFrame(frame_settings, &format, rgba.data(), *size) !=
             JXL_ENC_SUCCESS) {
           return std::unexpected{"添加 JXL RGBA frame 失败。"};
@@ -1187,6 +1206,7 @@ export class JXLImageEncoder final : public ImageEncoder {
         if (stop_token.stop_requested()) {
           return std::unexpected{"任务已取消。"};
         }
+        encoder_input_size_hint = rgb_input.size();
         if (JxlEncoderAddImageFrame(frame_settings, &format, rgb_input.data(), rgb_input.size()) !=
             JXL_ENC_SUCCESS) {
           return std::unexpected{"添加 JXL RGB frame 失败。"};
@@ -1210,7 +1230,8 @@ export class JXLImageEncoder final : public ImageEncoder {
       }
       JxlEncoderCloseInput(encoder.get());
 
-      auto output = jxl_detail::collect_encoder_output(encoder.get(), stop_token);
+      auto output = jxl_detail::collect_encoder_output(
+          encoder.get(), encoder_input_size_hint, stop_token);
       if (!output) {
         return std::unexpected{output.error()};
       }

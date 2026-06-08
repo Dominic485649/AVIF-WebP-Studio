@@ -1059,7 +1059,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
                                            display_path_for_user(path))};
       }
 
-      std::vector<std::byte> buffer(1024 * 1024);
+      std::vector<std::byte> buffer(4 * 1024 * 1024);
       while (true) {
         if (stop_token.stop_requested()) {
           return std::unexpected{"任务已取消。"};

@@ -447,8 +447,10 @@ export class JpegliImageDecoder final : public ImageDecoder {
 
   std::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte> bytes,
-      std::string_view source_name) const override {
-    return jpegli_detail::decode_bytes(bytes, source_name, true);
+      std::string_view source_name,
+      DecodeOptions options = {}) const override {
+    return jpegli_detail::decode_bytes(
+        bytes, source_name, options.copy_metadata_payloads.value_or(true));
   }
 };
 

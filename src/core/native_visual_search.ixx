@@ -305,7 +305,8 @@ evaluate_visual_quality_candidate(
   started = native_visual_search_detail::Clock::now();
   const auto candidate_name = path_to_utf8(candidate_path.filename());
   auto decoded = decoder.decode_memory(
-      std::span<const std::byte>{encoded->encoded.bytes}, candidate_name);
+      std::span<const std::byte>{encoded->encoded.bytes}, candidate_name,
+      DecodeOptions{.copy_metadata_payloads = false});
   timing.visual_quality_candidate_decode_seconds +=
       native_visual_search_detail::elapsed_seconds(started);
   if (!decoded) {
@@ -367,16 +368,7 @@ evaluate_visual_quality_candidate(
   }
 
   started = native_visual_search_detail::Clock::now();
-  bool session_candidate_luma = false;
   auto candidate_luma = [&]() -> std::expected<LumaImage, std::string> {
-    if (metric_session != nullptr && !metric_session_failed) {
-      if (auto accelerated_luma =
-              metric_session->make_candidate_luma(decoded->image)) {
-        session_candidate_luma = true;
-        return accelerated_luma;
-      }
-      return make_luma_image(decoded->image);
-    }
     if (settings.visual_quality_gpu && !metric_session_failed) {
       return make_luma_image_accelerated(decoded->image);
     }
@@ -434,21 +426,6 @@ evaluate_visual_quality_candidate(
       };
 
   auto gmsd = [&]() -> std::expected<double, std::string> {
-    if (metric_session != nullptr && session_candidate_luma) {
-      started = native_visual_search_detail::Clock::now();
-      auto accelerated_gmsd =
-          record_gmsd_metric(metric_session->compute_gmsd(), started);
-      if (accelerated_gmsd) {
-        return accelerated_gmsd;
-      }
-      auto current_reference_luma = ensure_reference_luma();
-      if (!current_reference_luma) {
-        return std::unexpected{current_reference_luma.error()};
-      }
-      started = native_visual_search_detail::Clock::now();
-      return record_gmsd_metric(
-          compute_gmsd(**current_reference_luma, *candidate_luma), started);
-    }
     auto current_reference_luma = ensure_reference_luma();
     if (!current_reference_luma) {
       return std::unexpected{current_reference_luma.error()};
@@ -474,17 +451,6 @@ evaluate_visual_quality_candidate(
     return std::unexpected{current_reference_luma.error()};
   }
   auto ms_ssim = [&]() -> std::expected<double, std::string> {
-    if (metric_session != nullptr && session_candidate_luma) {
-      started = native_visual_search_detail::Clock::now();
-      auto accelerated_ms_ssim =
-          record_ms_ssim_metric(metric_session->compute_ms_ssim(), started);
-      if (accelerated_ms_ssim) {
-        return accelerated_ms_ssim;
-      }
-      started = native_visual_search_detail::Clock::now();
-      return record_ms_ssim_metric(
-          compute_ms_ssim(**current_reference_luma, *candidate_luma), started);
-    }
     started = native_visual_search_detail::Clock::now();
     if (settings.visual_quality_gpu && !metric_session_failed) {
       return record_ms_ssim_metric(

@@ -1,5 +1,4 @@
 import { Button, CheckBox, LineEdit, Palette, ScrollView, ListView } from "std-widgets.slint";
-import "./fonts/HarmonyOS_SansSC_Regular.ttf";
 
 export struct TaskRow {
     order: string,
@@ -401,7 +400,7 @@ component QueueMenuItem inherits Rectangle {
 export component AwjStudio inherits Window {
     title: "AWJ Studio";
     icon: @image-url("logo.png");
-    default-font-family: "鸿蒙黑体";
+    default-font-family: root.ui-font-family;
     preferred-width: 1220px;
     preferred-height: 800px;
     min-width: 820px;
@@ -445,6 +444,8 @@ export component AwjStudio inherits Window {
     in-out property <bool> template-sha2568-selected: false;
     in-out property <int> collision-index: 0;
     in-out property <int> theme-index: 0;
+    in-out property <string> ui-font-family: "";
+    in-out property <string> ui-font-label: "系统默认字体";
     in-out property <bool> system-dark-mode: false;
     in-out property <bool> strip-metadata: false;
     in-out property <bool> write-summary: false;
@@ -1139,6 +1140,27 @@ export component AwjStudio inherits Window {
                                         selected-text: root.accent-strong;
                                         selection-accepted(index, click-x, click-y) => {
                                             root.theme-selection-requested(index, click-x, click-y);
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: root.page-gap;
+                                    Text { text: "字体"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: root.control-button-height;
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.field-border;
+                                        background: root.field-bg;
+                                        Text {
+                                            x: 12px;
+                                            width: parent.width - 24px;
+                                            text: root.ui-font-label;
+                                            color: root.text-body;
+                                            font-size: 13px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
                                         }
                                     }
                                 }

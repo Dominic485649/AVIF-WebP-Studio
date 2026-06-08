@@ -1579,8 +1579,10 @@ export class AvifImageDecoder final : public ImageDecoder {
 
   std::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte> bytes,
-      std::string_view source_name) const override {
-    return decode_bytes(bytes, source_name, decode_threads_, false);
+      std::string_view source_name,
+      DecodeOptions options = {}) const override {
+    return decode_bytes(bytes, source_name, decode_threads_,
+                        options.copy_metadata_payloads.value_or(false));
   }
 
   std::expected<ImageDecodeResult, std::string> decode(

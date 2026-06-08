@@ -38,6 +38,17 @@ export namespace awj {
 namespace webp_detail {
 
 constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
+constexpr std::size_t min_encoder_output_capacity = 16 * 1024;
+constexpr std::size_t max_initial_encoder_output_capacity = 1024 * 1024;
+
+std::size_t initial_encoder_output_capacity(std::size_t input_bytes) noexcept {
+  if (input_bytes == 0) {
+    return min_encoder_output_capacity;
+  }
+  const auto scaled_hint = std::max(min_encoder_output_capacity,
+                                    input_bytes / 8);
+  return std::min(scaled_hint, max_initial_encoder_output_capacity);
+}
 
 struct WebPFreeDeleter {
   void operator()(void* value) const noexcept {
@@ -446,8 +457,10 @@ export class WebPImageDecoder final : public ImageDecoder {
 
   std::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte> bytes,
-      std::string_view source_name) const override {
-    return decode_bytes(bytes, source_name, false);
+      std::string_view source_name,
+      DecodeOptions options = {}) const override {
+    return decode_bytes(bytes, source_name,
+                        options.copy_metadata_payloads.value_or(false));
   }
 
   std::expected<ImageDecodeResult, std::string> decode(
@@ -602,6 +615,8 @@ export class WebPImageEncoder final : public ImageEncoder {
       picture.picture.width = width;
       picture.picture.height = height;
       webp_detail::WebPVectorWriter writer{.stop_token = &stop_token};
+      writer.bytes.reserve(
+          webp_detail::initial_encoder_output_capacity((*plane)->bytes.size()));
       picture.picture.writer = webp_detail::write_webp_bytes;
       picture.picture.custom_ptr = &writer;
       if (stop_token.stop_requested()) {
