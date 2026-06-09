@@ -11,25 +11,36 @@ module;
 
 export module awj.visual_quality;
 
+import awj.encoding_defaults;
+
 export namespace awj {
 
-inline constexpr double GMSD_BEST = 0.0025;
-inline constexpr double GMSD_WORST = 0.60;
-inline constexpr double GMSD_CURVE_GAMMA = 0.70;
+inline constexpr double GMSD_BEST = encoding_defaults::visual_gmsd_best;
+inline constexpr double GMSD_WORST = encoding_defaults::visual_gmsd_worst;
+inline constexpr double GMSD_CURVE_GAMMA =
+    encoding_defaults::visual_gmsd_curve_gamma;
 
-inline constexpr double MSSSIM_BEST = 0.9998;
-inline constexpr double MSSSIM_WORST = 0.995;
-inline constexpr double MSSSIM_CURVE_GAMMA = 1.0;
+inline constexpr double MSSSIM_BEST = encoding_defaults::visual_msssim_best;
+inline constexpr double MSSSIM_WORST = encoding_defaults::visual_msssim_worst;
+inline constexpr double MSSSIM_CURVE_GAMMA =
+    encoding_defaults::visual_msssim_curve_gamma;
 
-inline constexpr double GMSD_WEIGHT = 0.90;
-inline constexpr double MSSSIM_WEIGHT = 0.10;
+inline constexpr double GMSD_WEIGHT = encoding_defaults::visual_gmsd_weight;
+inline constexpr double MSSSIM_WEIGHT =
+    encoding_defaults::visual_msssim_weight;
 
-inline constexpr int ENCODER_QUALITY_MIN = 1;
-inline constexpr int ENCODER_QUALITY_MAX = 100;
-inline constexpr double SEARCH_RANGE_MAX = 34.0;
-inline constexpr double SEARCH_RANGE_MIN = 5.0;
-inline constexpr double SEARCH_CENTER_BIAS = 5.0;
-inline constexpr double SEARCH_CURVE_GAMMA = 1.28;
+inline constexpr int ENCODER_QUALITY_MIN =
+    encoding_defaults::visual_encoder_quality_min;
+inline constexpr int ENCODER_QUALITY_MAX =
+    encoding_defaults::visual_encoder_quality_max;
+inline constexpr double SEARCH_RANGE_MAX =
+    encoding_defaults::visual_search_range_max;
+inline constexpr double SEARCH_RANGE_MIN =
+    encoding_defaults::visual_search_range_min;
+inline constexpr double SEARCH_CENTER_BIAS =
+    encoding_defaults::visual_search_center_bias;
+inline constexpr double SEARCH_CURVE_GAMMA =
+    encoding_defaults::visual_search_curve_gamma;
 
 struct VisualScoreBreakdown {
   double visual_score{};

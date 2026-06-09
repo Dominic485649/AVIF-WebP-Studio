@@ -1,5 +1,6 @@
 module;
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -42,6 +43,9 @@ inline constexpr int default_jxl_native_speed = 6;
 inline constexpr int default_jpegli_native_speed = 5;
 inline constexpr int default_jxl_effort = 5;
 inline constexpr bool default_jxl_effort_is_explicit = false;
+inline constexpr int default_jpegli_progressive_level = 2;
+inline constexpr bool default_jpegli_optimize_huffman = true;
+inline constexpr bool default_jpegli_xyb = false;
 inline constexpr int default_zenrav1e_preset = 6;
 inline constexpr int default_svt_preset = 6;
 inline constexpr int default_svtav1hdr_crf = 30;
@@ -67,6 +71,42 @@ inline constexpr std::uint64_t svt_safe_max_pixels =
     ordinary_large_safe_max_pixels;
 inline constexpr int default_grid_overlap_pixels = 0;
 inline constexpr int default_av1_encoder_thread_cap = 8;
+
+inline constexpr std::size_t codec_metadata_max_bytes = 64 * 1024 * 1024;
+inline constexpr std::size_t jpeg_max_saved_metadata_marker_count = 4096;
+inline constexpr std::size_t jpeg_marker_payload_max_bytes = 0xFFFFu - 2u;
+inline constexpr std::size_t png_max_cached_metadata_chunks = 64;
+inline constexpr std::size_t wic_max_color_contexts = 16;
+
+inline constexpr std::size_t jxl_min_basic_info_probe_bytes = 16 * 1024;
+inline constexpr std::size_t jxl_max_basic_info_probe_bytes = 1024 * 1024;
+inline constexpr std::size_t jxl_min_encoder_output_buffer_bytes = 16 * 1024;
+inline constexpr std::size_t jxl_max_initial_encoder_output_buffer_bytes =
+    1024 * 1024;
+inline constexpr std::size_t jxl_max_metadata_box_count = 16;
+
+inline constexpr std::size_t webp_min_encoder_output_capacity = 16 * 1024;
+inline constexpr std::size_t webp_max_initial_encoder_output_capacity =
+    1024 * 1024;
+
+inline constexpr int max_output_temp_path_attempts = 1000;
+inline constexpr std::size_t output_copy_buffer_bytes = 4 * 1024 * 1024;
+inline constexpr std::size_t svtav1hdr_option_value_max_length = 512;
+
+inline constexpr double visual_gmsd_best = 0.0025;
+inline constexpr double visual_gmsd_worst = 0.60;
+inline constexpr double visual_gmsd_curve_gamma = 0.70;
+inline constexpr double visual_msssim_best = 0.9998;
+inline constexpr double visual_msssim_worst = 0.995;
+inline constexpr double visual_msssim_curve_gamma = 1.0;
+inline constexpr double visual_gmsd_weight = 0.90;
+inline constexpr double visual_msssim_weight = 0.10;
+inline constexpr int visual_encoder_quality_min = 1;
+inline constexpr int visual_encoder_quality_max = 100;
+inline constexpr double visual_search_range_max = 34.0;
+inline constexpr double visual_search_range_min = 5.0;
+inline constexpr double visual_search_center_bias = 5.0;
+inline constexpr double visual_search_curve_gamma = 1.28;
 
 inline constexpr bool default_avif_tune_iq = true;
 inline constexpr int default_zenrav1e_keyint = 1;

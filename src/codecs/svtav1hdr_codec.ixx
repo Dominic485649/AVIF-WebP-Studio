@@ -103,8 +103,6 @@ std::expected<AvifRwData, std::string> make_avif_rw_data() {
   }
 }
 
-constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
-
 struct RgbaPlaneView {
   const ImagePlane* plane{};
 };
@@ -257,7 +255,7 @@ std::expected<void, std::string> set_avif_metadata(
 
 std::expected<void, std::string> ensure_metadata_size(std::size_t size,
                                                       std::string_view context) {
-  if (size > max_metadata_bytes) {
+  if (size > encoding_defaults::codec_metadata_max_bytes) {
     return std::unexpected{std::format("svt-av1-hdr {} 元数据超过 64 MiB 上限。", context)};
   }
   return {};
@@ -290,11 +288,10 @@ std::expected<void, std::string> validate_optional_int_range(std::optional<int> 
 
 std::expected<void, std::string> validate_svtav1hdr_ascii_text(std::string_view value,
                                                                std::string_view name) {
-  constexpr std::size_t max_value_length = 512;
   if (value.empty()) {
     return std::unexpected{std::format("{} 不能为空。", name)};
   }
-  if (value.size() > max_value_length) {
+  if (value.size() > encoding_defaults::svtav1hdr_option_value_max_length) {
     return std::unexpected{std::format("{} 长度不能超过 512 个字符。", name)};
   }
   for (const char raw : value) {

@@ -29,8 +29,6 @@ export namespace awj {
 
 namespace tiff_detail {
 
-constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
-
 struct TiffDeleter {
   void operator()(TIFF* value) const noexcept {
     if (value != nullptr) {
@@ -78,7 +76,7 @@ std::expected<std::vector<std::byte>, std::string> copy_metadata_payload(
   if (data == nullptr || size == 0) {
     return std::vector<std::byte>{};
   }
-  if (size > max_metadata_bytes) {
+  if (size > encoding_defaults::codec_metadata_max_bytes) {
     return std::unexpected{std::format("{} 超过 64 MiB 上限。", context)};
   }
   auto bytes = decoder_common::make_byte_buffer(size, context);

@@ -143,9 +143,11 @@ struct EncodeDiagnostics {
   std::optional<int> svtav1hdr_keyint{};
   std::string svtav1hdr_hdr_metadata{};
   std::string svtav1hdr_note{};
-  int jpegli_progressive_level{2};
-  bool jpegli_optimize_huffman{true};
-  bool jpegli_xyb{};
+  int jpegli_progressive_level{
+      encoding_defaults::default_jpegli_progressive_level};
+  bool jpegli_optimize_huffman{
+      encoding_defaults::default_jpegli_optimize_huffman};
+  bool jpegli_xyb{encoding_defaults::default_jpegli_xyb};
   SpeedMapping speed_mapping{};
   int encoder_threads{};
   std::uint64_t memory_budget_bytes{};

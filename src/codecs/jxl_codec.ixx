@@ -64,12 +64,6 @@ using DecoderPtr = std::unique_ptr<JxlDecoder, DecoderDeleter>;
 using EncoderPtr = std::unique_ptr<JxlEncoder, EncoderDeleter>;
 using RunnerPtr = std::unique_ptr<void, RunnerDeleter>;
 
-constexpr std::size_t min_basic_info_probe_bytes = 16 * 1024;
-constexpr std::size_t max_basic_info_probe_bytes = 1024 * 1024;
-constexpr std::size_t min_encoder_output_buffer_bytes = 16 * 1024;
-constexpr std::size_t max_initial_encoder_output_buffer_bytes = 1024 * 1024;
-constexpr std::size_t max_metadata_box_bytes = 64 * 1024 * 1024;
-constexpr std::size_t max_metadata_box_count = 16;
 constexpr JxlBoxType exif_box_type{'E', 'x', 'i', 'f'};
 constexpr JxlBoxType xmp_box_type{'x', 'm', 'l', ' '};
 
@@ -94,15 +88,18 @@ std::expected<bool, std::string> provide_basic_info_probe_input(
   }
 
   const auto hint = JxlDecoderSizeHintBasicInfo(decoder);
-  const auto requested_size = std::clamp(hint == 0 ? min_basic_info_probe_bytes : hint,
-                                         min_basic_info_probe_bytes,
-                                         max_basic_info_probe_bytes);
+  const auto requested_size = std::clamp(
+      hint == 0 ? encoding_defaults::jxl_min_basic_info_probe_bytes : hint,
+      encoding_defaults::jxl_min_basic_info_probe_bytes,
+      encoding_defaults::jxl_max_basic_info_probe_bytes);
   const auto previous_size = next.size();
-  if (previous_size >= max_basic_info_probe_bytes) {
+  if (previous_size >= encoding_defaults::jxl_max_basic_info_probe_bytes) {
     return std::unexpected{std::format("JXL 尺寸探测输入超过 1 MiB 上限: {}",
                                        display_path_for_user(path))};
   }
-  const auto read_size = std::min(requested_size, max_basic_info_probe_bytes - previous_size);
+  const auto read_size = std::min(
+      requested_size,
+      encoding_defaults::jxl_max_basic_info_probe_bytes - previous_size);
   if (read_size > std::numeric_limits<std::size_t>::max() - previous_size) {
     return std::unexpected{std::format("JXL 尺寸探测输入 buffer 过大: {}", display_path_for_user(path))};
   }
@@ -217,7 +214,7 @@ std::expected<std::vector<std::byte>, std::string> copy_embedded_icc_profile(
   if (size_status != JXL_DEC_SUCCESS) {
     return std::unexpected{"读取 JXL ICC profile 大小失败。"};
   }
-  if (icc_size > max_metadata_box_bytes) {
+  if (icc_size > encoding_defaults::codec_metadata_max_bytes) {
     return std::unexpected{"JXL ICC profile 超过 64 MiB 上限。"};
   }
   auto bytes = decoder_common::make_byte_buffer(icc_size, "JXL ICC profile");
@@ -289,7 +286,7 @@ std::expected<void, std::string> add_metadata_box(JxlEncoder* encoder,
                                                   const JxlBoxType& type,
                                                   std::span<const std::byte> bytes,
                                                   std::string_view context) {
-  if (bytes.size() > max_metadata_box_bytes) {
+  if (bytes.size() > encoding_defaults::codec_metadata_max_bytes) {
     return std::unexpected{std::format("JXL {} metadata 超过 64 MiB 上限。", context)};
   }
   if (JxlEncoderAddBox(encoder,
@@ -310,7 +307,8 @@ std::expected<void, std::string> add_standard_metadata_boxes(JxlEncoder* encoder
   }
 
   if (const auto* exif = first_metadata(image, MetadataKind::exif); exif != nullptr) {
-    if (exif->bytes.size() > max_metadata_box_bytes - 4) {
+    if (exif->bytes.size() >
+        encoding_defaults::codec_metadata_max_bytes - 4) {
       return std::unexpected{"JXL Exif metadata 超过 64 MiB 上限。"};
     }
     auto exif_payload = decoder_common::make_byte_buffer(exif->bytes.size() + 4, "JXL Exif metadata");
@@ -337,7 +335,7 @@ std::expected<void, std::string> apply_color_profile(JxlEncoder* encoder,
                                                      const NativeEncodeSettings& settings) {
   if (!settings.strip_metadata && settings.applied_icc == "kept") {
     if (const auto* icc = first_icc_metadata(image); icc != nullptr) {
-      if (icc->bytes.size() > max_metadata_box_bytes) {
+      if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes) {
         return std::unexpected{"JXL ICC profile 超过 64 MiB 上限。"};
       }
       if (JxlEncoderSetICCProfile(
@@ -395,7 +393,8 @@ struct MetadataBoxBudget {
 std::expected<void, std::string> reserve_standard_metadata_box_bytes(
     MetadataBoxBudget& budget,
     std::size_t byte_count) {
-  if (byte_count > max_metadata_box_bytes || budget.bytes > max_metadata_box_bytes - byte_count) {
+  if (byte_count > encoding_defaults::codec_metadata_max_bytes ||
+      budget.bytes > encoding_defaults::codec_metadata_max_bytes - byte_count) {
     return std::unexpected{"JXL metadata 累计大小超过 64 MiB 上限。"};
   }
   budget.bytes += byte_count;
@@ -405,7 +404,7 @@ std::expected<void, std::string> reserve_standard_metadata_box_bytes(
 std::expected<void, std::string> begin_standard_metadata_box(
     MetadataBoxBudget& budget,
     std::size_t byte_count) {
-  if (budget.count >= max_metadata_box_count) {
+  if (budget.count >= encoding_defaults::jxl_max_metadata_box_count) {
     return std::unexpected{"JXL metadata box 数量超过 16 个上限。"};
   }
   if (auto reserved = reserve_standard_metadata_box_bytes(budget, byte_count); !reserved) {
@@ -483,11 +482,14 @@ std::expected<void, std::string> attach_encoder_runner(JxlEncoder* encoder,
 std::size_t initial_encoder_output_buffer_size(
     std::size_t input_size_hint) noexcept {
   if (input_size_hint == 0) {
-    return min_encoder_output_buffer_bytes;
+    return encoding_defaults::jxl_min_encoder_output_buffer_bytes;
   }
-  const auto scaled_hint = std::max(min_encoder_output_buffer_bytes,
-                                    input_size_hint / 8);
-  return std::min(scaled_hint, max_initial_encoder_output_buffer_bytes);
+  const auto scaled_hint = std::max(
+      encoding_defaults::jxl_min_encoder_output_buffer_bytes,
+      input_size_hint / 8);
+  return std::min(
+      scaled_hint,
+      encoding_defaults::jxl_max_initial_encoder_output_buffer_bytes);
 }
 
 std::expected<std::vector<std::byte>, std::string> collect_encoder_output(
@@ -823,7 +825,7 @@ export class JXLImageDecoder final : public ImageDecoder {
             std::uint64_t box_size = 0;
             std::size_t buffer_size = 16 * 1024;
             if (JxlDecoderGetBoxSizeContents(decoder.get(), &box_size) == JXL_DEC_SUCCESS) {
-              if (box_size > jxl_detail::max_metadata_box_bytes) {
+              if (box_size > encoding_defaults::codec_metadata_max_bytes) {
                 return std::unexpected{"JXL metadata box 超过 64 MiB 上限。"};
               }
               if (box_size == 0) {
@@ -860,11 +862,12 @@ export class JXLImageDecoder final : public ImageDecoder {
             return std::unexpected{"JXL metadata box 输出尺寸无效。"};
           }
           const auto written = current_box.size() - remaining;
-          if (written >= jxl_detail::max_metadata_box_bytes) {
+          if (written >= encoding_defaults::codec_metadata_max_bytes) {
             return std::unexpected{"JXL metadata box 超过 64 MiB 上限。"};
           }
           const auto grow_by = std::max<std::size_t>(16 * 1024, written);
-          const auto new_size = std::min(jxl_detail::max_metadata_box_bytes, written + grow_by);
+          const auto new_size = std::min(
+              encoding_defaults::codec_metadata_max_bytes, written + grow_by);
           if (new_size <= written) {
             return std::unexpected{"JXL metadata box 超过 64 MiB 上限。"};
           }

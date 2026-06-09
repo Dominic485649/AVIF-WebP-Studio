@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 project(AWJimage
-    VERSION 0.8.1
+    VERSION 0.8.2
     DESCRIPTION "AWJimage native batch converter with Slint"
     LANGUAGES CXX)
 
@@ -837,6 +837,10 @@ add_executable(AWJ WIN32
     src/ui/main.cpp
     src/ui/AWJ.manifest
     src/ui/AWJ.rc)
+target_sources(AWJ
+    PRIVATE
+        FILE_SET awj_studio_modules TYPE CXX_MODULES FILES
+            src/ui/studio_defaults.ixx)
 if(MSVC)
     set_source_files_properties(src/ui/main.cpp PROPERTIES
         COMPILE_OPTIONS "/wd4099;/wd4201;/wd4624")

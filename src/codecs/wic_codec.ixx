@@ -89,9 +89,6 @@ struct ProbeFrameResult {
   ComPtr<IWICBitmapFrameDecode> frame{};
 };
 
-constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
-constexpr UINT max_color_contexts = 16;
-
 std::string hresult_message(HRESULT hr) {
   return std::format("HRESULT 0x{:08X}", static_cast<unsigned int>(hr));
 }
@@ -248,7 +245,8 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
   if (FAILED(hr) || context_count == 0) {
     return std::vector<std::byte>{};
   }
-  if (context_count > max_color_contexts) {
+  if (context_count >
+      static_cast<UINT>(encoding_defaults::wic_max_color_contexts)) {
     return std::unexpected{"WIC 色彩上下文数量超过 16 个上限。"};
   }
 
@@ -282,7 +280,7 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
     if (FAILED(hr) || profile_size == 0) {
       continue;
     }
-    if (profile_size > max_metadata_bytes) {
+    if (profile_size > encoding_defaults::codec_metadata_max_bytes) {
       return std::unexpected{"WIC ICC profile 超过 64 MiB 上限。"};
     }
     auto bytes = decoder_common::make_byte_buffer(profile_size, "WIC ICC profile");

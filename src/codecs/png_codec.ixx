@@ -32,9 +32,6 @@ export namespace awj {
 
 namespace png_detail {
 
-constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
-constexpr png_uint_32 max_cached_metadata_chunks = 64;
-
 std::uint32_t read_be_u32(std::span<const std::byte> bytes,
                           std::size_t offset) noexcept {
   return (std::to_integer<std::uint32_t>(bytes[offset]) << 24) |
@@ -190,7 +187,7 @@ std::expected<std::vector<std::byte>, std::string> copy_metadata_payload(
   if (data == nullptr || size == 0) {
     return std::vector<std::byte>{};
   }
-  if (size > max_metadata_bytes) {
+  if (size > encoding_defaults::codec_metadata_max_bytes) {
     return std::unexpected{std::format("{} 超过 64 MiB 上限。", context)};
   }
   auto bytes = decoder_common::make_byte_buffer(size, context);
@@ -207,10 +204,16 @@ void clamp_chunk_limits(png_structp png) noexcept {
     return;
   }
   const auto current_cache_limit = png_get_chunk_cache_max(png);
-  if (current_cache_limit == 0 || current_cache_limit > max_cached_metadata_chunks) {
-    png_set_chunk_cache_max(png, max_cached_metadata_chunks);
+  if (current_cache_limit == 0 ||
+      current_cache_limit > encoding_defaults::png_max_cached_metadata_chunks) {
+    png_set_chunk_cache_max(
+        png,
+        static_cast<png_uint_32>(
+            encoding_defaults::png_max_cached_metadata_chunks));
   }
-  constexpr auto max_chunk_malloc_bytes = static_cast<png_alloc_size_t>(max_metadata_bytes);
+  constexpr auto max_chunk_malloc_bytes =
+      static_cast<png_alloc_size_t>(
+          encoding_defaults::codec_metadata_max_bytes);
   const auto current_malloc_limit = png_get_chunk_malloc_max(png);
   if (current_malloc_limit == 0 || current_malloc_limit > max_chunk_malloc_bytes) {
     png_set_chunk_malloc_max(png, max_chunk_malloc_bytes);

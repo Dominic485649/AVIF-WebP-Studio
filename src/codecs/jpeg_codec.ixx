@@ -91,8 +91,6 @@ std::FILE* open_binary_file(const fs::path& path) noexcept {
 #endif
 }
 
-constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
-constexpr std::size_t max_saved_metadata_marker_count = 4096;
 constexpr int marker_tem = 0x01;
 constexpr int marker_rst0 = 0xd0;
 constexpr int marker_rst7 = 0xd7;
@@ -125,10 +123,13 @@ std::expected<void, std::string> add_saved_metadata_payload(
     std::size_t payload_size,
     std::size_t& metadata_bytes,
     std::size_t& metadata_marker_count) {
-  if (++metadata_marker_count > max_saved_metadata_marker_count) {
+  if (++metadata_marker_count >
+      encoding_defaults::jpeg_max_saved_metadata_marker_count) {
     return std::unexpected{"JPEG metadata marker 数量超过上限。"};
   }
-  if (payload_size > max_metadata_bytes || metadata_bytes > max_metadata_bytes - payload_size) {
+  if (payload_size > encoding_defaults::codec_metadata_max_bytes ||
+      metadata_bytes >
+          encoding_defaults::codec_metadata_max_bytes - payload_size) {
     return std::unexpected{"JPEG metadata 累计大小超过 64 MiB 上限。"};
   }
   metadata_bytes += payload_size;
@@ -322,7 +323,7 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
       return std::unexpected{"JPEG ICC profile 大小超过运行时限制。"};
     }
     profile_size += chunk_size;
-    if (profile_size > max_metadata_bytes) {
+    if (profile_size > encoding_defaults::codec_metadata_max_bytes) {
       return std::unexpected{"JPEG ICC profile 超过 64 MiB 上限。"};
     }
   }

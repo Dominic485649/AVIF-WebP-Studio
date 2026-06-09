@@ -37,17 +37,15 @@ export namespace awj {
 
 namespace webp_detail {
 
-constexpr std::size_t max_metadata_bytes = 64 * 1024 * 1024;
-constexpr std::size_t min_encoder_output_capacity = 16 * 1024;
-constexpr std::size_t max_initial_encoder_output_capacity = 1024 * 1024;
-
 std::size_t initial_encoder_output_capacity(std::size_t input_bytes) noexcept {
   if (input_bytes == 0) {
-    return min_encoder_output_capacity;
+    return encoding_defaults::webp_min_encoder_output_capacity;
   }
-  const auto scaled_hint = std::max(min_encoder_output_capacity,
-                                    input_bytes / 8);
-  return std::min(scaled_hint, max_initial_encoder_output_capacity);
+  const auto scaled_hint =
+      std::max(encoding_defaults::webp_min_encoder_output_capacity,
+               input_bytes / 8);
+  return std::min(
+      scaled_hint, encoding_defaults::webp_max_initial_encoder_output_capacity);
 }
 
 struct WebPFreeDeleter {
@@ -262,7 +260,7 @@ std::expected<std::vector<std::byte>, std::string> copy_metadata_payload(
   if (payload.empty()) {
     return std::vector<std::byte>{};
   }
-  if (payload.size() > max_metadata_bytes) {
+  if (payload.size() > encoding_defaults::codec_metadata_max_bytes) {
     return std::unexpected{std::format("{} 超过 64 MiB 上限。", context)};
   }
   auto bytes = decoder_common::make_byte_buffer(payload.size(), context);
@@ -299,7 +297,7 @@ std::expected<void, std::string> copy_metadata(ImageBuffer& image,
     const auto chunk_index = metadata_chunk_index(encoded.subspan(offset, 4));
     if (chunk_index < std::size(webp_metadata_chunks)) {
       const auto& chunk = webp_metadata_chunks[chunk_index];
-      if (payload_size > max_metadata_bytes) {
+      if (payload_size > encoding_defaults::codec_metadata_max_bytes) {
         return std::unexpected{std::format("WebP {} metadata 超过 64 MiB 上限。", chunk.name)};
       }
       if (!seen_metadata[chunk_index]) {
@@ -346,7 +344,7 @@ std::expected<void, std::string> set_metadata_chunk(WebPMux* mux,
   if (metadata == nullptr) {
     return {};
   }
-  if (metadata->bytes.size() > max_metadata_bytes) {
+  if (metadata->bytes.size() > encoding_defaults::codec_metadata_max_bytes) {
     return std::unexpected{std::format("WebP {} metadata 超过 64 MiB 上限。", chunk.name)};
   }
   WebPData chunk_data{.bytes = reinterpret_cast<const std::uint8_t*>(metadata->bytes.data()),

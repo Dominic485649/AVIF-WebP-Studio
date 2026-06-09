@@ -895,7 +895,6 @@ bool avif_lossless_bit_depth_supported(int bit_depth) noexcept {
 }
 
 std::atomic<std::uint64_t> output_temp_counter{};
-constexpr int kMaxOutputTempPathAttempts = 1000;
 
 fs::path make_output_temp_path(const fs::path& target) {
   const auto parent = target.parent_path();
@@ -931,7 +930,9 @@ std::expected<void, std::string> write_output_bytes(const fs::path& path,
       return std::unexpected{"任务已取消。"};
     }
     std::optional<fs::path> temp_path;
-    for (int attempt = 0; attempt < kMaxOutputTempPathAttempts; ++attempt) {
+    for (int attempt = 0;
+         attempt < encoding_defaults::max_output_temp_path_attempts;
+         ++attempt) {
       auto candidate = make_output_temp_path(path);
       if (normalized_lower_path_key(candidate) == normalized_lower_path_key(path)) {
         continue;
@@ -1031,7 +1032,9 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
       UniqueHandle source_file{raw_source};
 
       UniqueHandle output_file;
-      for (int attempt = 0; attempt < kMaxOutputTempPathAttempts; ++attempt) {
+      for (int attempt = 0;
+           attempt < encoding_defaults::max_output_temp_path_attempts;
+           ++attempt) {
         auto candidate = make_output_temp_path(path);
         if (normalized_lower_path_key(candidate) == normalized_lower_path_key(path)) {
           continue;
@@ -1059,7 +1062,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
                                            display_path_for_user(path))};
       }
 
-      std::vector<std::byte> buffer(4 * 1024 * 1024);
+      std::vector<std::byte> buffer(encoding_defaults::output_copy_buffer_bytes);
       while (true) {
         if (stop_token.stop_requested()) {
           return std::unexpected{"任务已取消。"};

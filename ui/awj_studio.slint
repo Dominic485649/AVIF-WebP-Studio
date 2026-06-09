@@ -504,7 +504,7 @@ export component AwjStudio inherits Window {
     property <brush> progress-fill: root.running ? #0d6efd : #22b84c;
     property <bool> queue-menu-valid: root.queue-menu-index >= 0 && root.queue-menu-index < root.task-rows.length;
     property <bool> queue-menu-editable: root.queue-menu-valid && !root.task-rows[root.queue-menu-index].locked;
-    property <bool> queue-menu-removable: root.queue-menu-editable && !root.running;
+    property <bool> queue-menu-removable: root.queue-menu-valid && !root.running;
 
     property <color> combo-bg: root.dark-mode ? #222c3b : #fbfdff;
     property <color> combo-bg-hover: root.dark-mode ? #293548 : #f3f8ff;
@@ -858,7 +858,7 @@ export component AwjStudio inherits Window {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "大图处理"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e", enabled: true }, { text: "grid", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            SoftComboBox { center-text: true; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e", enabled: true }, { text: "grid", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             Text { text: ">2000万像素时自动进入大图路径；1000万-2000万像素会等待小图完成后继续使用普通编码器。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                                         }
 
@@ -896,7 +896,7 @@ export component AwjStudio inherits Window {
                                         background: transparent;
                                         HorizontalLayout {
                                             spacing: 10px;
-                                            SoftComboBox { center-text: true; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "文件", enabled: true }, { text: "文件夹", enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: root.control-button-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            SoftComboBox { close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "文件", enabled: true }, { text: "文件夹", enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: root.control-button-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
                                             SoftButton { dark-mode: root.dark-mode; text: "选择"; width: root.control-button-width; height: root.control-button-height; enabled: !root.running; clicked => { root.browse-input(); } }
                                         }
                                     }

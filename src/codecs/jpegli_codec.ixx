@@ -172,9 +172,9 @@ std::expected<void, std::string> write_app1_marker(jpeg_compress_struct& cinfo,
                                                    std::size_t signature_size,
                                                    std::span<const std::byte> payload,
                                                    std::string_view label) {
-  constexpr std::size_t max_marker_payload = 0xFFFFu - 2u;
-  if (payload.size() > max_marker_payload ||
-      signature_size > max_marker_payload - payload.size()) {
+  if (payload.size() > encoding_defaults::jpeg_marker_payload_max_bytes ||
+      signature_size >
+          encoding_defaults::jpeg_marker_payload_max_bytes - payload.size()) {
     return std::unexpected{std::format("JPGLI {} metadata 超过单个 JPEG marker 上限。", label)};
   }
   std::vector<JOCTET> marker;
@@ -202,7 +202,7 @@ std::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
   }
   if (!settings.jpegli_xyb) {
     if (const auto* icc = first_metadata(image, MetadataKind::icc); icc != nullptr) {
-    if (icc->bytes.size() > jpeg_detail::max_metadata_bytes ||
+    if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes ||
         icc->bytes.size() > std::numeric_limits<unsigned int>::max()) {
       return std::unexpected{"JPGLI ICC profile 超过运行时上限。"};
     }

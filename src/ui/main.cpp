@@ -57,10 +57,9 @@ import awj.large_image_plan;
 import awj.native_backend;
 import awj.pipeline;
 import awj.resource_planner;
+import awj.studio_defaults;
 
 namespace {
-constexpr std::string_view kStudioConfigFileName = "AWJ.jsonc";
-
 awj::LargeImageDecision manual_large_image_decision(
     awj::ImageDimensions dimensions, bool grid_available,
     bool zenrav1e_available) {
@@ -83,8 +82,6 @@ struct Win32HandleDeleter {
 };
 
 using UniqueWin32Handle = std::unique_ptr<void, Win32HandleDeleter>;
-
-constexpr DWORD kStudioWorkerForceStopExitCode = 130;
 
 enum class QueueItemStatus {
   pending,
@@ -127,7 +124,8 @@ struct StudioChildProcess {
     }
   }
 
-  bool terminate(DWORD exit_code = kStudioWorkerForceStopExitCode) noexcept {
+  bool terminate(DWORD exit_code =
+                     awj::studio_defaults::worker_force_stop_exit_code) noexcept {
     force_terminated.store(true, std::memory_order_release);
     request_cancel();
     bool terminated = false;
@@ -142,6 +140,8 @@ struct StudioChildProcess {
 };
 
 struct StudioConfigSnapshot {
+  int window_width{static_cast<int>(awj::studio_defaults::default_window_width)};
+  int window_height{static_cast<int>(awj::studio_defaults::default_window_height)};
   int input_mode_index{};
   int format_index{};
   int preset_index{};
@@ -393,8 +393,8 @@ std::expected<std::uint64_t, std::string> parse_memory_limit_field(
   if (!gib) {
     return std::unexpected{"内存只允许填写 GiB 数字，例如 4；留空表示自动。"};
   }
-  constexpr std::uint64_t bytes_per_gib = 1024ull * 1024ull * 1024ull;
-  return static_cast<std::uint64_t>(*gib) * bytes_per_gib;
+  return static_cast<std::uint64_t>(*gib) *
+         awj::studio_defaults::bytes_per_gib;
 }
 
 slint::SharedString to_shared(std::string_view text) {
@@ -459,13 +459,41 @@ void apply_system_ui_font(AwjStudio& app) {
 
 std::filesystem::path studio_config_path() {
   if (auto directory = awj::executable_directory()) {
-    return *directory / awj::wide_from_utf8(std::string{kStudioConfigFileName});
+    return *directory /
+           awj::wide_from_utf8(
+               std::string{awj::studio_defaults::config_file_name});
   }
   return {};
 }
 
+std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
+  try {
+    const auto size = app.window().size();
+    const auto width =
+        size.width == 0 ? awj::studio_defaults::default_window_width
+                        : size.width;
+    const auto height =
+        size.height == 0 ? awj::studio_defaults::default_window_height
+                         : size.height;
+    return {static_cast<int>(std::min<std::uint32_t>(
+                width,
+                static_cast<std::uint32_t>(
+                    awj::studio_defaults::max_window_width))),
+            static_cast<int>(std::min<std::uint32_t>(
+                height,
+                static_cast<std::uint32_t>(
+                    awj::studio_defaults::max_window_height)))};
+  } catch (...) {
+    return {static_cast<int>(awj::studio_defaults::default_window_width),
+            static_cast<int>(awj::studio_defaults::default_window_height)};
+  }
+}
+
 StudioConfigSnapshot capture_studio_config(const AwjStudio& app) {
+  const auto [window_width, window_height] = current_studio_window_size(app);
   return StudioConfigSnapshot{
+      .window_width = window_width,
+      .window_height = window_height,
       .input_mode_index = app.get_input_mode_index(),
       .format_index = app.get_format_index(),
       .preset_index = app.get_preset_index(),
@@ -741,6 +769,12 @@ std::expected<std::string, std::string> config_string(
   return it->second.string;
 }
 
+bool config_has_key(
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key) {
+  return values.contains(std::string{key});
+}
+
 template <class Setter>
 std::expected<void, std::string> apply_config_int(
     AwjStudio& app,
@@ -783,6 +817,35 @@ std::expected<void, std::string> apply_config_string(
   return {};
 }
 
+std::expected<void, std::string> apply_config_window_size(
+    AwjStudio& app,
+    const std::unordered_map<std::string, JsonConfigValue>& values) {
+  const bool has_width = config_has_key(values, "window_width");
+  const bool has_height = config_has_key(values, "window_height");
+  if (!has_width && !has_height) {
+    return {};
+  }
+  if (has_width != has_height) {
+    return std::unexpected{"window_width 与 window_height 必须同时设置。"};
+  }
+  auto width = config_int(values, "window_width",
+                          awj::studio_defaults::min_window_width,
+                          awj::studio_defaults::max_window_width);
+  if (!width) {
+    return std::unexpected{width.error()};
+  }
+  auto height = config_int(values, "window_height",
+                           awj::studio_defaults::min_window_height,
+                           awj::studio_defaults::max_window_height);
+  if (!height) {
+    return std::unexpected{height.error()};
+  }
+  app.window().set_size(slint::PhysicalSize{
+      {static_cast<std::uint32_t>(*width),
+       static_cast<std::uint32_t>(*height)}});
+  return {};
+}
+
 std::expected<void, std::string> apply_studio_config_file(AwjStudio& app) {
   const auto path = studio_config_path();
   if (path.empty()) {
@@ -809,6 +872,10 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app) {
     }
     return {};
   };
+
+  if (auto result = apply(apply_config_window_size(app, *values)); !result) {
+    return result;
+  }
 
   if (auto result = apply(apply_config_int(app, *values, "input_mode_index", 0,
                                            1, &AwjStudio::set_input_mode_index));
@@ -1015,6 +1082,9 @@ std::expected<void, std::string> write_studio_config_file(
     }
   };
 
+  add_int("window_width", current.window_width, defaults.window_width);
+  add_int("window_height", current.window_height, defaults.window_height);
+
   add_int("input_mode_index", current.input_mode_index,
           defaults.input_mode_index);
   add_int("format_index", current.format_index, defaults.format_index);
@@ -1085,6 +1155,24 @@ std::expected<void, std::string> write_studio_config_file(
   return std::unexpected{"写入 Studio 配置时发生文件系统错误。"};
 }
 
+std::expected<void, std::string> persist_studio_config_if_changed(
+    AwjStudio& app, UiState& state) {
+  if (!state.config_defaults) {
+    return {};
+  }
+  auto current = capture_studio_config(app);
+  if (state.last_config_snapshot &&
+      current == *state.last_config_snapshot) {
+    return {};
+  }
+  if (auto saved = write_studio_config_file(current, *state.config_defaults);
+      !saved) {
+    return std::unexpected{saved.error()};
+  }
+  state.last_config_snapshot = std::move(current);
+  return {};
+}
+
 std::string queue_status_label(QueueItemStatus status) {
   switch (status) {
     case QueueItemStatus::running:
@@ -1105,6 +1193,12 @@ std::string queue_status_label(QueueItemStatus status) {
 
 bool queue_item_editable(const QueueImageItem& item) noexcept {
   return item.status == QueueItemStatus::pending;
+}
+
+bool queue_item_runnable(const QueueImageItem& item) noexcept {
+  return item.status == QueueItemStatus::pending ||
+         item.status == QueueItemStatus::failed ||
+         item.status == QueueItemStatus::canceled;
 }
 
 TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
@@ -1712,9 +1806,6 @@ std::string result_log_text(const awj::EncodeResult& result) {
       awj::format_size(result.output_bytes));
 }
 
-constexpr std::size_t kMaxTaskRows = 5000;
-constexpr std::size_t kMaxPendingEvents = 2048;
-
 bool push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
                    TaskRow row) noexcept {
   if (rows == nullptr) {
@@ -1722,7 +1813,7 @@ bool push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
   }
   try {
     rows->push_back(std::move(row));
-    while (rows->row_count() > kMaxTaskRows) {
+    while (rows->row_count() > awj::studio_defaults::max_task_rows) {
       rows->erase(0);
     }
   } catch (...) {
@@ -1972,7 +2063,8 @@ void append_pending_event(UiState& state, std::uint64_t run_id,
     if (state.run_id != run_id) {
       return;
     }
-    if (state.pending_events.size() >= kMaxPendingEvents) {
+    if (state.pending_events.size() >=
+        awj::studio_defaults::max_pending_events) {
       const auto keep = [](const awj::BatchProgress& pending) {
         return pending.kind == awj::BatchEventKind::item_finished ||
                pending.kind == awj::BatchEventKind::warning ||
@@ -1982,12 +2074,15 @@ void append_pending_event(UiState& state, std::uint64_t run_id,
           state.pending_events,
           [&](const awj::BatchProgress& pending) { return !keep(pending); });
       state.pending_events.erase(retained.begin(), retained.end());
-      if (state.pending_events.size() >= kMaxPendingEvents) {
+      if (state.pending_events.size() >=
+          awj::studio_defaults::max_pending_events) {
         state.pending_events.erase(
             state.pending_events.begin(),
             state.pending_events.begin() +
                 static_cast<std::ptrdiff_t>(state.pending_events.size() -
-                                            kMaxPendingEvents + 1));
+                                            awj::studio_defaults::
+                                                max_pending_events +
+                                            1));
       }
     }
     state.pending_events.push_back(event);
@@ -2370,12 +2465,14 @@ class DropBridge {
     if (hwnd_ == nullptr) {
       return;
     }
-    SetPropW(hwnd_, kPropertyName, this);
+    SetPropW(hwnd_, awj::studio_defaults::drop_bridge_property_name.data(),
+             this);
     previous_proc_ = reinterpret_cast<WNDPROC>(
         SetWindowLongPtrW(hwnd_, GWLP_WNDPROC,
                           reinterpret_cast<LONG_PTR>(&DropBridge::window_proc)));
     if (previous_proc_ == nullptr) {
-      RemovePropW(hwnd_, kPropertyName);
+      RemovePropW(hwnd_,
+                  awj::studio_defaults::drop_bridge_property_name.data());
       hwnd_ = nullptr;
       return;
     }
@@ -2396,15 +2493,14 @@ class DropBridge {
       SetWindowLongPtrW(hwnd_, GWLP_WNDPROC,
                         reinterpret_cast<LONG_PTR>(previous_proc_));
     }
-    RemovePropW(hwnd_, kPropertyName);
+    RemovePropW(hwnd_, awj::studio_defaults::drop_bridge_property_name.data());
   }
 
  private:
-  static constexpr const wchar_t* kPropertyName = L"AWJ_DropBridge";
-
   static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam,
                                       LPARAM lparam) {
-    auto* self = static_cast<DropBridge*>(GetPropW(hwnd, kPropertyName));
+    auto* self = static_cast<DropBridge*>(
+        GetPropW(hwnd, awj::studio_defaults::drop_bridge_property_name.data()));
     if (self != nullptr && message == WM_DROPFILES) {
       self->handle_drop(reinterpret_cast<HDROP>(wparam));
       return 0;
@@ -2694,9 +2790,11 @@ void initialize_ui_defaults(AwjStudio& app) {
   app.set_avif_encoder_index(0);
   app.set_collision_index(0);
   app.set_chroma_index(0);
-  app.set_jpegli_progressive_index(2);
-  app.set_jpegli_optimize_huffman(true);
-  app.set_jpegli_xyb(false);
+  app.set_jpegli_progressive_index(
+      awj::encoding_defaults::default_jpegli_progressive_level);
+  app.set_jpegli_optimize_huffman(
+      awj::encoding_defaults::default_jpegli_optimize_huffman);
+  app.set_jpegli_xyb(awj::encoding_defaults::default_jpegli_xyb);
   app.set_alpha_policy_index(1);
   app.set_quality_follows_format(false);
   app.set_bit_depth_follows_format(true);
@@ -3065,7 +3163,7 @@ std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
     const awj::AppConfig& cfg, const std::vector<QueueImageItem>& queue) {
   try {
     std::vector<awj::ImageFile> files;
-    files.reserve(queue.size());
+    files.reserve(std::ranges::count_if(queue, queue_item_runnable));
     std::random_device random_device;
     std::mt19937_64 rng{random_device()};
     const bool needs_hash =
@@ -3075,22 +3173,25 @@ std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
         output_template_contains(cfg.output_template, L"{sha256}") ||
         output_template_contains(cfg.output_template, L"{sha2568}") ||
         output_template_contains(cfg.output_template, L"{sha256_8}");
-    for (const auto i : std::views::iota(std::size_t{}, queue.size())) {
+    for (const auto& item : queue) {
+      if (!queue_item_runnable(item)) {
+        continue;
+      }
       std::wstring hash;
       std::wstring sha256;
       if (needs_hash) {
-        if (auto ok = awj::file_hash_token(queue[i].path, hash); !ok) {
+        if (auto ok = awj::file_hash_token(item.path, hash); !ok) {
           return std::unexpected{ok.error()};
         }
       }
       if (needs_sha256) {
-        if (auto ok = awj::file_sha256_token(queue[i].path, sha256); !ok) {
+        if (auto ok = awj::file_sha256_token(item.path, sha256); !ok) {
           return std::unexpected{ok.error()};
         }
       }
-      files.push_back(awj::make_image_file(i, queue[i].path,
-                                           queue[i].relative_dir,
-                                           queue[i].bytes, rng,
+      files.push_back(awj::make_image_file(files.size(), item.path,
+                                           item.relative_dir,
+                                           item.bytes, rng,
                                            std::move(hash),
                                            std::move(sha256)));
     }
@@ -3271,7 +3372,8 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     return;
   }
   if (files->empty()) {
-    (*app)->set_status_text(to_shared("队列为空，请先输入或选择图片。"));
+    (*app)->set_status_text(
+        to_shared("队列中没有待编码图片；请清空队列或添加新图片。"));
     return;
   }
 
@@ -3281,14 +3383,20 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     run_id = ++state->run_id;
     state->worker_active = true;
     state->pending_events.clear();
+    std::size_t run_index = 0;
     for (const auto i : std::views::iota(std::size_t{}, state->queue_items.size())) {
       auto& item = state->queue_items[i];
+      item.run_index = std::numeric_limits<std::size_t>::max();
+      if (!queue_item_runnable(item)) {
+        continue;
+      }
       item.status = QueueItemStatus::pending;
       item.status_text = "等待编码";
       item.log_text.clear();
       item.warning = false;
-      item.run_index = i;
-      item.locked_output_path = awj::output_path_for(cfg, (*files)[i]);
+      item.run_index = run_index;
+      item.locked_output_path = awj::output_path_for(cfg, (*files)[run_index]);
+      ++run_index;
     }
     refresh_queue_rows(**app, *state);
   }
@@ -3517,7 +3625,7 @@ void handle_queue_menu_action(AwjStudio& app,
     } else if (action == "copy-path") {
       text_to_copy = item.path.native();
     } else if (action == "remove") {
-      if (state->worker_active || !queue_item_editable(item)) {
+      if (state->worker_active) {
         app.set_status_text(to_shared("运行中不能移除队列项。"));
         return;
       }
@@ -3587,9 +3695,6 @@ void handle_queue_pointer_event(AwjStudio& app,
   if (button != 0) {
     return;
   }
-  constexpr float row_height = 34.0f;
-  constexpr auto long_press_delay = std::chrono::milliseconds{360};
-  constexpr auto double_click_delay = std::chrono::milliseconds{450};
   std::optional<std::filesystem::path> double_click_folder;
   bool refresh = false;
   {
@@ -3607,14 +3712,15 @@ void handle_queue_pointer_event(AwjStudio& app,
       return;
     }
     if (kind == 2 && state->drag_candidate_id != 0 &&
-        now - state->drag_started >= long_press_delay) {
+        now - state->drag_started >=
+            awj::studio_defaults::queue_long_press_delay) {
       const auto current = queue_index_for_id(*state, state->drag_candidate_id);
       if (!current) {
         return;
       }
       if (local_y < -8.0f && *current > 0) {
         refresh = move_queue_item(*state, *current, *current - 1);
-      } else if (local_y > row_height + 8.0f &&
+      } else if (local_y > awj::studio_defaults::queue_row_height + 8.0f &&
                  *current + 1 < state->queue_items.size()) {
         refresh = move_queue_item(*state, *current, *current + 1);
       }
@@ -3626,7 +3732,8 @@ void handle_queue_pointer_event(AwjStudio& app,
       state->drag_reordered = false;
       if (!was_drag) {
         if (state->last_click_id == item.id &&
-            now - state->last_click_time <= double_click_delay) {
+            now - state->last_click_time <=
+                awj::studio_defaults::queue_double_click_delay) {
           double_click_folder = item.path.parent_path();
           state->last_click_id = 0;
         } else {
@@ -3791,8 +3898,10 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
         publish_line(std::move(pending));
       }
       GetExitCodeProcess(child->process.get(), &exit_code);
-      const bool forced = child->force_terminated.load(std::memory_order_acquire) ||
-                          exit_code == kStudioWorkerForceStopExitCode;
+      const bool forced =
+          child->force_terminated.load(std::memory_order_acquire) ||
+          exit_code ==
+              awj::studio_defaults::worker_force_stop_exit_code;
       const bool canceled = child->cancel_requested.load(std::memory_order_acquire) &&
                             !forced;
       post_to_ui(weak, [state, run_id, large_index, exit_code, forced,
@@ -3891,7 +4000,7 @@ int run_studio_ui() {
         (*app)->set_selected_large_image_index(-1);
         (*app)->set_selected_large_image_action_index(0);
         (*app)->set_progress(0.0f);
-        (*app)->set_status_text(to_shared("就绪"));
+        (*app)->set_status_text(to_shared("已清空全部队列文件。"));
       });
     });
 
@@ -3941,7 +4050,8 @@ int run_studio_ui() {
     });
 
     state->theme_timer.start(
-        slint::TimerMode::Repeated, std::chrono::seconds{3}, [weak] {
+        slint::TimerMode::Repeated,
+        awj::studio_defaults::theme_refresh_interval, [weak] {
           run_ui_callback(weak, "更新主题状态失败", [&] {
             if (auto app = weak.lock()) {
               (*app)->set_system_dark_mode(windows_prefers_dark_mode());
@@ -3951,28 +4061,23 @@ int run_studio_ui() {
 
     std::weak_ptr<UiState> weak_state = state;
     state->config_timer.start(
-        slint::TimerMode::Repeated, std::chrono::milliseconds{800},
+        slint::TimerMode::Repeated,
+        awj::studio_defaults::config_save_interval,
         [weak, weak_state] {
           run_ui_callback(weak, "保存 Studio 配置失败", [&] {
             auto state = weak_state.lock();
             auto app = weak.lock();
-            if (!state || !app || !state->config_defaults) {
-              return;
-            }
-            auto current = capture_studio_config(**app);
-            if (state->last_config_snapshot &&
-                current == *state->last_config_snapshot) {
+            if (!state || !app) {
               return;
             }
             if (auto saved =
-                    write_studio_config_file(current, *state->config_defaults);
+                    persist_studio_config_if_changed(**app, *state);
                 !saved) {
               (*app)->set_status_text(
                   to_shared(std::format("保存 Studio 配置失败：{}",
                                         saved.error())));
               return;
             }
-            state->last_config_snapshot = std::move(current);
           });
         });
 
@@ -4184,7 +4289,15 @@ int run_studio_ui() {
     apply_title_bar_theme(app->window(), effective_studio_dark_mode(*app));
     constrain_window_to_work_area(app->window());
     DropBridge drop_bridge{app->window(), weak, state};
-    app->window().on_close_requested([state] {
+    app->window().on_close_requested([weak, state] {
+      if (auto app = weak.lock()) {
+        if (auto saved = persist_studio_config_if_changed(**app, *state);
+            !saved) {
+          set_status_text_noexcept(
+              **app,
+              std::format("保存 Studio 配置失败：{}", saved.error()));
+        }
+      }
       if (worker_active(state)) {
         force_stop_current_worker(state);
       }
