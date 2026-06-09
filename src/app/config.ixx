@@ -94,7 +94,7 @@ struct AppConfig {
       std::wstring{encoding_defaults::default_input_path}};
   std::filesystem::path output_dir{};
   std::wstring output_template{encoding_defaults::default_output_template};
-  Preset preset{Preset::balanced};
+  Preset preset{Preset::custom};
   BackendMode backend{BackendMode::native};
   OutputFormat output_format{OutputFormat::avif};
   CollisionMode collision_mode{CollisionMode::overwrite};

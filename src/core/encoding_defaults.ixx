@@ -14,10 +14,10 @@ inline constexpr std::string_view default_output_template_text = "{name}";
 inline constexpr std::wstring_view default_output_template = L"{name}";
 inline constexpr std::string_view default_memory_limit_text = "auto";
 
-inline constexpr int default_avif_quality = 90;
+inline constexpr int default_avif_quality = 80;
 inline constexpr int default_webp_quality = 95;
-inline constexpr int default_jxl_quality = 95;
-inline constexpr int default_jpegli_quality = 95;
+inline constexpr int default_jxl_quality = 90;
+inline constexpr int default_jpegli_quality = 90;
 inline constexpr int default_webp_bit_depth = 8;
 inline constexpr int default_quality = default_avif_quality;
 inline constexpr int default_visual_quality = 90;

@@ -143,30 +143,12 @@ struct StudioConfigSnapshot {
   int window_width{static_cast<int>(awj::studio_defaults::default_window_width)};
   int window_height{static_cast<int>(awj::studio_defaults::default_window_height)};
   int input_mode_index{};
-  int format_index{};
-  int preset_index{};
-  int avif_encoder_index{};
-  int chroma_index{};
-  int jpegli_progressive_index{};
-  int alpha_policy_index{};
   int collision_index{};
   int theme_index{};
-  int selected_large_image_action_index{};
-  bool experimental_encoders{};
-  bool visual_quality_gpu{};
-  bool visual_quality_fallback{};
   bool allow_wic_fallback{};
-  bool jpegli_optimize_huffman{};
-  bool jpegli_xyb{};
   bool strip_metadata{};
   bool write_summary{};
   bool write_log{};
-  std::string quality_text{};
-  std::string visual_quality_text{};
-  std::string bit_depth_text{};
-  std::string threads_text{};
-  std::string memory_limit_text{};
-  std::string speed_text{};
   std::string template_text{};
 
   bool operator==(const StudioConfigSnapshot&) const = default;
@@ -194,6 +176,8 @@ struct UiState {
   std::chrono::steady_clock::time_point drag_started{};
   std::chrono::steady_clock::time_point last_click_time{};
   bool drag_reordered{};
+  std::array<std::string, 4> format_quality_text{};
+  int last_format_index{};
 };
 
 LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
@@ -469,20 +453,19 @@ std::filesystem::path studio_config_path() {
 std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
   try {
     const auto size = app.window().size();
-    const auto width =
-        size.width == 0 ? awj::studio_defaults::default_window_width
-                        : size.width;
-    const auto height =
-        size.height == 0 ? awj::studio_defaults::default_window_height
-                         : size.height;
-    return {static_cast<int>(std::min<std::uint32_t>(
-                width,
-                static_cast<std::uint32_t>(
-                    awj::studio_defaults::max_window_width))),
-            static_cast<int>(std::min<std::uint32_t>(
-                height,
-                static_cast<std::uint32_t>(
-                    awj::studio_defaults::max_window_height)))};
+    const auto scale = std::max(app.window().scale_factor(), 1.0f);
+    const auto width = size.width == 0
+                           ? awj::studio_defaults::default_window_width
+                           : std::lround(static_cast<double>(size.width) / scale);
+    const auto height = size.height == 0
+                            ? awj::studio_defaults::default_window_height
+                            : std::lround(static_cast<double>(size.height) / scale);
+    return {std::clamp(static_cast<int>(width),
+                       awj::studio_defaults::min_window_width,
+                       awj::studio_defaults::max_window_width),
+            std::clamp(static_cast<int>(height),
+                       awj::studio_defaults::min_window_height,
+                       awj::studio_defaults::max_window_height)};
   } catch (...) {
     return {static_cast<int>(awj::studio_defaults::default_window_width),
             static_cast<int>(awj::studio_defaults::default_window_height)};
@@ -495,31 +478,12 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app) {
       .window_width = window_width,
       .window_height = window_height,
       .input_mode_index = app.get_input_mode_index(),
-      .format_index = app.get_format_index(),
-      .preset_index = app.get_preset_index(),
-      .avif_encoder_index = app.get_avif_encoder_index(),
-      .chroma_index = app.get_chroma_index(),
-      .jpegli_progressive_index = app.get_jpegli_progressive_index(),
-      .alpha_policy_index = app.get_alpha_policy_index(),
       .collision_index = app.get_collision_index(),
       .theme_index = app.get_theme_index(),
-      .selected_large_image_action_index =
-          app.get_selected_large_image_action_index(),
-      .experimental_encoders = app.get_experimental_encoders(),
-      .visual_quality_gpu = app.get_visual_quality_gpu(),
-      .visual_quality_fallback = app.get_visual_quality_fallback(),
       .allow_wic_fallback = app.get_allow_wic_fallback(),
-      .jpegli_optimize_huffman = app.get_jpegli_optimize_huffman(),
-      .jpegli_xyb = app.get_jpegli_xyb(),
       .strip_metadata = app.get_strip_metadata(),
       .write_summary = app.get_write_summary(),
       .write_log = app.get_write_log(),
-      .quality_text = shared_to_string(app.get_quality_text()),
-      .visual_quality_text = shared_to_string(app.get_visual_quality_text()),
-      .bit_depth_text = shared_to_string(app.get_bit_depth_text()),
-      .threads_text = shared_to_string(app.get_threads_text()),
-      .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
-      .speed_text = shared_to_string(app.get_speed_text()),
       .template_text = shared_to_string(app.get_template_text())};
 }
 
@@ -840,9 +804,8 @@ std::expected<void, std::string> apply_config_window_size(
   if (!height) {
     return std::unexpected{height.error()};
   }
-  app.window().set_size(slint::PhysicalSize{
-      {static_cast<std::uint32_t>(*width),
-       static_cast<std::uint32_t>(*height)}});
+  app.window().set_size(slint::LogicalSize{
+      {static_cast<float>(*width), static_cast<float>(*height)}});
   return {};
 }
 
@@ -882,39 +845,6 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app) {
       !result) {
     return result;
   }
-  if (auto result = apply(apply_config_int(app, *values, "format_index", 0, 3,
-                                           &AwjStudio::set_format_index));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_int(app, *values, "preset_index", 0, 5,
-                                           &AwjStudio::set_preset_index));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_int(
-          app, *values, "avif_encoder_index", 0, 3,
-          &AwjStudio::set_avif_encoder_index));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_int(app, *values, "chroma_index", 0, 3,
-                                           &AwjStudio::set_chroma_index));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_int(
-          app, *values, "jpegli_progressive_index", 0, 2,
-          &AwjStudio::set_jpegli_progressive_index));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_int(
-          app, *values, "alpha_policy_index", 0, 2,
-          &AwjStudio::set_alpha_policy_index));
-      !result) {
-    return result;
-  }
   if (auto result = apply(apply_config_int(app, *values, "collision_index", 0,
                                            3, &AwjStudio::set_collision_index));
       !result) {
@@ -925,45 +855,10 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app) {
       !result) {
     return result;
   }
-  if (auto result = apply(apply_config_int(
-          app, *values, "selected_large_image_action_index", 0, 1,
-          &AwjStudio::set_selected_large_image_action_index));
-      !result) {
-    return result;
-  }
 
-  if (auto result = apply(apply_config_bool(
-          app, *values, "experimental_encoders",
-          &AwjStudio::set_experimental_encoders));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_bool(
-          app, *values, "visual_quality_gpu",
-          &AwjStudio::set_visual_quality_gpu));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_bool(
-          app, *values, "visual_quality_fallback",
-          &AwjStudio::set_visual_quality_fallback));
-      !result) {
-    return result;
-  }
   if (auto result = apply(apply_config_bool(
           app, *values, "allow_wic_fallback",
           &AwjStudio::set_allow_wic_fallback));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_bool(
-          app, *values, "jpegli_optimize_huffman",
-          &AwjStudio::set_jpegli_optimize_huffman));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_bool(app, *values, "jpegli_xyb",
-                                            &AwjStudio::set_jpegli_xyb));
       !result) {
     return result;
   }
@@ -983,38 +878,6 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app) {
     return result;
   }
 
-  if (auto result = apply(apply_config_string(app, *values, "quality_text",
-                                              &AwjStudio::set_quality_text));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_string(
-          app, *values, "visual_quality_text",
-          &AwjStudio::set_visual_quality_text));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_string(app, *values, "bit_depth_text",
-                                              &AwjStudio::set_bit_depth_text));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_string(app, *values, "threads_text",
-                                              &AwjStudio::set_threads_text));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_string(
-          app, *values, "memory_limit_text",
-          &AwjStudio::set_memory_limit_text));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_string(app, *values, "speed_text",
-                                              &AwjStudio::set_speed_text));
-      !result) {
-    return result;
-  }
   if (auto result = apply(apply_config_string(app, *values, "template_text",
                                               &AwjStudio::set_template_text));
       !result) {
@@ -1087,45 +950,15 @@ std::expected<void, std::string> write_studio_config_file(
 
   add_int("input_mode_index", current.input_mode_index,
           defaults.input_mode_index);
-  add_int("format_index", current.format_index, defaults.format_index);
-  add_int("preset_index", current.preset_index, defaults.preset_index);
-  add_int("avif_encoder_index", current.avif_encoder_index,
-          defaults.avif_encoder_index);
-  add_int("chroma_index", current.chroma_index, defaults.chroma_index);
-  add_int("jpegli_progressive_index", current.jpegli_progressive_index,
-          defaults.jpegli_progressive_index);
-  add_int("alpha_policy_index", current.alpha_policy_index,
-          defaults.alpha_policy_index);
   add_int("collision_index", current.collision_index, defaults.collision_index);
   add_int("theme_index", current.theme_index, defaults.theme_index);
-  add_int("selected_large_image_action_index",
-          current.selected_large_image_action_index,
-          defaults.selected_large_image_action_index);
 
-  add_bool("experimental_encoders", current.experimental_encoders,
-           defaults.experimental_encoders);
-  add_bool("visual_quality_gpu", current.visual_quality_gpu,
-           defaults.visual_quality_gpu);
-  add_bool("visual_quality_fallback", current.visual_quality_fallback,
-           defaults.visual_quality_fallback);
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
            defaults.allow_wic_fallback);
-  add_bool("jpegli_optimize_huffman", current.jpegli_optimize_huffman,
-           defaults.jpegli_optimize_huffman);
-  add_bool("jpegli_xyb", current.jpegli_xyb, defaults.jpegli_xyb);
   add_bool("strip_metadata", current.strip_metadata, defaults.strip_metadata);
   add_bool("write_summary", current.write_summary, defaults.write_summary);
   add_bool("write_log", current.write_log, defaults.write_log);
 
-  add_string("quality_text", current.quality_text, defaults.quality_text);
-  add_string("visual_quality_text", current.visual_quality_text,
-             defaults.visual_quality_text);
-  add_string("bit_depth_text", current.bit_depth_text,
-             defaults.bit_depth_text);
-  add_string("threads_text", current.threads_text, defaults.threads_text);
-  add_string("memory_limit_text", current.memory_limit_text,
-             defaults.memory_limit_text);
-  add_string("speed_text", current.speed_text, defaults.speed_text);
   add_string("template_text", current.template_text, defaults.template_text);
 
   std::ofstream output{path, std::ios::binary | std::ios::trunc};
@@ -2740,12 +2573,25 @@ void apply_preset_defaults_to_ui(AwjStudio& app, int preset_index) {
   app.set_quality_follows_format(false);
 }
 
-void apply_format_defaults_to_ui(AwjStudio& app, int format_index) {
+void apply_format_defaults_to_ui(AwjStudio& app, int format_index, UiState& state) {
+  // Save quality for the format we're leaving
+  const int old_index = app.get_format_index();
+  if (old_index >= 0 && old_index <= 3) {
+    state.format_quality_text[static_cast<std::size_t>(old_index)] =
+        shared_to_string(app.get_quality_text());
+  }
+  state.last_format_index = format_index;
   refresh_avif_encoder_options(app);
   const auto format = output_format_from_index(format_index);
-  if (app.get_quality_follows_format()) {
+  const auto& saved = state.format_quality_text[static_cast<std::size_t>(format_index)];
+  if (!saved.empty()) {
+    app.set_quality_text(to_shared(saved));
+    app.set_quality_follows_format(
+        saved == text_from_int(awj::default_quality_for(format)));
+  } else {
     app.set_quality_text(
         to_shared(text_from_int(awj::default_quality_for(format))));
+    app.set_quality_follows_format(true);
   }
   if (format == awj::OutputFormat::webp ||
       format == awj::OutputFormat::jpgli) {
@@ -2762,14 +2608,16 @@ void apply_format_defaults_to_ui(AwjStudio& app, int format_index) {
   }
 }
 
-void initialize_ui_defaults(AwjStudio& app) {
+void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   const auto defaults = awj::default_app_config();
   app.set_input_path({});
   app.set_input_mode_index(0);
   app.set_template_text(to_shared(text_from_wide(defaults.output_template)));
-  app.set_quality_text(to_shared("80"));
-  app.set_avif_quality_default(to_shared(
-      text_from_int(awj::default_quality_for(awj::OutputFormat::avif))));
+  const auto avif_default = awj::default_quality_for(awj::OutputFormat::avif);
+  app.set_quality_text(to_shared(text_from_int(avif_default)));
+  state.format_quality_text[0] = text_from_int(avif_default);
+  state.last_format_index = 0;
+  app.set_avif_quality_default(to_shared(text_from_int(avif_default)));
   app.set_webp_quality_default(to_shared(
       text_from_int(awj::default_quality_for(awj::OutputFormat::webp))));
   app.set_jxl_quality_default(to_shared(
@@ -2796,7 +2644,7 @@ void initialize_ui_defaults(AwjStudio& app) {
       awj::encoding_defaults::default_jpegli_optimize_huffman);
   app.set_jpegli_xyb(awj::encoding_defaults::default_jpegli_xyb);
   app.set_alpha_policy_index(1);
-  app.set_quality_follows_format(false);
+  app.set_quality_follows_format(true);
   app.set_bit_depth_follows_format(true);
 }
 
@@ -3967,7 +3815,7 @@ int run_studio_ui() {
 
     app->set_task_rows(state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
-    initialize_ui_defaults(*app);
+    initialize_ui_defaults(*app, *state);
     apply_system_ui_font(*app);
     app->set_threads_text({});
     app->set_selected_large_image_action_index(0);
@@ -4011,7 +3859,7 @@ int run_studio_ui() {
                   **app, state, "当前任务正在运行，无法修改格式默认值")) {
             return;
           }
-          apply_format_defaults_to_ui(**app, index);
+          apply_format_defaults_to_ui(**app, index, *state);
         }
       });
     });

@@ -288,11 +288,11 @@ std::expected<AvifEncoderSelection, std::string> select_auto_capability(
     return select(AvifEncoderMode::aom, "auto 回退到 AOM，因为用户明确请求高于 10-bit 的 bit-depth。");
   }
 
-  auto svt = select(AvifEncoderMode::svt, {});
-  if (svt) {
-    return svt;
+  auto aom = select(AvifEncoderMode::aom, {});
+  if (aom) {
+    return aom;
   }
-  return select(AvifEncoderMode::aom, std::format("auto 回退到 AOM，因为 SVT 不可用: {}", svt.error()));
+  return select(AvifEncoderMode::svt, std::format("auto 回退到 SVT-AV1-HDR，因为 AOM 不可用: {}", aom.error()));
 }
 
 }  // namespace awj_registry_detail
