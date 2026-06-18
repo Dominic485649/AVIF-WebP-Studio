@@ -262,7 +262,7 @@ std::expected<void, std::string> ensure_metadata_size(std::size_t size,
 }
 
 int codec_thread_count(int requested_threads) noexcept {
-  return std::clamp(requested_threads, 1, encoding_defaults::default_av1_encoder_thread_cap);
+  return std::clamp(requested_threads, 1, encoding_defaults::default_svtav1hdr_thread_cap);
 }
 
 std::expected<void, std::string> validate_int_range(int value,

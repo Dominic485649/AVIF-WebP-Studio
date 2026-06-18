@@ -3283,7 +3283,8 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
                                         std::numeric_limits<int>::max()))),
           .memory_limit_bytes = configured_memory_limit,
           .estimated_bytes_per_file = estimate,
-          .av1_encoder = cfg.output_format == awj::OutputFormat::avif});
+          .encoder_thread_cap = awj::encoder_thread_cap_for_config(
+              cfg.output_format, cfg.avif_encoder)});
       const int jobs = std::max(
           1, std::min<int>(resource_plan.file_parallelism,
                            static_cast<int>(std::min<std::size_t>(
@@ -3341,8 +3342,14 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
               if (!large) {
                 result = std::move(large.error());
               } else if (*large) {
+                const auto large_working_set =
+                    awj::avif_encode_working_set_bytes_for_dimensions(
+                        (**large).dimensions);
+                const auto large_resource_plan =
+                    awj::plan_large_mode_resources(resource_plan, 1,
+                                                   large_working_set);
                 result = awj::pipeline_detail::encode_large_mode_item(
-                    effective_cfg, logger, **large, configured_memory_limit,
+                    effective_cfg, logger, **large, large_resource_plan,
                     stop_token);
               } else {
                 result = backend.encode(*image, stop_token);
@@ -3804,8 +3811,74 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
 
 }  // namespace
 
+/// Probe whether the OpenGL driver exposes the functions FemtoVG needs
+/// (glCreateShader, OpenGL 2.0+). If not, force Slint to use the software
+/// renderer so the application starts instead of panicking.
+void ensure_slint_backend() {
+  // Respect an explicit user override.
+  if (GetEnvironmentVariableA("SLINT_BACKEND", nullptr, 0) > 0) {
+    return;
+  }
+
+  HMODULE gl = LoadLibraryW(L"opengl32.dll");
+  if (gl == nullptr) {
+    SetEnvironmentVariableA("SLINT_BACKEND", "software");
+    return;
+  }
+
+  // Create a throwaway window so wglGetProcAddress has a current context.
+  WNDCLASSW wc{};
+  wc.lpfnWndProc = DefWindowProcW;
+  wc.hInstance = GetModuleHandleW(nullptr);
+  wc.lpszClassName = L"AWJGLProbe";
+  RegisterClassW(&wc);
+
+  HWND tmp = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 1, 1, nullptr,
+                             nullptr, wc.hInstance, nullptr);
+  HDC dc = GetDC(tmp);
+
+  PIXELFORMATDESCRIPTOR pfd{};
+  pfd.nSize = sizeof(pfd);
+  pfd.nVersion = 1;
+  pfd.dwFlags = PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+  pfd.iPixelType = PFD_TYPE_RGBA;
+  pfd.cColorBits = 32;
+  SetPixelFormat(dc, ChoosePixelFormat(dc, &pfd), &pfd);
+
+  using WglCreateCtx = HGLRC(__stdcall*)(HDC);
+  auto wglCreateContext =
+      reinterpret_cast<WglCreateCtx>(GetProcAddress(gl, "wglCreateContext"));
+  HGLRC ctx = wglCreateContext != nullptr ? wglCreateContext(dc) : nullptr;
+
+  bool driver_ok = false;
+  if (ctx != nullptr) {
+    wglMakeCurrent(dc, ctx);
+
+    // glCreateShader lives in the ICD; opengl32.dll itself only forwards the
+    // request via wglGetProcAddress, which requires a current context.
+    using WglGetProc = void*(__stdcall*)(const char*);
+    auto wglGetProcAddress = reinterpret_cast<WglGetProc>(
+        GetProcAddress(gl, "wglGetProcAddress"));
+    driver_ok =
+        wglGetProcAddress != nullptr && wglGetProcAddress("glCreateShader");
+
+    wglMakeCurrent(nullptr, nullptr);
+    wglDeleteContext(ctx);
+  }
+
+  ReleaseDC(tmp, dc);
+  DestroyWindow(tmp);
+  UnregisterClassW(wc.lpszClassName, wc.hInstance);
+  FreeLibrary(gl);
+
+  if (!driver_ok) {
+    SetEnvironmentVariableA("SLINT_BACKEND", "software");
+  }
+}
+
 int run_studio_ui() {
   try {
+    ensure_slint_backend();
     auto app = AwjStudio::create();
     auto state = std::make_shared<UiState>();
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();

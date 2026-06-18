@@ -1,0 +1,991 @@
+AWJimage Third-Party Software Notices
+=======================================
+
+AWJimage is licensed under the GNU Affero General Public License v3.0
+(AGPL-3.0). Full source code is available at:
+
+    https://github.com/Dominic485649/AWJimage
+
+This file documents the third-party software components incorporated into
+AWJimage, their licenses, and required copyright notices.
+
+===============================================================================
+1. scnlib
+===============================================================================
+Website:   https://scnlib.readthedocs.io/
+License:   Apache License 2.0
+
+Copyright 2017-2024 Elias Kosunen
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+===============================================================================
+2. libwebp
+===============================================================================
+Website:   https://developers.google.com/speed/webp/
+License:   BSD 3-Clause "New" or "Revised" License
+
+Copyright (c) 2010, Google Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+  * Neither the name of Google nor the names of its contributors may be used
+    to endorse or promote products derived from this software without specific
+    prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+3. libjxl (JPEG XL)
+===============================================================================
+Website:   https://jpeg.org/jpegxl/
+           https://github.com/libjxl/libjxl
+License:   BSD 3-Clause "New" or "Revised" License
+
+Copyright (c) the JPEG XL Project Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from this
+    software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+4. Google Highway (highway) -- libjxl transitive dependency
+===============================================================================
+Website:   https://github.com/google/highway
+License:   Apache License 2.0 / BSD 3-Clause
+
+Copyright 2019-2024 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+Highway is also available under the BSD 3-Clause License for users who prefer
+that license model. The BSD 3-Clause terms are equivalent to the standard
+BSD 3-Clause text reproduced in the appendix below.
+
+===============================================================================
+5. Brotli -- libjxl transitive dependency
+===============================================================================
+Website:   https://github.com/google/brotli
+License:   MIT License
+
+Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+6. Little CMS 2 (lcms2) -- libjxl transitive dependency
+===============================================================================
+Website:   http://www.littlecms.com/
+License:   MIT License
+
+Copyright (c) 1998-2024 Marti Maria Saguer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+7. libpng
+===============================================================================
+Website:   http://www.libpng.org/pub/png/libpng.html
+License:   PNG Reference Library License version 2 (libpng-2.0)
+
+Copyright (c) 1995-2024 The PNG Reference Library Authors.
+Copyright (c) 2018-2024 Cosmin Truta.
+Copyright (c) 2000-2002, 2004, 2006-2018 Glenn Randers-Pehrson.
+Copyright (c) 1996-1997 Andreas Dilger.
+Copyright (c) 1995-1996 Guy Eric Schalnat, Group 42, Inc.
+
+The software is supplied "as is", without warranty of any kind, express or
+implied, including, without limitation, the warranties of merchantability,
+fitness for a particular purpose, title, and non-infringement. In no event
+shall the copyright owners, or anyone distributing the software, be liable
+for any damages or other liability, whether in contract, tort or otherwise,
+arising from, out of, or in connection with the software, or the use or other
+dealings in the software, even if advised of the possibility of such damage.
+
+Permission is hereby granted to use, copy, modify, and distribute this
+software, or portions hereof, for any purpose, without fee, subject to the
+following restrictions:
+
+ 1. The origin of this software must not be misrepresented; you must not
+    claim that you wrote the original software. If you use this software in
+    a product, an acknowledgment in the product documentation would be
+    appreciated, but is not required.
+
+ 2. Altered source versions must be plainly marked as such and must not be
+    misrepresented as being the original software.
+
+ 3. This Copyright notice may not be removed or altered from any source or
+    altered source distribution.
+
+===============================================================================
+8. libjpeg-turbo
+===============================================================================
+Website:   https://libjpeg-turbo.org/
+License:   Independent JPEG Group (IJG) License
+           BSD 3-Clause "New" or "Revised" License
+           zlib License
+
+This software is based in part on the work of the Independent JPEG Group.
+
+libjpeg-turbo is covered by three compatible BSD-style open source licenses:
+
+(A) The IJG (Independent JPEG Group) License, which is listed in
+    README.ijg.
+
+    This license applies to the libjpeg API library and associated programs
+    (any code inherited from libjpeg, and any modifications to that code).
+
+(B) The Modified (3-clause) BSD License, which is listed in
+    turbojpeg.c.
+
+    This license covers the TurboJPEG API library and associated programs.
+
+(C) The zlib License, which is listed in png.h.
+
+    This license is a subset of the other two, and it covers the libjpeg-turbo
+    SIMD extensions.
+
+IJG License (summary):
+
+The authors make NO WARRANTY or representation, either express or implied,
+with respect to this software, its quality, accuracy, merchantability, or
+fitness for a particular purpose. This software is provided "AS IS", and you,
+its user, assume the entire risk as to its quality and accuracy.
+
+This software is copyright (C) 1991-2024, Thomas G. Lane, Guido Vollbeding.
+All Rights Reserved except as specified below.
+
+Permission is hereby granted to use, copy, modify, and distribute this
+software (or portions thereof) for any purpose, without fee, subject to these
+conditions:
+
+(1) If any part of the source code for this software is distributed, then this
+README file must be included, with this copyright and no-warranty notice
+unaltered; and any additions, deletions, or changes to the original files
+must be clearly indicated in accompanying documentation.
+
+(2) If only executable code is distributed, then the accompanying
+documentation must state that "this software is based in part on the work of
+the Independent JPEG Group".
+
+(3) Permission for use of this software is granted only if the user accepts
+full responsibility for any undesirable consequences; the authors accept
+NO LIABILITY for damages of any kind.
+
+===============================================================================
+9. giflib
+===============================================================================
+Website:   http://giflib.sourceforge.net/
+License:   MIT License
+
+Copyright (c) 1997  Eric S. Raymond
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+10. libtiff
+===============================================================================
+Website:   https://libtiff.gitlab.io/libtiff/
+License:   libtiff License (BSD-like)
+
+Copyright (c) 1988-1997 Sam Leffler
+Copyright (c) 1991-1997 Silicon Graphics, Inc.
+
+Permission to use, copy, modify, distribute, and sell this software and its
+documentation for any purpose is hereby granted without fee, provided that (i)
+the above copyright notices and this permission notice appear in all copies of
+the software and related documentation, and (ii) the names of Sam Leffler and
+Silicon Graphics may not be used in any advertising or publicity relating to
+the software without the specific, prior written permission of Sam Leffler and
+Silicon Graphics.
+
+THE SOFTWARE IS PROVIDED "AS-IS" AND WITHOUT WARRANTY OF ANY KIND, EXPRESS,
+IMPLIED OR OTHERWISE, INCLUDING WITHOUT LIMITATION, ANY WARRANTY OF
+MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+IN NO EVENT SHALL SAM LEFFLER OR SILICON GRAPHICS BE LIABLE FOR ANY SPECIAL,
+INCIDENTAL, INDIRECT OR CONSEQUENTIAL DAMAGES OF ANY KIND, OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER OR NOT ADVISED
+OF THE POSSIBILITY OF DAMAGE, AND ON ANY THEORY OF LIABILITY, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+===============================================================================
+11. LibRaw
+===============================================================================
+Website:   https://www.libraw.org/
+License:   Common Development and Distribution License 1.0 (CDDL-1.0)
+
+NOTE: LibRaw is dual-licensed under CDDL-1.0 and LGPL-2.1. AWJimage
+statically links LibRaw. The LGPL-2.1 license requires either dynamic
+linking or full source disclosure of the combined work, which is
+incompatible with the static-linking distribution model of AWJimage.
+Therefore, LibRaw is used under the terms of CDDL-1.0, which permits
+static linking without additional source disclosure obligations.
+
+Copyright (C) 2008-2024 LibRaw LLC (info@libraw.org)
+
+The contents of this file are subject to the Common Development and
+Distribution License (the "License"). You may not use this file except in
+compliance with the License.
+
+You can obtain a copy of the License at
+    https://opensource.org/licenses/CDDL-1.0
+
+See the License for the specific language governing permissions and
+limitations under the License.
+
+When distributing Covered Code, include this CDDL HEADER in each file and
+include the License file at
+    https://opensource.org/licenses/CDDL-1.0
+
+===============================================================================
+12. AOM (Alliance for Open Media libaom)
+===============================================================================
+Website:   https://aomedia.org/
+           https://aomedia.googlesource.com/aom/
+License:   BSD 2-Clause "Simplified" License (Clear variant)
+
+Copyright (c) Alliance for Open Media. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+13. libyuv
+===============================================================================
+Website:   https://chromium.googlesource.com/libyuv/libyuv/
+License:   BSD 3-Clause "New" or "Revised" License
+
+Copyright 2011 The LibYuv Project Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+  * Neither the name of Google nor the names of its contributors may be used
+    to endorse or promote products derived from this software without specific
+    prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+14. svt-av1-hdr (Scalable Video Technology for AV1 - HDR fork)
+===============================================================================
+Website:   https://github.com/juliobbv-p/svt-av1-hdr
+License:   BSD 3-Clause Clear / BSD 2-Clause
+
+Copyright (c) 2018-2024, Alliance for Open Media. All rights reserved.
+Copyright (c) 2024, Contributors to the svt-av1-hdr project.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from this
+   software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+15. libavif
+===============================================================================
+Website:   https://github.com/AOMediaCodec/libavif
+License:   BSD 2-Clause "Simplified" License
+
+Copyright (c) 2019, Joe Drago. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+16. jpegli
+===============================================================================
+Website:   https://github.com/google/jpegli
+License:   BSD 3-Clause "New" or "Revised" License
+
+Copyright (c) the JPEG XL Project Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from this
+    software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+17. Slint
+===============================================================================
+Website:   https://slint.dev
+License:   GNU General Public License v3.0 (GPLv3)
+
+Copyright (C) 2020-2024 SixtyFPS GmbH <info@slint.dev>
+
+Slint is licensed under the GNU General Public License v3.0. AWJimage is
+licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+Under AGPL-3.0 Section 13, a covered work may incorporate material released
+under GPLv3, as both licenses share the same copyleft requirements for
+source disclosure. Users who receive AWJimage receive corresponding source
+code under these terms.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+===============================================================================
+18. zenravif / zenrav1e / zenavif-serialize (Rust crates via zenravif-bridge)
+===============================================================================
+Website:   https://crates.io/crates/zenravif
+License:   MIT License / BSD 2-Clause
+
+Copyright (c) Contributors to the zenravif project.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+19. Rust ecosystem crates (transitive dependencies of zenravif-bridge)
+===============================================================================
+The following Rust crates are transitive dependencies pulled in via the
+zenravif crate. Each is dual-licensed under MIT OR Apache-2.0.
+
+  rayon           -- Copyright (c) 2010 Niko Matsakis
+  crossbeam       -- Copyright (c) 2019 The Crossbeam Project Developers
+  proc-macro2     -- Copyright (c) 2014 Alex Crichton
+  quote           -- Copyright (c) 2016 David Tolnay
+  syn             -- Copyright (c) 2014 David Tolnay
+  thiserror       -- Copyright (c) 2019 David Tolnay
+  anyhow          -- Copyright (c) 2019 David Tolnay
+  rand            -- Copyright (c) 2013 The Rust Project Developers
+
+(Additional smaller transitive crates follow the same MIT OR Apache-2.0 terms.)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Alternatively, these crates are licensed under the Apache License, Version
+2.0. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+===============================================================================
+APPENDIX: Full License Texts
+===============================================================================
+
+-------------------------------------------------------------------------------
+BSD 3-Clause "New" or "Revised" License
+-------------------------------------------------------------------------------
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from this
+   software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+BSD 2-Clause "Simplified" License
+-------------------------------------------------------------------------------
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+MIT License
+-------------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+Apache License 2.0
+-------------------------------------------------------------------------------
+
+                              Apache License
+                        Version 2.0, January 2004
+                     http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+   "License" shall mean the terms and conditions for use, reproduction, and
+   distribution as defined by Sections 1 through 9 of this document.
+
+   "Licensor" shall mean the copyright owner or entity authorized by the
+   copyright owner that is granting the License.
+
+   "Legal Entity" shall mean the union of the acting entity and all other
+   entities that control, are controlled by, or are under common control with
+   that entity. For the purposes of this definition, "control" means
+   (i) the power, direct or indirect, to cause the direction or management
+   of such entity, whether by contract or otherwise, or (ii) ownership of
+   fifty percent (50%) or more of the outstanding shares, or (iii) beneficial
+   ownership of such entity.
+
+   "You" (or "Your") shall mean an individual or Legal Entity exercising
+   permissions granted by this License.
+
+   "Source" form shall mean the preferred form for making modifications,
+   including but not limited to software source code, documentation source,
+   and configuration files.
+
+   "Object" form shall mean any form resulting from mechanical transformation
+   or translation of a Source form, including but not limited to compiled
+   object code, generated documentation, and conversions to other media types.
+
+   "Work" shall mean the work of authorship, whether in Source or Object form,
+   made available under the License, as indicated by a copyright notice that
+   is included in or attached to the work.
+
+   "Derivative Works" shall mean any work, whether in Source or Object form,
+   that is based on (or derived from) the Work and for which the editorial
+   revisions, annotations, elaborations, or other modifications represent,
+   as a whole, an original work of authorship.
+
+   "Contribution" shall mean any work of authorship, including the original
+   version of the Work and any modifications or additions to that Work or
+   Derivative Works thereof, that is intentionally submitted to the Licensor
+   for inclusion in the Work.
+
+   "Contributor" shall mean Licensor and any individual or Legal Entity on
+   behalf of whom a Contribution has been received by the Licensor and
+   subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of this
+   License, each Contributor hereby grants to You a perpetual, worldwide,
+   non-exclusive, no-charge, royalty-free, irrevocable copyright license to
+   reproduce, prepare Derivative Works of, publicly display, publicly
+   perform, sublicense, and distribute the Work and such Derivative Works
+   in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of this
+   License, each Contributor hereby grants to You a perpetual, worldwide,
+   non-exclusive, no-charge, royalty-free, irrevocable patent license to
+   make, have made, use, offer to sell, sell, import, and otherwise transfer
+   the Work.
+
+4. Redistribution. You may reproduce and distribute copies of the Work or
+   Derivative Works thereof in any medium, with or without modifications,
+   and in Source or Object form, provided that You meet the following
+   conditions:
+
+   (a) You must give any other recipients of the Work or Derivative Works a
+       copy of this License; and
+
+   (b) You must cause any modified files to carry prominent notices stating
+       that You changed the files; and
+
+   (c) You must retain, in the Source form of any Derivative Works that You
+       distribute, all copyright, patent, trademark, and attribution notices
+       from the Source form of the Work, excluding those notices that do not
+       pertain to any part of the Derivative Works; and
+
+   (d) If the Work includes a "NOTICE" text file as part of its distribution,
+       then any Derivative Works that You distribute must include a readable
+       copy of the attribution notices contained within such NOTICE file,
+       excluding any notices that do not pertain to any part of the
+       Derivative Works, in at least one of the following places: within a
+       NOTICE text file distributed as part of the Derivative Works; within
+       the Source form or documentation, if provided along with the
+       Derivative Works; or, within a display generated by the Derivative
+       Works, if and wherever such third-party notices normally appear.
+
+   You may add Your own copyright statement to Your modifications and may
+   provide additional or different license terms and conditions for use,
+   reproduction, or distribution of Your modifications, or for any such
+   Derivative Works as a whole, provided Your use, reproduction, and
+   distribution of the Work otherwise complies with the conditions stated
+   in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise, any
+   Contribution intentionally submitted for inclusion in the Work by You to
+   the Licensor shall be under the terms and conditions of this License,
+   without any additional terms or conditions.
+
+6. Trademarks. This License does not grant permission to use the trade names,
+   trademarks, service marks, or product names of the Licensor, except as
+   required for reasonable and customary use in describing the origin of the
+   Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or agreed to in
+   writing, Licensor provides the Work (and each Contributor provides its
+   Contributions) on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+   ANY KIND, either express or implied, including, without limitation, any
+   warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or
+   FITNESS FOR A PARTICULAR PURPOSE.
+
+8. Limitation of Liability. In no event and under no legal theory, whether in
+   tort (including negligence), contract, or otherwise, unless required by
+   applicable law (such as deliberate and grossly negligent acts) or agreed
+   to in writing, shall any Contributor be liable to You for damages,
+   including any direct, indirect, special, incidental, or consequential
+   damages of any character arising as a result of this License or out of
+   the use or inability to use the Work, even if such Contributor has been
+   advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing the Work
+   or Derivative Works thereof, You may choose to offer, and charge a fee
+   for, acceptance of support, warranty, indemnity, or other liability
+   obligations and/or rights consistent with this License.
+
+END OF TERMS AND CONDITIONS
+
+-------------------------------------------------------------------------------
+Independent JPEG Group (IJG) License
+-------------------------------------------------------------------------------
+
+The authors make NO WARRANTY or representation, either express or implied,
+with respect to this software, its quality, accuracy, merchantability, or
+fitness for a particular purpose. This software is provided "AS IS", and you,
+its user, assume the entire risk as to its quality and accuracy.
+
+This software is copyright (C) 1991-2024, Thomas G. Lane, Guido Vollbeding.
+All Rights Reserved except as specified below.
+
+Permission is hereby granted to use, copy, modify, and distribute this
+software (or portions thereof) for any purpose, without fee, subject to these
+conditions:
+
+(1) If any part of the source code for this software is distributed, then
+this README file must be included, with this copyright and no-warranty notice
+unaltered; and any additions, deletions, or changes to the original files
+must be clearly indicated in accompanying documentation.
+
+(2) If only executable code is distributed, then the accompanying
+documentation must state that "this software is based in part on the work of
+the Independent JPEG Group".
+
+(3) Permission for use of this software is granted only if the user accepts
+full responsibility for any undesirable consequences; the authors accept NO
+LIABILITY for damages of any kind.
+
+These conditions apply to any software derived from or based on the IJG code,
+not just to the unmodified library. If you use our work, you ought to
+acknowledge us.
+
+NOTE: unfortunately, the date in the IJG license file has been modified in
+some distributions, which may cause confusion. The original distribution
+date is November 1, 1994; the date above reflects the version history since
+then. This is the official distribution site for IJG code; you can obtain
+the most current version from https://jpegclub.org/support/.
+
+-------------------------------------------------------------------------------
+Common Development and Distribution License 1.0 (CDDL-1.0)
+-------------------------------------------------------------------------------
+
+1. Definitions.
+
+   1.1. "Contributor" means each individual or entity that creates or
+   contributes to the creation of Modifications.
+
+   1.2. "Contributor Version" means the combination of the Original Software,
+   prior Modifications used by a Contributor (if any), and the Modifications
+   made by that particular Contributor.
+
+   1.3. "Covered Software" means (a) the Original Software, or (b)
+   Modifications, or (c) the combination of files containing Original Software
+   with files containing Modifications, in each case including portions
+   thereof.
+
+   1.4. "Executable" means the Covered Software in any form other than Source
+   Code.
+
+   1.5. "Initial Developer" means the individual or entity that first makes
+   Original Software available under this License.
+
+   1.6. "Larger Work" means a work which combines Covered Software or
+   portions thereof with code not governed by the terms of this License.
+
+   1.7. "License" means this document.
+
+   1.8. "Licensable" means having the right to grant, to the maximum extent
+   possible, whether at the time of the initial grant or subsequently
+   acquired, any and all of the rights conveyed herein.
+
+   1.9. "Modifications" means the Source Code and Executable form of any of
+   the following:
+   (A) Any file that results from an addition to, deletion from or
+       modification of the contents of a file containing Original Software
+       or previous Modifications;
+   (B) Any new file that contains any part of the Original Software or
+       previous Modifications; or
+   (C) Any new file that is contributed or otherwise made available under
+       the terms of this License.
+
+   1.10. "Original Software" means the Source Code and Executable form of
+   computer software code that is originally released under this License.
+
+   1.11. "Patent Claims" means any patent claim(s), now owned or hereafter
+   acquired, including without limitation, method, process, and apparatus
+   claims, in any patent Licensable by grantor.
+
+   1.12. "Source Code" means (a) the common form of computer software code in
+   which modifications are made and (b) associated documentation included in
+   or with such code.
+
+   1.13. "You" (or "Your") means an individual or a legal entity exercising
+   rights under, and complying with all of the terms of, this License.
+
+2. License Grants.
+
+   2.1. The Initial Developer Grant. Conditioned upon Your compliance with
+   Section 3.1 below and subject to third party intellectual property claims,
+   the Initial Developer hereby grants You a world-wide, royalty-free,
+   non-exclusive license:
+   (a) under intellectual property rights (other than patent or trademark)
+       Licensable by Initial Developer, to use, reproduce, modify, display,
+       perform, sublicense and distribute the Original Software (or portions
+       thereof), with or without Modifications, and/or as part of a Larger
+       Work; and
+   (b) under Patent Claims infringed by the making, using or selling of
+       Original Software, to make, have made, use, practice, sell, and offer
+       for sale, and/or otherwise dispose of the Original Software (or
+       portions thereof).
+
+   2.2. Contributor Grant. Conditioned upon Your compliance with Section 3.1
+   below and subject to third party intellectual property claims, each
+   Contributor hereby grants You a world-wide, royalty-free, non-exclusive
+   license:
+   (a) under intellectual property rights (other than patent or trademark)
+       Licensable by Contributor, to use, reproduce, modify, display,
+       perform, sublicense and distribute the Modifications created by such
+       Contributor (or portions thereof), either on an unmodified basis, with
+       other Modifications, as Covered Software and/or as part of a Larger
+       Work; and
+   (b) under Patent Claims infringed by the making, using, or selling of
+       Modifications made by that Contributor either alone and/or in
+       combination with its Contributor Version (or portions of such
+       combination), to make, use, sell, offer for sale, have made, and/or
+       otherwise dispose of: (1) Modifications made by that Contributor (or
+       portions thereof); and (2) the combination of Modifications made by
+       that Contributor with its Contributor Version (or portions of such
+       combination).
+
+3. Distribution Obligations.
+
+   3.1. Availability of Source Code. Any Covered Software which You distribute
+   or otherwise make available in Executable form must also be made available
+   in Source Code form and that Source Code form must be distributed only
+   under the terms of this License.
+
+4. Versions of the License.
+
+   4.1. New Versions. Sun Microsystems, Inc. is the initial license steward
+   and may publish revised and/or new versions of this License from time to
+   time.
+
+   4.2. Effect of New Versions. You may always continue to use, distribute or
+   otherwise make the Covered Software available under the terms of the
+   version of the License under which You originally received the Covered
+   Software.
+
+5. DISCLAIMER OF WARRANTY. COVERED SOFTWARE IS PROVIDED UNDER THIS LICENSE
+   ON AN "AS IS" BASIS, WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR
+   IMPLIED, INCLUDING, WITHOUT LIMITATION, WARRANTIES THAT THE COVERED
+   SOFTWARE IS FREE OF DEFECTS, MERCHANTABLE, FIT FOR A PARTICULAR PURPOSE OR
+   NON-INFRINGING. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE
+   COVERED SOFTWARE IS WITH YOU. SHOULD ANY COVERED SOFTWARE PROVE DEFECTIVE
+   IN ANY RESPECT, YOU (NOT THE INITIAL DEVELOPER OR ANY OTHER CONTRIBUTOR)
+   ASSUME THE COST OF ANY NECESSARY SERVICING, REPAIR OR CORRECTION.
+
+6. TERMINATION. This License and the rights granted hereunder will terminate
+   automatically if You fail to comply with terms herein and fail to cure
+   such breach within 30 days of becoming aware of the breach.
+
+7. LIMITATION OF LIABILITY. UNDER NO CIRCUMSTANCES AND UNDER NO LEGAL THEORY,
+   WHETHER TORT (INCLUDING NEGLIGENCE), CONTRACT, OR OTHERWISE, SHALL YOU,
+   THE INITIAL DEVELOPER, ANY OTHER CONTRIBUTOR, OR ANY DISTRIBUTOR OF
+   COVERED SOFTWARE, OR ANY SUPPLIER OF ANY OF SUCH PARTIES, BE LIABLE TO
+   ANY PERSON FOR ANY INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL
+   DAMAGES OF ANY CHARACTER ARISING OUT OF THIS LICENSE OR THE USE OF THE
+   COVERED SOFTWARE.
+
+8. U.S. GOVERNMENT END USERS. Covered Software is a "commercial item," as
+   that term is defined in 48 C.F.R. 2.101 (Oct. 1995), consisting of
+   "commercial computer software" and "commercial computer software
+   documentation," as such terms are used in 48 C.F.R. 12.212 (Sept. 1995).
+
+9. MISCELLANEOUS. This License represents the complete agreement concerning
+   the subject matter hereof.
+
+-------------------------------------------------------------------------------
+END OF THIRD-PARTY NOTICES
+-------------------------------------------------------------------------------

@@ -29,6 +29,10 @@ int main() {
   if (defaults.quality != awj::encoding_defaults::default_avif_quality) {
     return fail("default AVIF quality mismatch.");
   }
+  if (awj::encoding_defaults::default_avif_quality != 70 ||
+      awj::encoding_defaults::default_jxl_quality != 85) {
+    return fail("AVIF/JXL default quality literals mismatch.");
+  }
   if (!defaults.allow_wic_fallback) {
     return fail("default WIC fallback should be enabled.");
   }

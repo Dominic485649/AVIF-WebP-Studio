@@ -2,6 +2,7 @@ module;
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,13 +13,17 @@ module;
 #include <format>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -37,6 +42,7 @@ import awj.decoder_common;
 import awj.encoding_defaults;
 import awj.image;
 import awj.large_image_plan;
+import awj.resource_planner;
 import awj.avif_registry;
 
 #if AWJ_HAS_ZENRAVIF
@@ -297,15 +303,6 @@ std::expected<std::size_t, std::string> checked_strided_rgba_bytes(
   return byte_count;
 }
 
-std::expected<std::size_t, std::string> checked_pixel_count(std::size_t width,
-                                                           std::size_t height,
-                                                           std::string_view context) {
-  if (width == 0 || height == 0 || width > std::numeric_limits<std::size_t>::max() / height) {
-    return std::unexpected{std::format("{} 输入尺寸过大。", context)};
-  }
-  return width * height;
-}
-
 std::expected<const ImagePlane*, std::string> rgba8_plane(const ImageBuffer& image,
                                                           std::string_view encoder_id) {
   if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 ||
@@ -512,7 +509,7 @@ std::optional<int> color_value_for_encode(std::optional<int> value,
 }
 
 int codec_thread_count(int requested_threads) noexcept {
-  return std::clamp(requested_threads, 1, encoding_defaults::default_av1_encoder_thread_cap);
+  return std::clamp(requested_threads, 1, encoding_defaults::default_aom_thread_cap);
 }
 
 std::expected<void, std::string> validate_optional_int_range(std::optional<int> value,
@@ -767,37 +764,228 @@ int chroma_numeric(ChromaMode chroma) noexcept {
   }
 }
 
-std::uint16_t expand_u8_to_depth(std::uint8_t value, int bit_depth) noexcept {
-  const auto max_value = static_cast<std::uint32_t>((1u << bit_depth) - 1u);
-  return static_cast<std::uint16_t>((static_cast<std::uint32_t>(value) * max_value + 127u) / 255u);
-}
-
-template <typename T>
-std::expected<std::vector<T>, std::string> make_typed_buffer(std::size_t count,
-                                                             std::string_view context,
-                                                             std::string_view label) {
-  if (count > std::numeric_limits<std::size_t>::max() / sizeof(T)) {
-    return std::unexpected{std::format("{} {} 尺寸超过运行时限制。", context, label)};
-  }
-  const auto byte_count = count * sizeof(T);
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} {} 超过 20 GiB 运行时上限。", context, label)};
-  }
-  std::vector<T> buffer;
-  try {
-    buffer.resize(count);
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"AVIF 编码缓冲区内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"AVIF 编码缓冲区尺寸超过运行时限制。"};
-  }
-  return buffer;
-}
-
 struct RgbSource {
   avifRGBImage rgb{};
-  std::vector<std::uint16_t> high_depth_pixels{};
 };
+
+std::expected<RgbSource, std::string> rgb_source_for_encode(
+    std::size_t width,
+    std::size_t height,
+    std::span<const std::byte> pixels,
+    std::size_t stride,
+    avifImage* avif_image,
+    const NativeEncodeSettings& settings,
+    int bit_depth);
+
+struct GridTileContext {
+  const ImageBuffer* image{};
+  const ImagePlane* plane{};
+  const NativeEncodeSettings* settings{};
+  const GridPlan* plan{};
+  avifPixelFormat pixel_format{};
+  ChromaMode applied_chroma{};
+  bool lossless{};
+  int bit_depth{};
+};
+
+std::expected<AvifImage, std::string> prepare_grid_tile(
+    const GridTileContext& context,
+    std::size_t tile_index,
+    std::stop_token stop_token) {
+  if (context.image == nullptr || context.plane == nullptr ||
+      context.settings == nullptr || context.plan == nullptr) {
+    return std::unexpected{"AVIF grid tile 上下文无效。"};
+  }
+  if (auto stopped = stop_if_requested(stop_token); !stopped) {
+    return std::unexpected{stopped.error()};
+  }
+  const auto& image = *context.image;
+  const auto& plane = *context.plane;
+  const auto& settings = *context.settings;
+  const auto& plan = *context.plan;
+  const auto cols = static_cast<std::size_t>(plan.cols);
+  if (cols == 0) {
+    return std::unexpected{"AVIF grid 规划无效。"};
+  }
+  const auto row = tile_index / cols;
+  const auto col = tile_index % cols;
+  if (row > std::numeric_limits<std::uint32_t>::max() ||
+      col > std::numeric_limits<std::uint32_t>::max()) {
+    return std::unexpected{"AVIF grid tile 索引超过运行时限制。"};
+  }
+  const std::size_t src_x = col * plan.tile_width;
+  const std::size_t src_y = row * plan.tile_height;
+  if (src_x > image.width || plan.tile_width > image.width - src_x ||
+      src_y > image.height || plan.tile_height > image.height - src_y) {
+    return std::unexpected{"AVIF grid tile 范围超出输入图片。"};
+  }
+  if (src_x > std::numeric_limits<std::size_t>::max() / 4 ||
+      src_y > std::numeric_limits<std::size_t>::max() / plane.stride) {
+    return std::unexpected{"AVIF grid tile 偏移过大。"};
+  }
+  const auto row_offset = src_y * plane.stride;
+  const auto col_offset = src_x * 4;
+  if (col_offset > std::numeric_limits<std::size_t>::max() - row_offset) {
+    return std::unexpected{"AVIF grid tile 偏移过大。"};
+  }
+  const auto tile_offset = row_offset + col_offset;
+  if (tile_offset > plane.bytes.size()) {
+    return std::unexpected{"AVIF grid tile 输入范围无效。"};
+  }
+  const auto tile_pixels = std::span<const std::byte>{
+      plane.bytes.data() + tile_offset, plane.bytes.size() - tile_offset};
+  auto tile = AvifImage{avifImageCreate(
+      plan.tile_width, plan.tile_height, context.bit_depth, context.pixel_format)};
+  if (!tile) {
+    return std::unexpected{"无法创建 AVIF grid tile。"};
+  }
+  apply_color_settings(*tile, settings, context.applied_chroma, context.lossless);
+  if (tile_index == 0) {
+    if (auto metadata = apply_avif_metadata(*tile, image, settings); !metadata) {
+      return std::unexpected{metadata.error()};
+    }
+  } else {
+    if (auto metadata = apply_icc_and_content_light_metadata(*tile, image, settings);
+        !metadata) {
+      return std::unexpected{metadata.error()};
+    }
+  }
+  auto rgb = rgb_source_for_encode(
+      plan.tile_width, plan.tile_height, tile_pixels,
+      plane.stride, tile.get(), settings, context.bit_depth);
+  if (!rgb) {
+    return std::unexpected{rgb.error()};
+  }
+  if (auto stopped = stop_if_requested(stop_token); !stopped) {
+    return std::unexpected{stopped.error()};
+  }
+  const auto result = avifImageRGBToYUV(tile.get(), &rgb->rgb);
+  if (auto stopped = stop_if_requested(stop_token); !stopped) {
+    return std::unexpected{stopped.error()};
+  }
+  if (result != AVIF_RESULT_OK) {
+    return std::unexpected{std::format("AVIF grid tile RGB 转 YUV 失败: {}",
+                                      avifResultToString(result))};
+  }
+  return tile;
+}
+
+int grid_tile_prepare_thread_count(std::size_t tile_count,
+                                   const ResourcePlan& resources) noexcept {
+  if (tile_count <= 1) {
+    return 1;
+  }
+  const int hardware = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+  const int budget = std::max(1, resources.global_thread_budget);
+  const int file_parallelism = std::max(1, resources.file_parallelism);
+  const int limit = std::min({budget, file_parallelism, hardware,
+                              static_cast<int>(std::min<std::size_t>(
+                                  tile_count, static_cast<std::size_t>(std::numeric_limits<int>::max())))});
+  return std::max(1, limit);
+}
+
+std::expected<void, std::string> prepare_grid_tiles_serial(
+    const GridTileContext& context,
+    std::vector<AvifImage>& tile_storage,
+    std::vector<const avifImage*>& tile_views,
+    std::stop_token stop_token) {
+  for (std::size_t index = 0; index < tile_storage.size(); ++index) {
+    auto tile = prepare_grid_tile(context, index, stop_token);
+    if (!tile) {
+      return std::unexpected{tile.error()};
+    }
+    tile_storage[index] = std::move(*tile);
+    tile_views[index] = tile_storage[index].get();
+  }
+  return {};
+}
+
+std::expected<void, std::string> prepare_grid_tiles_parallel(
+    const GridTileContext& context,
+    std::vector<AvifImage>& tile_storage,
+    std::vector<const avifImage*>& tile_views,
+    int thread_count,
+    std::stop_token stop_token) {
+  if (thread_count <= 1 || tile_storage.size() <= 1) {
+    return prepare_grid_tiles_serial(context, tile_storage, tile_views, stop_token);
+  }
+
+  std::atomic<std::size_t> next_tile{0};
+  std::atomic<bool> failed{false};
+  std::mutex error_mutex;
+  std::string error_message;
+  std::vector<std::jthread> workers;
+  try {
+    workers.reserve(static_cast<std::size_t>(thread_count));
+    for (int worker = 0; worker < thread_count; ++worker) {
+      workers.emplace_back([&] {
+        try {
+          while (!failed.load(std::memory_order_relaxed) &&
+                 !stop_token.stop_requested()) {
+            const auto index = next_tile.fetch_add(1, std::memory_order_relaxed);
+            if (index >= tile_storage.size()) {
+              return;
+            }
+            auto tile = prepare_grid_tile(context, index, stop_token);
+            if (!tile) {
+              failed.store(true, std::memory_order_relaxed);
+              std::scoped_lock lock{error_mutex};
+              if (error_message.empty()) {
+                error_message = tile.error();
+              }
+              return;
+            }
+            tile_storage[index] = std::move(*tile);
+            tile_views[index] = tile_storage[index].get();
+          }
+        } catch (const std::bad_alloc&) {
+          failed.store(true, std::memory_order_relaxed);
+          std::scoped_lock lock{error_mutex};
+          if (error_message.empty()) {
+            error_message = "AVIF grid tile 准备内存不足。";
+          }
+        } catch (const std::length_error&) {
+          failed.store(true, std::memory_order_relaxed);
+          std::scoped_lock lock{error_mutex};
+          if (error_message.empty()) {
+            error_message = "AVIF grid tile 准备尺寸超过运行时限制。";
+          }
+        } catch (const std::exception&) {
+          failed.store(true, std::memory_order_relaxed);
+          std::scoped_lock lock{error_mutex};
+          if (error_message.empty()) {
+            error_message = "AVIF grid tile 准备线程异常。";
+          }
+        } catch (...) {
+          failed.store(true, std::memory_order_relaxed);
+          std::scoped_lock lock{error_mutex};
+          if (error_message.empty()) {
+            error_message = "AVIF grid tile 准备线程异常：未知异常。";
+          }
+        }
+      });
+    }
+  } catch (const std::bad_alloc&) {
+    workers.clear();
+    return prepare_grid_tiles_serial(context, tile_storage, tile_views, stop_token);
+  } catch (const std::system_error&) {
+    workers.clear();
+    return prepare_grid_tiles_serial(context, tile_storage, tile_views, stop_token);
+  } catch (const std::length_error&) {
+    workers.clear();
+    return prepare_grid_tiles_serial(context, tile_storage, tile_views, stop_token);
+  }
+
+  workers.clear();
+  if (stop_token.stop_requested()) {
+    return std::unexpected{"任务已取消。"};
+  }
+  if (failed.load(std::memory_order_relaxed)) {
+    std::scoped_lock lock{error_mutex};
+    return std::unexpected{error_message.empty() ? "AVIF grid tile 准备失败。" : error_message};
+  }
+  return {};
+}
 
 struct Rgba8Source {
   const std::uint8_t* pixels{};
@@ -823,10 +1011,10 @@ std::expected<RgbSource, std::string> rgb_source_for_encode(
     int bit_depth) {
   RgbSource source{};
   const bool keep_alpha = preserve_alpha_for_encode(settings);
-  const std::size_t channels = keep_alpha ? 4 : 3;
   avifRGBImageSetDefaults(&source.rgb, avif_image);
-  source.rgb.format = keep_alpha ? AVIF_RGB_FORMAT_RGBA : AVIF_RGB_FORMAT_RGB;
-  source.rgb.depth = static_cast<std::uint32_t>(bit_depth);
+  source.rgb.format = AVIF_RGB_FORMAT_RGBA;
+  source.rgb.depth = 8;
+  source.rgb.ignoreAlpha = keep_alpha ? AVIF_FALSE : AVIF_TRUE;
   source.rgb.chromaDownsampling = AVIF_CHROMA_DOWNSAMPLING_AVERAGE;
   const auto required_bytes = checked_strided_rgba_bytes(
       width, height, stride, "AVIF encoder");
@@ -836,56 +1024,17 @@ std::expected<RgbSource, std::string> rgb_source_for_encode(
   if (pixels.size() < *required_bytes) {
     return std::unexpected{"AVIF encoder 输入 RGBA buffer 尺寸无效。"};
   }
-  if (bit_depth == 8) {
-    if (stride > std::numeric_limits<std::uint32_t>::max()) {
-      return std::unexpected{"AVIF encoder 输入 stride 超出 libavif 限制。"};
-    }
-    source.rgb.pixels = reinterpret_cast<std::uint8_t*>(
-        const_cast<std::byte*>(pixels.data()));
-    source.rgb.rowBytes = static_cast<std::uint32_t>(stride);
-    if (keep_alpha) {
-      return source;
-    }
-    source.rgb.format = AVIF_RGB_FORMAT_RGBA;
-    source.rgb.ignoreAlpha = AVIF_TRUE;
-    return source;
-  }
   if (bit_depth != 10 && bit_depth != 12) {
-    return std::unexpected{"AVIF encoder 只支持 8、10、12-bit 输出。"};
-  }
-  const auto pixel_count = checked_pixel_count(width, height, "AVIF encoder");
-  if (!pixel_count) {
-    return std::unexpected{pixel_count.error()};
-  }
-  if (*pixel_count > std::numeric_limits<std::size_t>::max() / channels) {
-    return std::unexpected{"AVIF encoder 高位深临时 buffer 过大。"};
-  }
-  auto high_depth_pixels = make_typed_buffer<std::uint16_t>(
-      *pixel_count * channels, "AVIF encoder", "高位深临时 buffer");
-  if (!high_depth_pixels) {
-    return std::unexpected{high_depth_pixels.error()};
-  }
-  source.high_depth_pixels = std::move(*high_depth_pixels);
-  for (std::size_t y = 0; y < height; ++y) {
-    const auto* row = reinterpret_cast<const std::uint8_t*>(
-        pixels.data() + y * stride);
-    auto* out = source.high_depth_pixels.data() + y * width * channels;
-    for (std::size_t x = 0; x < width; ++x) {
-      out[x * channels + 0] = expand_u8_to_depth(row[x * 4 + 0], bit_depth);
-      out[x * channels + 1] = expand_u8_to_depth(row[x * 4 + 1], bit_depth);
-      out[x * channels + 2] = expand_u8_to_depth(row[x * 4 + 2], bit_depth);
-      if (keep_alpha) {
-        out[x * channels + 3] = expand_u8_to_depth(row[x * 4 + 3], bit_depth);
-      }
+    if (bit_depth != 8) {
+      return std::unexpected{"AVIF encoder 只支持 8、10、12-bit 输出。"};
     }
   }
-  const auto high_depth_stride = checked_interleaved_stride(
-      width, channels, "AVIF encoder", sizeof(std::uint16_t));
-  if (!high_depth_stride) {
-    return std::unexpected{high_depth_stride.error()};
+  if (stride > std::numeric_limits<std::uint32_t>::max()) {
+    return std::unexpected{"AVIF encoder 输入 stride 超出 libavif 限制。"};
   }
-  source.rgb.pixels = reinterpret_cast<std::uint8_t*>(source.high_depth_pixels.data());
-  source.rgb.rowBytes = static_cast<std::uint32_t>(*high_depth_stride);
+  source.rgb.pixels = reinterpret_cast<std::uint8_t*>(
+      const_cast<std::byte*>(pixels.data()));
+  source.rgb.rowBytes = static_cast<std::uint32_t>(stride);
   return source;
 }
 
@@ -1067,9 +1216,9 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   const int encoder_speed = std::clamp(settings.speed, 0, 10);
   encoder->speed = encoder_speed;
   encoder->keyframeInterval = 1;
-  const int encoder_threads = avif_aom_detail::codec_thread_count(
+  const int total_encoder_threads = avif_aom_detail::codec_thread_count(
       settings.resources.encoder_threads_per_file);
-  encoder->maxThreads = encoder_threads;
+  encoder->maxThreads = total_encoder_threads;
 
   const auto set_option = [&](std::string_view key, std::string_view value) -> std::expected<void, std::string> {
     const avifResult option_result = avifEncoderSetCodecSpecificOption(
@@ -1119,79 +1268,39 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     if (tile_count == 0 || tile_count > std::numeric_limits<std::size_t>::max()) {
       return std::unexpected{"AVIF grid tile 数量过大。"};
     }
+    const auto grid_resources = plan_grid_encode_resources(
+        settings.resources,
+        static_cast<int>(std::min<std::uint64_t>(
+            tile_count, static_cast<std::uint64_t>(std::numeric_limits<int>::max()))));
+    encoder->maxThreads = total_encoder_threads;
 
     std::vector<avif_aom_detail::AvifImage> tile_storage;
     std::vector<const avifImage*> tile_views;
     try {
-      tile_storage.reserve(static_cast<std::size_t>(tile_count));
-      tile_views.reserve(static_cast<std::size_t>(tile_count));
+      tile_storage.resize(static_cast<std::size_t>(tile_count));
+      tile_views.resize(static_cast<std::size_t>(tile_count));
     } catch (const std::bad_alloc&) {
       return std::unexpected{"AVIF grid tile 列表内存不足。"};
     } catch (const std::length_error&) {
       return std::unexpected{"AVIF grid tile 列表尺寸超过运行时限制。"};
     }
-    for (std::uint32_t row = 0; row < plan.rows; ++row) {
-      for (std::uint32_t col = 0; col < plan.cols; ++col) {
-        if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
-          return std::unexpected{stopped.error()};
-        }
-        const std::size_t src_x = static_cast<std::size_t>(col) * plan.tile_width;
-        const std::size_t src_y = static_cast<std::size_t>(row) * plan.tile_height;
-        if (src_x > image.width || plan.tile_width > image.width - src_x ||
-            src_y > image.height || plan.tile_height > image.height - src_y) {
-          return std::unexpected{"AVIF grid tile 范围超出输入图片。"};
-        }
-        if (src_x > std::numeric_limits<std::size_t>::max() / 4 ||
-            src_y > std::numeric_limits<std::size_t>::max() / (*plane)->stride) {
-          return std::unexpected{"AVIF grid tile 偏移过大。"};
-        }
-        const auto row_offset = src_y * (*plane)->stride;
-        const auto col_offset = src_x * 4;
-        if (col_offset > std::numeric_limits<std::size_t>::max() - row_offset) {
-          return std::unexpected{"AVIF grid tile 偏移过大。"};
-        }
-        const auto tile_offset = row_offset + col_offset;
-        if (tile_offset > (*plane)->bytes.size()) {
-          return std::unexpected{"AVIF grid tile 输入范围无效。"};
-        }
-        const auto tile_pixels = std::span<const std::byte>{
-            (*plane)->bytes.data() + tile_offset, (*plane)->bytes.size() - tile_offset};
-        auto tile = avif_aom_detail::AvifImage{avifImageCreate(
-            plan.tile_width, plan.tile_height, bit_depth, *pixel_format)};
-        if (!tile) {
-          return std::unexpected{"无法创建 AVIF grid tile。"};
-        }
-        avif_aom_detail::apply_color_settings(*tile, settings, applied_chroma, lossless);
-        if (row == 0 && col == 0) {
-          if (auto metadata = avif_aom_detail::apply_avif_metadata(*tile, image, settings); !metadata) {
-            return std::unexpected{metadata.error()};
-          }
-        } else {
-          if (auto metadata = avif_aom_detail::apply_icc_and_content_light_metadata(*tile, image, settings);
-              !metadata) {
-            return std::unexpected{metadata.error()};
-          }
-        }
-        auto rgb = avif_aom_detail::rgb_source_for_encode(
-            plan.tile_width, plan.tile_height, tile_pixels,
-            (*plane)->stride, tile.get(), settings, bit_depth);
-        if (!rgb) {
-          return std::unexpected{rgb.error()};
-        }
-        if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
-          return std::unexpected{stopped.error()};
-        }
-        result = avifImageRGBToYUV(tile.get(), &rgb->rgb);
-        if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
-          return std::unexpected{stopped.error()};
-        }
-        if (result != AVIF_RESULT_OK) {
-          return std::unexpected{std::format("AVIF grid tile RGB 转 YUV 失败: {}",
-                                            avifResultToString(result))};
-        }
-        tile_views.push_back(tile.get());
-        tile_storage.push_back(std::move(tile));
-      }
+
+    const avif_aom_detail::GridTileContext tile_context{
+        .image = &image,
+        .plane = *plane,
+        .settings = &settings,
+        .plan = &plan,
+        .pixel_format = *pixel_format,
+        .applied_chroma = applied_chroma,
+        .lossless = lossless,
+        .bit_depth = bit_depth};
+    const int tile_prepare_threads =
+        avif_aom_detail::grid_tile_prepare_thread_count(tile_storage.size(),
+                                                        grid_resources);
+    auto prepared_tiles = avif_aom_detail::prepare_grid_tiles_parallel(
+        tile_context, tile_storage, tile_views, tile_prepare_threads, stop_token);
+    if (!prepared_tiles) {
+      return std::unexpected{prepared_tiles.error()};
     }
 
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
@@ -1293,7 +1402,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   diagnostics.encoder_license = "BSD-2-Clause";
   diagnostics.integration_mode = settings.avif_grid_plan ? "libavif-grid" : std::string{};
   diagnostics.speed_mapping = avif_aom_detail::libavif_speed_mapping(actual_mode, encoder_speed);
-  diagnostics.encoder_threads = encoder_threads;
+  diagnostics.encoder_threads = total_encoder_threads;
   diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
 
   return NativeEncodeResult{.encoded = std::move(encoded),

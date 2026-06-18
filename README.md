@@ -30,6 +30,25 @@ cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 - `bin\x64\Release\AWJ.com`
 - `bin\x64\Release\AWJ.exe.sha256`
 - `bin\x64\Release\AWJ.com.sha256`
+- `bin\x64\Release\LICENSE`
+- `bin\x64\Release\THIRD_PARTY_NOTICES.txt`
+- `bin\x64\Release\BUILD_INFO.txt`
+
+版本号由仓库根目录的 `VERSION` 文件控制，`CMakeLists.txt` 构建时自动读取，`scripts/Update-VcpkgVersion.ps1` 可同步到 `vcpkg.json`。发版流程：
+
+```powershell
+# 1. 更新版本号
+Set-Content VERSION "0.8.5"
+.\scripts\Update-VcpkgVersion.ps1
+
+# 2. 提交并打 tag
+git add VERSION vcpkg.json
+git commit -m "release: 0.8.5"
+git tag 0.8.5
+
+# 3. 构建
+.\release.ps1
+```
 
 `svt-av1-hdr` 已作为源码依赖构建并静态链接进主程序，Release 不需要 `SvtAv1EncApp.exe`、DLL 或其他 SVT sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
@@ -61,6 +80,34 @@ AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 `--format jpgli` 和 `--format jpegli` 是 JPGLI 入口；`--format jpg` 不作为新增入口。启用 `--summary` 后，`summary.csv` 会记录 `format=JPGLI`、`encoder_id=jpegli`，输出路径仍通常是 `.jpg`。
 
 Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片。
+
+## 基准测试
+
+以下测试均使用 AOM AV1 编码器（libavif）。AWJ 自动多核并行，ffmpeg 为单线程每实例。
+
+### 默认参数（613 张混合分辨率图片）
+
+| 指标 | AWJ | ffmpeg 8.1.1（scoop） |
+|------|-----|----------------------|
+| 并发方式 | 自动多核并行 | 单线程 × 12 并发 |
+| 总耗时 | 1,367.2 核秒 | 2,316 核秒 |
+| 平均每张 | 2.23 s | 3.78 s |
+
+> ffmpeg 测试通过 PowerShell 传参，可能含额外传参与启动开销。
+
+### 2560×1600 固定分辨率（20 张，AWJ）
+
+平均每张 2.264 s。
+
+### 质量与体积
+
+同视觉质量下，ffmpeg 编码体积大于 AWJ。AWJ 指定同视觉质量所需的 CRF 值比 ffmpeg 高 1–3。该差异部分与 AOM 版本有关——AOM 3.14.0 包含重要质量改进，此处的质量优势不全是 AWJ 自身贡献。
+
+### visual_quality 视觉质量评估
+
+AWJ 的 `--visual-quality` 选项通过 IQA 算法自动搜索最优编码参数：**GMSD**（对模糊与结构失真敏感）与 **MS-SSIM**（多尺度结构相似性）混合评分。
+
+该混合算法兼顾稳定性与速度，在以 3–4 倍于普通编码的时间消耗下，能为指定批次找到同视觉质量下的最小体积。`--visual-quality-gpu` 利用 Direct3D 11 compute shader 加速 luma、GMSD、MS-SSIM 及 MS-SSIM downsample 计算路径；GPU 不可用或小图低于收益阈值时自动回退 CPU。
 
 ## 测试
 

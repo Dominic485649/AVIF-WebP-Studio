@@ -1,8 +1,16 @@
 cmake_minimum_required(VERSION 3.30)
 
+# Read version from the single source-of-truth file.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" AWJ_VERSION_STRING)
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$"
+    _ver_match "${AWJ_VERSION_STRING}")
+if(NOT _ver_match)
+    message(FATAL_ERROR "VERSION file does not contain a valid MAJOR.MINOR.PATCH string: \"${AWJ_VERSION_STRING}\"")
+endif()
+
 project(AWJimage
-    VERSION 0.8.2
-    DESCRIPTION "AWJimage native batch converter with Slint"
+    VERSION ${AWJ_VERSION_STRING}
+    DESCRIPTION "AWJimage C++23 native batch image converter (AVIF/WebP/JXL/JPGLI) with Slint"
     LANGUAGES CXX)
 
 include(CTest)
@@ -19,12 +27,13 @@ option(AWJ_ENABLE_X64_V3 "Enable x64-v3/AVX2 code generation for project targets
 option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into AWJ" ON)
 option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into AWJ" ON)
 option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
+option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
 set(AWJ_SVTAV1HDR_GIT_REPOSITORY "https://github.com/juliobbv-p/svt-av1-hdr.git" CACHE STRING "svt-av1-hdr repository")
-set(AWJ_SVTAV1HDR_GIT_TAG "b90fe2474a0c464121c0724d073f01953f792034" CACHE STRING "svt-av1-hdr git tag or commit")
+set(AWJ_SVTAV1HDR_GIT_TAG "cfb4e17693ae16945a7fe288d45437243d96c12e" CACHE STRING "svt-av1-hdr git tag or commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
-set(AWJ_LIBAVIF_GIT_TAG "6543b22b5bc706c53f038a16fe515f921556d9b3" CACHE STRING "libavif git tag or commit")
+set(AWJ_LIBAVIF_GIT_TAG "cc1ba78b3c37066e57f2879b2696d4d7fbc1244b" CACHE STRING "libavif git tag or commit")
 set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
-set(AWJ_JPEGLI_GIT_TAG "509a25915d9f9774217917a1227bbec7f75e9976" CACHE STRING "google/jpegli git tag or commit")
+set(AWJ_JPEGLI_GIT_TAG "031a0077f5799a6041004267fc12b956c1f52a20" CACHE STRING "google/jpegli git tag or commit")
 
 set(AVIF_RELEASE_IPO_SUPPORTED OFF)
 if(AVIF_ENABLE_RELEASE_IPO)
@@ -395,32 +404,42 @@ set(AVIF_LIBYUV SYSTEM CACHE STRING "" FORCE)
 set(AVIF_BUILD_APPS OFF CACHE BOOL "" FORCE)
 set(AVIF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(AVIF_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+set(AWJ_LIBAVIF_PATCH_COMMAND)
+if(AWJ_PATCH_LIBAVIF_PARALLEL_GRID)
+    set(AWJ_LIBAVIF_PATCH_COMMAND
+        PATCH_COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE_DIR=<SOURCE_DIR>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_parallel_grid.cmake")
+endif()
 FetchContent_Declare(libavif
     GIT_REPOSITORY ${AWJ_LIBAVIF_GIT_REPOSITORY}
-    GIT_TAG ${AWJ_LIBAVIF_GIT_TAG})
+    GIT_TAG ${AWJ_LIBAVIF_GIT_TAG}
+    ${AWJ_LIBAVIF_PATCH_COMMAND})
 FetchContent_MakeAvailable(libavif)
 
 if(AWJ_ENABLE_JPEGLI)
     set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
     set(BUILD_TESTING OFF)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_TOOLS OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_DEVTOOLS OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_JPEGLI_LIBJPEG OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_INSTALL_JPEGLI_LIBJPEG OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_DOXYGEN OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_MANPAGES OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_BENCHMARK OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_FUZZERS OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_JNI OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_OPENEXR OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_SJPEG OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_ENABLE_WASM_THREADS OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_BUNDLE_LIBPNG OFF CACHE BOOL "" FORCE)
-    set(JPEGXL_FORCE_SYSTEM_HWY ON CACHE BOOL "" FORCE)
-    set(JPEGXL_FORCE_SYSTEM_LCMS2 ON CACHE BOOL "" FORCE)
+    foreach(AWJ_JPEGLI_PREFIX IN ITEMS JPEGXL JPEGLI)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_TOOLS OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_DEVTOOLS OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_JPEGLI_LIBJPEG OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_INSTALL_JPEGLI_LIBJPEG OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_DOXYGEN OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_MANPAGES OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_BENCHMARK OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_FUZZERS OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_JNI OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_OPENEXR OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_SJPEG OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_ENABLE_WASM_THREADS OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_BUNDLE_LIBPNG OFF CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_FORCE_SYSTEM_HWY ON CACHE BOOL "" FORCE)
+        set(${AWJ_JPEGLI_PREFIX}_FORCE_SYSTEM_LCMS2 ON CACHE BOOL "" FORCE)
+    endforeach()
     FetchContent_Declare(Jpegli
         GIT_REPOSITORY ${AWJ_JPEGLI_GIT_REPOSITORY}
         GIT_TAG ${AWJ_JPEGLI_GIT_TAG}
@@ -472,11 +491,13 @@ function(avif_add_slint_sources target slint_file)
         OUTPUT "${generated_header}" "${generated_cpp}"
         COMMAND "$<TARGET_FILE:Slint::slint-compiler>" "${slint_absolute}"
                 -f cpp
+                --embed-resources embed-files
                 -o "${generated_header}"
                 "--cpp-file=${generated_cpp}"
         DEPENDS
             Slint::slint-compiler
             "${slint_absolute}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/logo.png"
         COMMENT "Generating ${slint_base}.h"
         VERBATIM)
 

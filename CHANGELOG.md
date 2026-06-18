@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.8.5 - 2026-06-18
+
+0.8.5 是一次以 AVIF/JXR 位深兼容、默认质量策略调整和深层编码性能优化为核心的版本更新。
+
+- 修复 JXR 等 16-bit 源图输出 AVIF 时直接失败的问题；继承源图位深超过当前 AVIF 编码器上限时，现在限制到编码器支持的最高输出位深，用户显式请求不支持位深仍会明确报错。
+- 调整默认质量：AVIF 默认 q70，JXL 默认 q85，WebP 与 JPGLI 默认值保持不变。
+- 优化 AVIF 10/12-bit 编码准备路径，取消 AWJ 侧 8-bit 到高位深 RGB 临时扩展，交由 libavif 官方 RGB/YUV depth rescale 处理。
+- 并行化 AVIF Grid tile 准备，并通过可重复 CMake patch 为保守 still color grid 场景启用 libavif tile 编码并行。
+- 改进超大图队列调度，在内存预算、线程预算和输出路径冲突约束下允许不同输出路径并行处理。
+- 细化编码线程资源规划，按 AOM/zenrav1e、SVT-AV1-HDR、JXL 和其他编码器分别设置默认线程上限。
+- 更新 FetchContent 依赖到当前可用上游版本，并在 Release BUILD_INFO 中记录对应 pin。
+
 ## 0.8.2 - 2026-06-09
 
 0.8.2 是一次以 Studio 队列行为修复、窗口状态记忆和默认常量统一管理为核心的小版本更新。

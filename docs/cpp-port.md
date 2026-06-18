@@ -34,7 +34,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - 输入为文件夹时保留原始子文件夹结构。
 - 输出格式可选 AVIF、WebP、JXL 或 JPGLI。
 - `fast` / `balanced` / `best` / `extreme` 预设。
-- AVIF 默认 q90、WebP/JXL/JPGLI 默认 q95，仍支持 `q90` 风格质量参数。
+- AVIF 默认 q70、WebP 默认 q95、JXL 默认 q85、JPGLI 默认 q90，仍支持 `q90` 风格质量参数。
 - 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF auto/q100 走直通或 AOM 严格无损，显式 SVT q100/visual-quality 100 为非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗。
 - AVIF 采样支持 `auto/444/422/420`，位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`；显式 SVT 始终实际使用 420 chroma，且只支持 8/10-bit。
 - JXL 不支持手动 chroma sampling，位深留空保持原片，可通过 native libjxl effort/speed 控制压缩成本。

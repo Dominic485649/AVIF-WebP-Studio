@@ -890,10 +890,6 @@ void populate_applied_avif_color_diagnostics(NativeEncodeSettings& settings,
   }
 }
 
-bool avif_lossless_bit_depth_supported(int bit_depth) noexcept {
-  return bit_depth == 8 || bit_depth == 10 || bit_depth == 12;
-}
-
 std::atomic<std::uint64_t> output_temp_counter{};
 
 fs::path make_output_temp_path(const fs::path& target) {
@@ -1760,20 +1756,13 @@ export class NativeBackend final {
           prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth == 8) {
         prepared.settings.bit_depth_reason = "有损 auto 可能将 8-bit 源图升至编码器首选 bit-depth";
       }
-      if (avif_lossless && !explicit_svt && selection_requested_bit_depth &&
-          !native_backend_detail::avif_lossless_bit_depth_supported(*selection_requested_bit_depth)) {
-        return prepare_failed(std::format(
-                                  "AVIF 无损模式无法保持源图 {}-bit 位深；libavif AOM 当前仅支持 8、10、12-bit 输出。",
-                                  *selection_requested_bit_depth),
-                              prepared.settings);
-      }
-
       const bool must_preserve_alpha = native_backend_detail::alpha_must_be_preserved(
           cfg_.alpha_policy, prepared.settings.source_has_alpha_channel, *has_non_opaque_alpha);
       const auto selection = select_avif_encoder_for_current_build(AvifEncoderSelectionRequest{
           .requested_encoder = selection_requested_encoder,
           .requested_chroma = selection_requested_chroma,
           .requested_bit_depth = selection_requested_bit_depth,
+          .requested_bit_depth_explicit = cfg_.bit_depth.has_value(),
           .requested_bit_depth_reason = prepared.settings.bit_depth_reason,
           .has_alpha = prepared.settings.source_has_alpha_channel,
           .must_preserve_alpha = must_preserve_alpha,
@@ -1806,7 +1795,11 @@ export class NativeBackend final {
       prepared.settings.requested_avif_encoder = selection->requested_encoder;
       prepared.settings.requested_chroma_mode = selection->requested_chroma;
       prepared.settings.requested_bit_depth = selection->requested_bit_depth;
-      if (prepared.settings.bit_depth_reason.empty()) {
+      const bool selected_bit_depth_was_clamped =
+          selection->requested_bit_depth && selection->applied_bit_depth &&
+          *selection->requested_bit_depth != *selection->applied_bit_depth;
+      if (!selection->bit_depth_reason.empty() &&
+          (prepared.settings.bit_depth_reason.empty() || selected_bit_depth_was_clamped)) {
         prepared.settings.bit_depth_reason = selection->bit_depth_reason;
       }
       prepared.settings.encoder_fallback_reason = selection->fallback_reason;

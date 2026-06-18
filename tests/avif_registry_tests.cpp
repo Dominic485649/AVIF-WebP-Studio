@@ -36,11 +36,11 @@ int main() {
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, false, false));
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt ||
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
       selected->applied_chroma != awj::ChromaMode::yuv420 ||
       selected->applied_bit_depth != 10 ||
       selected->bit_depth_reason.find("10-bit") == std::string::npos) {
-    return fail("auto small opaque request did not prefer available SVT 10-bit output.");
+    return fail("auto small opaque request did not prefer available AOM 10-bit output.");
   }
 
   selected = awj::select_avif_encoder_from_capabilities(
@@ -51,10 +51,10 @@ int main() {
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, false, false));
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt ||
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
       selected->applied_chroma != awj::ChromaMode::yuv420 ||
       selected->applied_bit_depth != 8) {
-    return fail("auto small opaque 420/8-bit request did not select available SVT.");
+    return fail("auto small opaque 420/8-bit request did not select available AOM.");
   }
 
   selected = awj::select_avif_encoder_from_capabilities(
@@ -116,6 +116,7 @@ int main() {
           .requested_encoder = awj::AvifEncoderMode::automatic,
           .requested_chroma = awj::ChromaMode::yuv420,
           .requested_bit_depth = 14,
+          .requested_bit_depth_explicit = true,
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, true, true));
@@ -127,12 +128,44 @@ int main() {
       awj::AvifEncoderSelectionRequest{
           .requested_encoder = awj::AvifEncoderMode::automatic,
           .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 16,
+          .requested_bit_depth_explicit = false,
+          .requested_bit_depth_reason = "无损模式继承源图 bit-depth",
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
+      selected->requested_bit_depth != 16 || selected->applied_bit_depth != 12 ||
+      !contains_any(selected->bit_depth_reason, {"16-bit", "12-bit", "限制"})) {
+    return fail("inherited 16-bit AVIF request was not clamped to AOM 12-bit output.");
+  }
+
+  auto clamped_without_aom = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 16,
+          .requested_bit_depth_explicit = false,
+          .requested_bit_depth_reason = "无损模式继承源图 bit-depth",
+          .pixel_count = 1024,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(false, true, false, false));
+  if (!clamped_without_aom || clamped_without_aom->applied_encoder != awj::AvifEncoderMode::svt ||
+      clamped_without_aom->applied_bit_depth != 10 ||
+      !contains_any(clamped_without_aom->bit_depth_reason, {"16-bit", "10-bit", "限制"})) {
+    return fail("inherited 16-bit AVIF request did not clamp to SVT 10-bit fallback when AOM is unavailable.");
+  }
+
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::automatic,
+          .requested_chroma = awj::ChromaMode::yuv420,
           .requested_bit_depth = 10,
           .visual_quality_search = true,
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, true, true));
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt) {
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom) {
     return fail("auto visual-quality request should preserve normal capability-driven selection.");
   }
 
@@ -144,9 +177,8 @@ int main() {
           .pixel_count = awj::encoding_defaults::ordinary_large_safe_max_pixels + 1,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, true, true));
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
-      selected->fallback_reason.find("SVT") == std::string::npos) {
-    return fail("auto over-SVT-limit opaque 420-compatible request did not fall back to AOM.");
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom) {
+    return fail("auto over-SVT-limit opaque 420-compatible request did not stay on AOM.");
   }
 
   rejected = awj::select_avif_encoder_from_capabilities(
@@ -271,9 +303,9 @@ int main() {
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       svt_capabilities);
-  if (!auto_with_svt || auto_with_svt->applied_encoder != awj::AvifEncoderMode::svt ||
-      auto_with_svt->speed != awj::encoding_defaults::default_svtav1hdr_preset) {
-    return fail("auto should prefer svt-av1-hdr for ordinary opaque 420-compatible requests and use its default preset.");
+  if (!auto_with_svt || auto_with_svt->applied_encoder != awj::AvifEncoderMode::aom ||
+      auto_with_svt->speed != awj::encoding_defaults::default_aom_cpu_used) {
+    return fail("auto should prefer AOM for ordinary opaque 420-compatible requests when AOM is available.");
   }
 
   auto auto_disabled_svt_capabilities = awj::avif_encoder_capabilities_for_build(true, true, false, false);
@@ -290,9 +322,8 @@ int main() {
           .pixel_count = 1024,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       auto_disabled_svt_capabilities);
-  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom ||
-      selected->fallback_reason.find("未参与 auto") == std::string::npos) {
-    return fail("auto should skip SVT when the capability is not auto-selectable.");
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom) {
+    return fail("auto should stay on AOM when SVT is not auto-selectable.");
   }
 
   selected = awj::select_avif_encoder_from_capabilities(

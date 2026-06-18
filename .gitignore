@@ -9,6 +9,7 @@
 /docs/jpeg/
 /docs/reports/
 /.claude/
+/.kilo/
 /third_party/imagemagick-src/
 /third_party/imagemagick-runtime/
 /third_party/zenravif-bridge/target/

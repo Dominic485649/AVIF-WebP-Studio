@@ -62,6 +62,11 @@ struct WorkGroup {
   std::vector<ImageFile> files{};
 };
 
+struct LargeWorkGroup {
+  std::uintmax_t weight{};
+  std::vector<BatchLargeImageItem> items{};
+};
+
 bool checked_add_uintmax(std::uintmax_t& value,
                          std::uintmax_t addend) noexcept {
   if (value > std::numeric_limits<std::uintmax_t>::max() - addend) {
@@ -352,6 +357,53 @@ std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
 
   // 不同输出路径之间按总大小调度；覆盖/跳过模式下同一路径保留扫描顺序。
   std::ranges::sort(groups, [](const WorkGroup& left, const WorkGroup& right) {
+    return left.weight > right.weight;
+  });
+  return groups;
+}
+
+std::uint64_t estimated_large_working_set_bytes(
+    const BatchLargeImageItem& item) noexcept {
+  return avif_encode_working_set_bytes_for_dimensions(item.dimensions);
+}
+
+std::uint64_t largest_large_mode_working_set(
+    const std::vector<BatchLargeImageItem>& items) noexcept {
+  std::uint64_t estimate = 1;
+  for (const auto& item : items) {
+    estimate = std::max(estimate, estimated_large_working_set_bytes(item));
+  }
+  return estimate;
+}
+
+std::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
+    const AppConfig& cfg, const std::vector<BatchLargeImageItem>& items) {
+  std::vector<LargeWorkGroup> groups;
+  std::unordered_map<std::wstring, std::size_t> index_by_output;
+
+  try {
+    groups.reserve(items.size());
+    index_by_output.reserve(items.size());
+    for (const auto& item : items) {
+      const auto output = output_path_for(cfg, item.file);
+      auto key = normalized_lower_path_key(output);
+      const auto [it, inserted] = index_by_output.emplace(key, groups.size());
+      if (inserted) {
+        groups.push_back(LargeWorkGroup{});
+      }
+
+      auto& group = groups[it->second];
+      group.weight = saturated_add_uintmax(group.weight, item.file.bytes);
+      group.items.push_back(item);
+    }
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"大图工作组内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"大图工作组数量超过运行时限制。"};
+  }
+
+  std::ranges::sort(groups, [](const LargeWorkGroup& left,
+                               const LargeWorkGroup& right) {
     return left.weight > right.weight;
   });
   return groups;
@@ -655,7 +707,7 @@ WorkExecutionResult encode_work_groups(
 
 EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
                                     const BatchLargeImageItem& item,
-                                    std::uint64_t configured_memory_limit,
+                                    ResourcePlan resource_plan,
                                     std::stop_token stop_token) {
   EncodeResult failed{
       .index = item.file.index,
@@ -677,15 +729,6 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
   large_cfg.output_format = OutputFormat::avif;
   large_cfg.input_path = item.file.path;
   large_cfg.visual_quality.reset();
-  const auto resource_plan = plan_large_deferred_resources(
-      plan_resources(ResourcePlanRequest{
-          .automatic_thread_budget = large_cfg.max_jobs,
-          .file_count = 1,
-          .memory_limit_bytes = configured_memory_limit,
-          .estimated_bytes_per_file =
-              avif_encode_working_set_bytes_for_dimensions(item.dimensions),
-          .av1_encoder = true}),
-      1);
 
   try {
     if (item.decision.available_zenrav1e) {
@@ -728,6 +771,188 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
 
   failed.message = "没有可用的大图自动处理方式。";
   return failed;
+}
+
+WorkExecutionResult encode_large_work_groups(
+    const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
+    const std::vector<LargeWorkGroup>& work, std::size_t progress_total,
+    std::atomic<std::size_t>& completed, std::vector<EncodeResult>& results,
+    const ProgressCallback& progress, std::stop_token stop_token) {
+  WorkExecutionResult execution{};
+  if (work.empty()) {
+    return execution;
+  }
+
+  const int jobs =
+      std::max(1, std::min<int>(resource_plan.file_parallelism,
+                                count_to_int_saturated(work.size())));
+  std::atomic<std::size_t> next{0};
+  std::atomic<int> worker_failures{0};
+
+  std::vector<std::jthread> workers;
+  try {
+    workers.reserve(static_cast<std::size_t>(jobs));
+  } catch (const std::bad_alloc&) {
+    worker_failures.fetch_add(1);
+    try {
+      const auto text =
+          std::format("[WARN] 大图工作线程列表内存不足，需要 {} 个线程槽。", jobs);
+      report_worker_warning_noexcept(logger, progress, completed.load(),
+                                     progress_total, text, text);
+    } catch (...) {
+      report_worker_warning_noexcept(
+          logger, progress, completed.load(), progress_total,
+          "large worker list allocation failed",
+          "[WARN] 大图工作线程列表内存不足。");
+    }
+    execution.worker_failures = worker_failures.load();
+    return execution;
+  } catch (const std::length_error&) {
+    worker_failures.fetch_add(1);
+    constexpr std::string_view text = "[WARN] 大图工作线程列表数量超过运行时限制。";
+    report_worker_warning_noexcept(logger, progress, completed.load(),
+                                   progress_total, text, text);
+    execution.worker_failures = worker_failures.load();
+    return execution;
+  }
+
+  for (const int worker_index : std::views::iota(0, jobs)) {
+    try {
+      workers.emplace_back([&] {
+        WicFallbackComApartment com{cfg.allow_wic_fallback};
+        try {
+          std::optional<AppConfig> worker_cfg;
+          if (cfg.allow_wic_fallback && !com.usable()) {
+            worker_cfg.emplace(cfg);
+            worker_cfg->allow_wic_fallback = false;
+            try {
+              const auto text = std::format(
+                  "[WARN] 大图工作线程 WIC fallback COM 初始化失败，已禁用该线程的 "
+                  "WIC fallback: 0x{:08X}",
+                  static_cast<unsigned int>(com.init()));
+              report_worker_warning_noexcept(logger, progress, completed.load(),
+                                             progress_total, text, text);
+            } catch (...) {
+              report_worker_warning_noexcept(
+                  logger, progress, completed.load(), progress_total,
+                  "large worker WIC fallback COM initialization failed",
+                  "[WARN] 大图工作线程 WIC fallback COM 初始化失败，已禁用该线程的 "
+                  "WIC fallback。");
+            }
+          }
+          const auto& effective_cfg = worker_cfg ? *worker_cfg : cfg;
+          set_current_thread_low_priority();
+          while (true) {
+            if (stop_token.stop_requested()) {
+              break;
+            }
+
+            const auto work_index = next.fetch_add(1);
+            if (work_index >= work.size()) {
+              break;
+            }
+            const auto& group = work[work_index];
+            if (group.items.size() > 1 &&
+                cfg.collision_mode == CollisionMode::overwrite) {
+              best_effort([&] {
+                emit_progress(
+                    progress,
+                    BatchProgress{.kind = BatchEventKind::warning,
+                                  .completed = completed.load(),
+                                  .total = progress_total,
+                                  .text = std::format(
+                                      "[WARN] 大图输出重名: {} 个输入将依次覆盖 {}",
+                                      group.items.size(),
+                                      display_path_for_user(output_path_for(
+                                          cfg, group.items.back().file)))});
+              });
+            }
+
+            for (const auto& item : group.items) {
+              if (stop_token.stop_requested()) {
+                break;
+              }
+              best_effort([&] {
+                logger.info(large_image_log_text(item));
+                emit_progress(
+                    progress,
+                    BatchProgress{.kind = BatchEventKind::message,
+                                  .completed = completed.load(),
+                                  .total = progress_total,
+                                  .large_image = item,
+                                  .text = large_image_action_text(item)});
+              });
+              auto result = encode_large_mode_item(
+                  effective_cfg, logger, item, resource_plan, stop_token);
+              const auto result_index = result.index;
+              results[result_index] = std::move(result);
+              const auto done = completed.fetch_add(1) + 1;
+              try {
+                BatchProgress event{
+                    .kind = BatchEventKind::item_finished,
+                    .completed = done,
+                    .total = progress_total,
+                    .result = results[result_index],
+                    .text = format_result_line(results[result_index])};
+                emit_progress(progress, event);
+              } catch (...) {
+                report_worker_warning_noexcept(
+                    logger, progress, done, progress_total,
+                    "large item progress reporting failed",
+                    "[WARN] 大图单项进度报告生成失败，结果已记录。");
+              }
+            }
+          }
+        } catch (const std::exception&) {
+          worker_failures.fetch_add(1);
+          report_worker_warning_noexcept(
+              logger, progress, completed.load(), progress_total,
+              "large worker failed",
+              "[WARN] 大图工作线程异常，已停止该线程。");
+        } catch (...) {
+          worker_failures.fetch_add(1);
+          report_worker_warning_noexcept(
+              logger, progress, completed.load(), progress_total,
+              "large worker failed: unknown exception",
+              "[WARN] 大图工作线程异常，已停止该线程: 未知异常");
+        }
+      });
+    } catch (const std::bad_alloc&) {
+      worker_failures.fetch_add(1);
+      try {
+        const auto text = std::format(
+            "[WARN] 创建大图工作线程失败，线程状态内存不足，已继续等待已启动线程: "
+            "{}/{}",
+            worker_index, jobs);
+        report_worker_warning_noexcept(logger, progress, completed.load(),
+                                       progress_total, text, text);
+      } catch (...) {
+        report_worker_warning_noexcept(
+            logger, progress, completed.load(), progress_total,
+            "large worker thread creation allocation failed",
+            "[WARN] 创建大图工作线程失败，线程状态内存不足，已继续等待已启动线程。");
+      }
+      break;
+    } catch (const std::system_error&) {
+      worker_failures.fetch_add(1);
+      report_worker_warning_noexcept(
+          logger, progress, completed.load(), progress_total,
+          "large worker thread creation failed",
+          "[WARN] 创建大图工作线程失败，已继续等待已启动线程。");
+      break;
+    } catch (const std::exception&) {
+      worker_failures.fetch_add(1);
+      report_worker_warning_noexcept(
+          logger, progress, completed.load(), progress_total,
+          "large worker thread creation failed",
+          "[WARN] 创建大图工作线程失败，已继续等待已启动线程。");
+      break;
+    }
+  }
+
+  workers.clear();
+  execution.worker_failures = worker_failures.load();
+  return execution;
 }
 
 void set_result_message_noexcept(EncodeResult& result,
@@ -829,8 +1054,19 @@ std::expected<BatchSummary, std::string> run_batch(
                                     .large_image = item,
                                     .text = pipeline_detail::large_image_action_text(item)});
       });
+      const auto large_resource_plan = plan_large_mode_resources(
+          plan_resources(ResourcePlanRequest{
+              .automatic_thread_budget = cfg.max_jobs,
+              .file_count = 1,
+              .memory_limit_bytes = configured_memory_limit,
+              .estimated_bytes_per_file =
+                  avif_encode_working_set_bytes_for_dimensions(item.dimensions),
+              .encoder_thread_cap = encoder_thread_cap_for_config(
+                  OutputFormat::avif, AvifEncoderMode::aom)}),
+          1,
+          avif_encode_working_set_bytes_for_dimensions(item.dimensions));
       auto result = pipeline_detail::encode_large_mode_item(
-          cfg, logger, item, configured_memory_limit, stop_token);
+          cfg, logger, item, large_resource_plan, stop_token);
       pipeline_detail::best_effort([&] {
         emit_progress(progress,
                       BatchProgress{.kind = BatchEventKind::item_finished,
@@ -954,6 +1190,11 @@ std::expected<BatchSummary, std::string> run_batch(
     if (!deferred_work) {
       return std::unexpected{deferred_work.error()};
     }
+    auto large_work =
+        pipeline_detail::build_large_work_groups(cfg, classified->large_mode);
+    if (!large_work) {
+      return std::unexpected{large_work.error()};
+    }
     const auto ordinary_estimated_bytes_per_file =
         pipeline_detail::estimated_decoded_bytes_per_file(classified->ordinary);
     const auto deferred_estimated_bytes_per_file =
@@ -965,17 +1206,34 @@ std::expected<BatchSummary, std::string> run_batch(
             std::max<std::size_t>(1, ordinary_work->size())),
         .memory_limit_bytes = configured_memory_limit,
         .estimated_bytes_per_file = ordinary_estimated_bytes_per_file,
-        .av1_encoder = cfg.output_format == OutputFormat::avif});
+        .encoder_thread_cap = encoder_thread_cap_for_config(cfg.output_format,
+                                                            cfg.avif_encoder)});
     const auto deferred_base_resource_plan = plan_resources(ResourcePlanRequest{
         .automatic_thread_budget = cfg.max_jobs,
         .file_count = pipeline_detail::count_to_int_saturated(
             std::max<std::size_t>(1, deferred_work->size())),
         .memory_limit_bytes = configured_memory_limit,
         .estimated_bytes_per_file = deferred_estimated_bytes_per_file,
-        .av1_encoder = cfg.output_format == OutputFormat::avif});
+        .encoder_thread_cap = encoder_thread_cap_for_config(cfg.output_format,
+                                                            cfg.avif_encoder)});
     const auto deferred_resource_plan = plan_large_deferred_resources(
         deferred_base_resource_plan, pipeline_detail::count_to_int_saturated(
                                          classified->deferred_tail.size()));
+    const auto large_largest_working_set =
+        pipeline_detail::largest_large_mode_working_set(classified->large_mode);
+    const auto large_base_resource_plan = plan_resources(ResourcePlanRequest{
+        .automatic_thread_budget = cfg.max_jobs,
+        .file_count = pipeline_detail::count_to_int_saturated(
+            std::max<std::size_t>(1, large_work->size())),
+        .memory_limit_bytes = configured_memory_limit,
+        .estimated_bytes_per_file = large_largest_working_set,
+        .encoder_thread_cap = encoder_thread_cap_for_config(OutputFormat::avif,
+                                                            AvifEncoderMode::aom)});
+    const auto large_resource_plan = plan_large_mode_resources(
+        large_base_resource_plan,
+        pipeline_detail::count_to_int_saturated(std::max<std::size_t>(
+            1, large_work->size())),
+        large_largest_working_set);
     const int ordinary_jobs =
         ordinary_work->empty()
             ? 0
@@ -988,6 +1246,12 @@ std::expected<BatchSummary, std::string> run_batch(
             : std::max(1, std::min<int>(deferred_resource_plan.file_parallelism,
                                         pipeline_detail::count_to_int_saturated(
                                             deferred_work->size())));
+    const int large_jobs =
+        large_work->empty()
+            ? 0
+            : std::max(1, std::min<int>(large_resource_plan.file_parallelism,
+                                        pipeline_detail::count_to_int_saturated(
+                                            large_work->size())));
     pipeline_detail::best_effort([&] {
       emit_progress(
           progress,
@@ -996,14 +1260,16 @@ std::expected<BatchSummary, std::string> run_batch(
               .total = files.size(),
               .text = std::format(
                   "共 {} 个文件；普通 {}，尾部延后 {}，内存超限 {}，大图模式 "
-                  "{}。普通并发 {}，延后并发 {}，编码器线程/文件 "
-                  "{}/{}，内存限制 {}。",
+                  "{}。普通并发 {}，延后并发 {}，大图并发 {}，编码器线程/文件 "
+                  "{}/{}/{}，内存限制 {}。",
                   files.size(), classified->ordinary.size(),
                   classified->deferred_tail.size(),
                   classified->memory_rejected.size(),
                   classified->large_mode.size(), ordinary_jobs, deferred_jobs,
+                  large_jobs,
                   resource_plan.encoder_threads_per_file,
                   deferred_resource_plan.encoder_threads_per_file,
+                  large_resource_plan.encoder_threads_per_file,
                   resource_plan.memory_limit_bytes == 0
                       ? std::string{"未限制"}
                       : format_size(resource_plan.memory_limit_bytes))});
@@ -1103,41 +1369,18 @@ std::expected<BatchSummary, std::string> run_batch(
                                     .completed = completed.load(),
                                     .total = files.size(),
                                     .text = std::format(
-                                        "开始自动处理超大图：{} 个文件，优先 "
+                                        "开始自动处理超大图：{} 个文件，并发 "
+                                        "{}，编码器线程/文件 {}，优先 "
                                         "zenrav1e，不可用时回退 grid。",
-                                        classified->large_mode.size())});
+                                        classified->large_mode.size(),
+                                        large_jobs,
+                                        large_resource_plan
+                                            .encoder_threads_per_file)});
       });
-      for (const auto& item : classified->large_mode) {
-        if (stop_token.stop_requested()) {
-          break;
-        }
-        pipeline_detail::best_effort([&] {
-          logger.info(pipeline_detail::large_image_log_text(item));
-          emit_progress(
-              progress,
-              BatchProgress{
-                  .kind = BatchEventKind::message,
-                  .completed = completed.load(),
-                  .total = files.size(),
-                  .large_image = item,
-                  .text = pipeline_detail::large_image_action_text(item)});
-        });
-        auto result = pipeline_detail::encode_large_mode_item(
-            cfg, logger, item, configured_memory_limit, stop_token);
-        const auto result_index = result.index;
-        results[result_index] = std::move(result);
-        const auto done = completed.fetch_add(1) + 1;
-        pipeline_detail::best_effort([&] {
-          emit_progress(
-              progress,
-              BatchProgress{.kind = BatchEventKind::item_finished,
-                            .completed = done,
-                            .total = files.size(),
-                            .result = results[result_index],
-                            .text = pipeline_detail::format_result_line(
-                                results[result_index])});
-        });
-      }
+      const auto large_execution = pipeline_detail::encode_large_work_groups(
+          cfg, logger, large_resource_plan, *large_work, files.size(),
+          completed, results, progress, stop_token);
+      worker_failures += large_execution.worker_failures;
     }
 
     const bool canceled = stop_token.stop_requested();

@@ -530,6 +530,29 @@ std::string avif_encoder_name(AvifEncoderMode mode) {
   }
 }
 
+constexpr int encoder_thread_cap_for(OutputFormat format,
+                                     AvifEncoderMode avif_encoder) noexcept {
+  switch (format) {
+    case OutputFormat::avif:
+      switch (avif_encoder) {
+        case AvifEncoderMode::svt:
+          return encoding_defaults::default_svtav1hdr_thread_cap;
+        case AvifEncoderMode::zenrav1e:
+          return encoding_defaults::default_zenrav1e_thread_cap;
+        case AvifEncoderMode::aom:
+        case AvifEncoderMode::automatic:
+        default:
+          return encoding_defaults::default_aom_thread_cap;
+      }
+    case OutputFormat::jxl:
+      return encoding_defaults::default_jxl_thread_cap;
+    case OutputFormat::webp:
+    case OutputFormat::jpgli:
+    default:
+      return encoding_defaults::default_other_encoder_thread_cap;
+  }
+}
+
 bool avif_encoder_is_experimental(AvifEncoderMode mode) noexcept {
   return mode == AvifEncoderMode::zenrav1e;
 }
@@ -592,6 +615,11 @@ std::string chroma_mode_name(ChromaMode mode) {
 
 std::string avif_encoder_mode_name(AvifEncoderMode mode) {
   return config_detail::avif_encoder_name(mode);
+}
+
+int encoder_thread_cap_for_config(OutputFormat format,
+                                  AvifEncoderMode avif_encoder) noexcept {
+  return config_detail::encoder_thread_cap_for(format, avif_encoder);
 }
 
 std::string alpha_mode_policy_name(AlphaModePolicy policy) {

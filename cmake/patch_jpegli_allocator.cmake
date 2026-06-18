@@ -11,7 +11,8 @@ file(READ "${COMMON_H}" CONTENT)
 set(NEEDLE "  using value_type = T;\n  template <typename U>\n  struct rebind {")
 set(REPLACEMENT "  using value_type = T;\n  UninitializedAllocator() = default;\n  template <typename U>\n  UninitializedAllocator(const UninitializedAllocator<U>&) noexcept {}\n  template <typename U>\n  struct rebind {")
 
-if(CONTENT MATCHES "UninitializedAllocator\\(const UninitializedAllocator<U>&\\)")
+string(FIND "${CONTENT}" "const UninitializedAllocator<U>&" HAS_TEMPLATED_COPY_CTOR)
+if(NOT HAS_TEMPLATED_COPY_CTOR EQUAL -1)
     return()
 endif()
 

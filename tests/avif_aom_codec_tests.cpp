@@ -37,6 +37,26 @@ awj::ImageBuffer make_test_image() {
   return image;
 }
 
+awj::ImageBuffer make_grid_test_image() {
+  constexpr std::uint32_t size = 128;
+  awj::ImagePlane plane{.stride = size * 4};
+  for (std::uint32_t y = 0; y < size; ++y) {
+    for (std::uint32_t x = 0; x < size; ++x) {
+      plane.bytes.push_back(std::byte{static_cast<unsigned char>((x * 2) & 0xffu)});
+      plane.bytes.push_back(std::byte{static_cast<unsigned char>((y * 2) & 0xffu)});
+      plane.bytes.push_back(std::byte{static_cast<unsigned char>((x + y) & 0xffu)});
+      plane.bytes.push_back(std::byte{255});
+    }
+  }
+  awj::ImageBuffer image{.width = size,
+                          .height = size,
+                          .pixel_format = awj::PixelFormat::rgba,
+                          .alpha_mode = awj::AlphaMode::none,
+                          .bit_depth = 8};
+  image.planes.push_back(std::move(plane));
+  return image;
+}
+
 awj::NativeEncodeSettings settings(int bit_depth,
                                     awj::ChromaMode chroma,
                                     awj::AvifEncoderMode encoder) {
@@ -51,6 +71,40 @@ awj::NativeEncodeSettings settings(int bit_depth,
                                         .file_parallelism = 1,
                                         .encoder_threads_per_file = 1,
                                         .global_thread_budget = 1}};
+}
+
+int decode_bytes_to_temp(const awj::EncodedImage& encoded,
+                         const std::filesystem::path& temp,
+                         std::uint32_t expected_width,
+                         std::uint32_t expected_height,
+                         int expected_rgba_bit_depth,
+                         int expected_source_bit_depth) {
+  {
+    std::ofstream output{temp, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(encoded.bytes.data()),
+                 static_cast<std::streamsize>(encoded.bytes.size()));
+  }
+  awj::AvifImageDecoder decoder;
+  auto decoded = decoder.decode(temp);
+  std::error_code ec;
+  std::filesystem::remove(temp, ec);
+  if (!decoded || decoded->image.width != expected_width ||
+      decoded->image.height != expected_height ||
+      decoded->image.pixel_format != awj::PixelFormat::rgba ||
+      decoded->image.bit_depth != expected_rgba_bit_depth ||
+      !decoded->image.source_info ||
+      decoded->image.source_info->bit_depth != expected_source_bit_depth) {
+    if (decoded) {
+      return fail(std::format("AVIF decode result invalid: got {}x{} {}-bit source {}-bit.",
+                              decoded->image.width, decoded->image.height,
+                              decoded->image.bit_depth,
+                              decoded->image.source_info
+                                  ? decoded->image.source_info->bit_depth
+                                  : 0));
+    }
+    return fail(decoded.error());
+  }
+  return 0;
 }
 
 }  // namespace
@@ -95,6 +149,27 @@ int main() {
     return fail(twelve_bit ? "AOM 12-bit diagnostics invalid." : twelve_bit.error());
   }
 
+  auto grid_settings = settings(8, awj::ChromaMode::yuv420,
+                                awj::AvifEncoderMode::aom);
+  grid_settings.resources = awj::ResourcePlan{.file_parallelism = 2,
+                                              .encoder_threads_per_file = 4,
+                                              .global_thread_budget = 4};
+  grid_settings.alpha_policy = awj::AlphaModePolicy::off;
+  grid_settings.avif_grid_plan = awj::GridPlan{.cols = 2,
+                                               .rows = 2,
+                                               .tile_width = 64,
+                                               .tile_height = 64,
+                                               .padded_width = 128,
+                                               .padded_height = 128,
+                                               .uses_padding = false,
+                                               .clamped_to_original_size = false};
+  auto grid_encoded = aom.encode(make_grid_test_image(), grid_settings);
+  if (!grid_encoded || grid_encoded->encoded.bytes.empty() ||
+      grid_encoded->diagnostics.integration_mode != "libavif-grid" ||
+      grid_encoded->diagnostics.encoder_threads != 4) {
+    return fail(grid_encoded ? "AOM grid diagnostics invalid." : grid_encoded.error());
+  }
+
   awj::ZenravifImageEncoder zen;
   auto zen_encoded = zen.encode(make_test_image(), settings(10, awj::ChromaMode::yuv444,
                                                             awj::AvifEncoderMode::zenrav1e));
@@ -107,20 +182,30 @@ int main() {
     return fail("zenravif unavailable build did not report clear error.");
   }
 
-  const auto temp = std::filesystem::temp_directory_path() / "avif-aom-codec-test.avif";
-  {
-    std::ofstream output{temp, std::ios::binary};
-    output.write(reinterpret_cast<const char*>(encoded->encoded.bytes.data()),
-                 static_cast<std::streamsize>(encoded->encoded.bytes.size()));
+  const auto temp_dir = std::filesystem::temp_directory_path();
+  if (const int rc = decode_bytes_to_temp(encoded->encoded,
+                                          temp_dir / "avif-aom-codec-test.avif",
+                                          2, 2, 8, 8);
+      rc != 0) {
+    return rc;
   }
-  awj::AvifImageDecoder decoder;
-  auto decoded = decoder.decode(temp);
-  std::error_code ec;
-  std::filesystem::remove(temp, ec);
-  if (!decoded || decoded->image.width != 2 || decoded->image.height != 2 ||
-      decoded->image.pixel_format != awj::PixelFormat::rgba ||
-      decoded->image.bit_depth != 8) {
-    return fail(decoded ? "AVIF decode result invalid." : decoded.error());
+  if (const int rc = decode_bytes_to_temp(ten_bit->encoded,
+                                          temp_dir / "avif-aom-codec-test-10.avif",
+                                          2, 2, 8, 10);
+      rc != 0) {
+    return rc;
+  }
+  if (const int rc = decode_bytes_to_temp(twelve_bit->encoded,
+                                          temp_dir / "avif-aom-codec-test-12.avif",
+                                          2, 2, 8, 12);
+      rc != 0) {
+    return rc;
+  }
+  if (const int rc = decode_bytes_to_temp(grid_encoded->encoded,
+                                          temp_dir / "avif-aom-codec-test-grid.avif",
+                                          128, 128, 8, 8);
+      rc != 0) {
+    return rc;
   }
   return 0;
 }

@@ -41,6 +41,7 @@ struct AvifEncoderSelectionRequest {
   AvifEncoderMode requested_encoder{AvifEncoderMode::automatic};
   ChromaMode requested_chroma{ChromaMode::auto_keep};
   std::optional<int> requested_bit_depth{};
+  bool requested_bit_depth_explicit{true};
   std::string requested_bit_depth_reason{};
   bool has_alpha{};
   bool must_preserve_alpha{};
@@ -78,6 +79,25 @@ bool contains_bit_depth(const AvifEncoderCapability& capability, int bit_depth) 
   return std::ranges::find(capability.bit_depths, bit_depth) != capability.bit_depths.end();
 }
 
+std::optional<int> max_bit_depth_for(const AvifEncoderCapability& capability) {
+  if (capability.bit_depths.empty()) {
+    return {};
+  }
+  return *std::ranges::max_element(capability.bit_depths);
+}
+
+std::optional<int> nearest_supported_bit_depth_not_exceeding(
+    const AvifEncoderCapability& capability,
+    int requested) {
+  std::optional<int> best{};
+  for (const int bit_depth : capability.bit_depths) {
+    if (bit_depth <= requested && (!best || bit_depth > *best)) {
+      best = bit_depth;
+    }
+  }
+  return best;
+}
+
 ChromaMode applied_chroma_for(const AvifEncoderCapability& capability,
                               ChromaMode requested) {
   if (requested == ChromaMode::auto_keep) {
@@ -95,10 +115,30 @@ struct AppliedBitDepth {
 AppliedBitDepth applied_bit_depth_for(const AvifEncoderCapability& capability,
                                       const AvifEncoderSelectionRequest& request) {
   if (request.requested_bit_depth) {
-    return AppliedBitDepth{.value = *request.requested_bit_depth,
-                           .reason = request.requested_bit_depth_reason.empty()
-                                         ? "用户明确请求 bit-depth"
-                                         : request.requested_bit_depth_reason};
+    const int requested = *request.requested_bit_depth;
+    const auto requested_reason =
+        request.requested_bit_depth_reason.empty()
+            ? (request.requested_bit_depth_explicit ? std::string{"用户明确请求 bit-depth"}
+                                                    : std::format("源图继承 {}-bit bit-depth", requested))
+            : request.requested_bit_depth_reason;
+    if (contains_bit_depth(capability, requested) || request.requested_bit_depth_explicit) {
+      return AppliedBitDepth{.value = requested, .reason = requested_reason};
+    }
+    const auto clamped = nearest_supported_bit_depth_not_exceeding(capability, requested);
+    if (clamped) {
+      const auto max_supported = max_bit_depth_for(capability);
+      const auto clamp_reason =
+          max_supported && requested > *max_supported
+              ? std::format("源图 {}-bit 超过 {} 支持上限，限制为 {}-bit 输出",
+                            requested, capability.id, *clamped)
+              : std::format("源图 {}-bit 不受 {} 支持，限制为 {}-bit 输出",
+                            requested, capability.id, *clamped);
+      return AppliedBitDepth{.value = *clamped,
+                             .reason = requested_reason.empty()
+                                           ? clamp_reason
+                                           : std::format("{}；{}", requested_reason, clamp_reason)};
+    }
+    return AppliedBitDepth{.value = requested, .reason = requested_reason};
   }
   if (contains_bit_depth(capability, 10)) {
     return AppliedBitDepth{.value = 10,
@@ -247,7 +287,8 @@ bool requested_bit_depth_above_10(const AvifEncoderSelectionRequest& request) no
 std::expected<AvifEncoderSelection, std::string> select_auto_capability(
     const AvifEncoderSelectionRequest& request,
     std::span<const AvifEncoderCapability> capabilities) {
-  if (request.requested_bit_depth && *request.requested_bit_depth > 12) {
+  if (request.requested_bit_depth && request.requested_bit_depth_explicit &&
+      *request.requested_bit_depth > 12) {
     return std::unexpected{std::format("AVIF auto 不支持请求的 {}-bit 输出。",
                                        *request.requested_bit_depth)};
   }
@@ -285,7 +326,18 @@ std::expected<AvifEncoderSelection, std::string> select_auto_capability(
   }
 
   if (requested_bit_depth_above_10(request)) {
-    return select(AvifEncoderMode::aom, "auto 回退到 AOM，因为用户明确请求高于 10-bit 的 bit-depth。");
+    if (request.requested_bit_depth_explicit) {
+      return select(AvifEncoderMode::aom,
+                    "auto 回退到 AOM，因为用户明确请求高于 10-bit 的 bit-depth。");
+    }
+    auto aom = select(AvifEncoderMode::aom,
+                      "auto 回退到 AOM，因为源图 bit-depth 高于 SVT 支持上限。");
+    if (aom) {
+      return aom;
+    }
+    return select(AvifEncoderMode::svt,
+                  std::format("auto 回退到 SVT-AV1-HDR 并限制源图 bit-depth，因为 AOM 不可用: {}",
+                              aom.error()));
   }
 
   auto aom = select(AvifEncoderMode::aom, {});
@@ -382,7 +434,8 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities() {
 export std::expected<AvifEncoderSelection, std::string> select_avif_encoder_from_capabilities(
     const AvifEncoderSelectionRequest& request,
     std::span<const AvifEncoderCapability> capabilities) {
-  if (request.requested_bit_depth && *request.requested_bit_depth > 12) {
+  if (request.requested_bit_depth && request.requested_bit_depth_explicit &&
+      *request.requested_bit_depth > 12) {
     return std::unexpected{std::format("AVIF encoder 不支持请求的 {}-bit 输出。",
                                        *request.requested_bit_depth)};
   }
