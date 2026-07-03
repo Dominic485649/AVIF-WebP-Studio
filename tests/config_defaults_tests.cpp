@@ -4,6 +4,7 @@
 #include <vector>
 
 import awj.config;
+import awj.codec;
 import awj.encoding_defaults;
 
 namespace {
@@ -68,6 +69,15 @@ int main() {
       awj::default_speed_for(awj::OutputFormat::jpgli) !=
           awj::encoding_defaults::default_jpegli_native_speed) {
     return fail("format speed defaults mismatch.");
+  }
+  if (awj::encoding_defaults::default_webp_native_speed != 4 ||
+      awj::encoding_defaults::default_jxl_native_speed != 6) {
+    return fail("format speed default literals mismatch.");
+  }
+  if (awj::map_jxl_speed_to_effort(0).codec_value != 10 ||
+      awj::map_jxl_speed_to_effort(6).codec_value != 4 ||
+      awj::map_jxl_speed_to_effort(10).codec_value != 1) {
+    return fail("JXL speed to effort mapping mismatch.");
   }
 
   auto webp_cfg = awj::default_app_config();
@@ -137,6 +147,30 @@ int main() {
     return fail("explicit CLI quality was overwritten by defaults.");
   }
 
+  parsed = awj::parse_arguments({L"--format", L"jpgli", L"--speed", L"6"});
+  if (parsed || parsed.error().find("JPGLI 不支持 --speed") == std::string::npos) {
+    return fail("CLI should reject speed for JPGLI.");
+  }
+  parsed = awj::parse_arguments({L"--format", L"png", L"--speed", L"6"});
+  if (parsed || parsed.error().find("PNG 不支持 --speed") == std::string::npos) {
+    return fail("CLI should reject speed for PNG.");
+  }
+
+  parsed = awj::parse_arguments({L"--shell-convert", L"--format", L"png",
+                                 L"C:\\img\\a.webp", L"C:\\img\\b.webp",
+                                 L"C:\\img\\a.webp"});
+  if (!parsed || parsed->config.output_policy != awj::OutputPolicy::shell ||
+      parsed->shell_inputs.size() != 2 ||
+      parsed->shell_inputs[0].native() != L"C:\\img\\a.webp" ||
+      parsed->shell_inputs[1].native() != L"C:\\img\\b.webp") {
+    return fail("CLI shell conversion inputs were not parsed and de-duplicated.");
+  }
+
+  parsed = awj::parse_arguments({L"C:\\img\\a.webp"});
+  if (parsed || parsed.error().find("未知参数") == std::string::npos) {
+    return fail("normal CLI mode should still reject positional inputs.");
+  }
+
   parsed = awj::parse_arguments({L"--preset", L"fast"});
   if (!parsed) {
     std::cerr << parsed.error() << '\n';
@@ -175,9 +209,18 @@ int main() {
 
   parsed =
       awj::parse_arguments({L"--avif-encoder", L"svt", L"--chroma", L"444"});
-  if (!parsed || parsed->config.avif_encoder != awj::AvifEncoderMode::svt ||
-      parsed->config.chroma_mode != awj::ChromaMode::yuv444) {
-    return fail("CLI did not preserve explicit SVT chroma request for diagnostics.");
+  if (parsed || parsed.error().find("svt-av1-hdr 只支持 420 chroma") == std::string::npos) {
+    return fail("CLI should reject explicit SVT 444 chroma.");
+  }
+  parsed =
+      awj::parse_arguments({L"--avif-encoder", L"svt", L"--quality", L"100"});
+  if (parsed || parsed.error().find("svt-av1-hdr 不支持 AVIF 无损") == std::string::npos) {
+    return fail("CLI should reject explicit SVT q100.");
+  }
+  parsed =
+      awj::parse_arguments({L"--avif-encoder", L"svt", L"--bit-depth", L"12"});
+  if (parsed || parsed.error().find("svt-av1-hdr 只支持 8/10-bit") == std::string::npos) {
+    return fail("CLI should reject explicit SVT 12-bit.");
   }
 
   parsed = awj::parse_arguments({L"--avif-encoder", L"zenrav1e"});

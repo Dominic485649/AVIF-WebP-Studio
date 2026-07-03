@@ -285,8 +285,9 @@ std::expected<std::size_t, std::string> checked_strided_rgba_bytes(
     std::size_t width,
     std::size_t height,
     std::size_t stride,
-    std::string_view context) {
-  const auto row_bytes = checked_rgba_stride(width, context);
+    std::string_view context,
+    std::size_t bytes_per_sample = 1) {
+  const auto row_bytes = checked_rgba_stride(width, context, bytes_per_sample);
   if (!row_bytes) {
     return std::unexpected{row_bytes.error()};
   }
@@ -303,14 +304,16 @@ std::expected<std::size_t, std::string> checked_strided_rgba_bytes(
   return byte_count;
 }
 
-std::expected<const ImagePlane*, std::string> rgba8_plane(const ImageBuffer& image,
-                                                          std::string_view encoder_id) {
-  if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 ||
+std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image,
+                                                         std::string_view encoder_id) {
+  if (image.pixel_format != PixelFormat::rgba ||
+      (image.bit_depth != 8 && image.bit_depth != 16) ||
       image.planes.empty()) {
-    return std::unexpected{std::format("{} encoder 当前需要 8-bit RGBA ImageBuffer。", encoder_id)};
+    return std::unexpected{std::format("{} encoder 当前需要 RGBA ImageBuffer。", encoder_id)};
   }
   const auto& plane = image.planes.front();
-  const auto expected_stride = checked_rgba_stride(image.width, encoder_id);
+  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+  const auto expected_stride = checked_rgba_stride(image.width, encoder_id, bytes_per_sample);
   if (!expected_stride) {
     return std::unexpected{expected_stride.error()};
   }
@@ -824,7 +827,8 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
     return std::unexpected{"AVIF grid tile 偏移过大。"};
   }
   const auto row_offset = src_y * plane.stride;
-  const auto col_offset = src_x * 4;
+  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+  const auto col_offset = src_x * 4 * bytes_per_sample;
   if (col_offset > std::numeric_limits<std::size_t>::max() - row_offset) {
     return std::unexpected{"AVIF grid tile 偏移过大。"};
   }
@@ -852,7 +856,8 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
   }
   auto rgb = rgb_source_for_encode(
       plan.tile_width, plan.tile_height, tile_pixels,
-      plane.stride, tile.get(), settings, context.bit_depth);
+      plane.stride, tile.get(), settings,
+      image.bit_depth);
   if (!rgb) {
     return std::unexpected{rgb.error()};
   }
@@ -1013,21 +1018,20 @@ std::expected<RgbSource, std::string> rgb_source_for_encode(
   const bool keep_alpha = preserve_alpha_for_encode(settings);
   avifRGBImageSetDefaults(&source.rgb, avif_image);
   source.rgb.format = AVIF_RGB_FORMAT_RGBA;
-  source.rgb.depth = 8;
+  source.rgb.depth = bit_depth;
   source.rgb.ignoreAlpha = keep_alpha ? AVIF_FALSE : AVIF_TRUE;
   source.rgb.chromaDownsampling = AVIF_CHROMA_DOWNSAMPLING_AVERAGE;
+  const auto bytes_per_sample = bit_depth > 8 ? std::size_t{2} : std::size_t{1};
   const auto required_bytes = checked_strided_rgba_bytes(
-      width, height, stride, "AVIF encoder");
+      width, height, stride, "AVIF encoder", bytes_per_sample);
   if (!required_bytes) {
     return std::unexpected{required_bytes.error()};
   }
   if (pixels.size() < *required_bytes) {
     return std::unexpected{"AVIF encoder 输入 RGBA buffer 尺寸无效。"};
   }
-  if (bit_depth != 10 && bit_depth != 12) {
-    if (bit_depth != 8) {
-      return std::unexpected{"AVIF encoder 只支持 8、10、12-bit 输出。"};
-    }
+  if (bit_depth != 8 && bit_depth != 10 && bit_depth != 12 && bit_depth != 16) {
+    return std::unexpected{"AVIF encoder RGB 输入只支持 8、10、12、16-bit。"};
   }
   if (stride > std::numeric_limits<std::uint32_t>::max()) {
     return std::unexpected{"AVIF encoder 输入 stride 超出 libavif 限制。"};
@@ -1042,11 +1046,10 @@ std::expected<RgbSource, std::string> rgb_source_for_encode(
     const ImageBuffer& image,
     const ImagePlane& plane,
     avifImage* avif_image,
-    const NativeEncodeSettings& settings,
-    int bit_depth) {
+    const NativeEncodeSettings& settings) {
   return rgb_source_for_encode(image.width, image.height,
                                std::span<const std::byte>{plane.bytes.data(), plane.bytes.size()},
-                               plane.stride, avif_image, settings, bit_depth);
+                               plane.stride, avif_image, settings, image.bit_depth);
 }
 
 avifCodecChoice codec_choice_for(AvifEncoderMode mode) noexcept {
@@ -1176,7 +1179,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     return std::unexpected{pixel_format.error()};
   }
 
-  auto plane = avif_aom_detail::rgba8_plane(image, avif_encoder_mode_name(actual_mode));
+  auto plane = avif_aom_detail::rgba_plane(image, avif_encoder_mode_name(actual_mode));
   if (!plane) {
     return std::unexpected{plane.error()};
   }
@@ -1336,7 +1339,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
       return std::unexpected{metadata.error()};
     }
 
-    auto rgb = avif_aom_detail::rgb_source_for_encode(image, **plane, avif_image.get(), settings, bit_depth);
+    auto rgb = avif_aom_detail::rgb_source_for_encode(image, **plane, avif_image.get(), settings);
     if (!rgb) {
       return std::unexpected{rgb.error()};
     }
@@ -1506,9 +1509,12 @@ export class ZenravifImageEncoder final : public ImageEncoder {
       return std::unexpected{
           "zenrav1e 无损 AVIF 重编码不能保证继承全部源图参数；请使用 --avif-encoder auto/aom。"};
     }
-    auto plane = avif_aom_detail::rgba8_plane(image, "zenravif");
+    auto plane = avif_aom_detail::rgba_plane(image, "zenravif");
     if (!plane) {
       return std::unexpected{plane.error()};
+    }
+    if (image.bit_depth != 8) {
+      return std::unexpected{"zenravif 当前需要 8-bit RGBA ImageBuffer。"};
     }
     const int bit_depth = settings.bit_depth.value_or(8);
     if (bit_depth != 8 && bit_depth != 10 && bit_depth != 12) {
@@ -1796,8 +1802,9 @@ export class AvifImageDecoder final : public ImageDecoder {
     if (!dimensions) {
       return std::unexpected{dimensions.error()};
     }
+    const int output_bit_depth = image.depth > 8 ? 16 : 8;
     const auto row_bytes = avif_aom_detail::checked_rgba_stride(
-        dimensions->width, "AVIF decoder");
+        dimensions->width, "AVIF decoder", output_bit_depth > 8 ? 2 : 1);
     if (!row_bytes) {
       return std::unexpected{row_bytes.error()};
     }
@@ -1821,7 +1828,7 @@ export class AvifImageDecoder final : public ImageDecoder {
     avifRGBImage rgb{};
     avifRGBImageSetDefaults(&rgb, &image);
     rgb.format = AVIF_RGB_FORMAT_RGBA;
-    rgb.depth = 8;
+    rgb.depth = output_bit_depth;
     rgb.maxThreads = decode_threads;
     rgb.pixels = reinterpret_cast<std::uint8_t*>(plane.bytes.data());
     rgb.rowBytes = row_bytes_u32;
@@ -1835,7 +1842,7 @@ export class AvifImageDecoder final : public ImageDecoder {
                     .height = rgb.height,
                     .pixel_format = PixelFormat::rgba,
                     .alpha_mode = image.alphaPlane != nullptr ? AlphaMode::straight : AlphaMode::none,
-                    .bit_depth = 8,
+                    .bit_depth = output_bit_depth,
                     .source_info = ImageSourceInfo{
                         .pixel_format = avif_aom_detail::pixel_format_from_avif(image.yuvFormat),
                         .bit_depth = static_cast<int>(image.depth),

@@ -141,12 +141,15 @@ std::expected<std::vector<std::byte>, std::string> read_file_bytes(
   }
 }
 
-std::expected<std::size_t, std::string> checked_rgba_stride(std::size_t width,
-                                                            std::string_view context) {
-  if (width == 0 || width > std::numeric_limits<std::size_t>::max() / 4) {
+std::expected<std::size_t, std::string> checked_rgba_stride(
+    std::size_t width,
+    std::string_view context,
+    std::size_t bytes_per_sample = 1) {
+  if (bytes_per_sample == 0 || width == 0 ||
+      width > std::numeric_limits<std::size_t>::max() / 4 / bytes_per_sample) {
     return std::unexpected{std::format("{} 输入宽度无效。", context)};
   }
-  return width * 4;
+  return width * 4 * bytes_per_sample;
 }
 
 std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
@@ -197,8 +200,12 @@ std::expected<ImageBuffer, std::string> make_rgba_image(std::size_t width,
                                                         std::vector<std::byte> rgba,
                                                         AlphaMode alpha_mode,
                                                         std::string_view context,
-                                                        std::optional<ImageSourceInfo> source_info = {}) {
-  const auto stride = checked_rgba_stride(width, context);
+                                                        std::optional<ImageSourceInfo> source_info = {},
+                                                        int bit_depth = 8) {
+  if (bit_depth != 8 && bit_depth != 16) {
+    return std::unexpected{std::format("{} RGBA bit-depth 不受支持。", context)};
+  }
+  const auto stride = checked_rgba_stride(width, context, bit_depth > 8 ? 2 : 1);
   if (!stride) {
     return std::unexpected{stride.error()};
   }
@@ -218,7 +225,7 @@ std::expected<ImageBuffer, std::string> make_rgba_image(std::size_t width,
                     .height = height,
                     .pixel_format = PixelFormat::rgba,
                     .alpha_mode = alpha_mode,
-                    .bit_depth = 8,
+                    .bit_depth = bit_depth,
                     .source_info = std::move(source_info)};
   try {
     image.planes.push_back(std::move(plane));
@@ -235,10 +242,12 @@ std::expected<bool, std::string> has_non_opaque_alpha(const ImageBuffer& image,
   if (image.alpha_mode == AlphaMode::none) {
     return false;
   }
-  if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 || image.planes.empty()) {
-    return std::unexpected{std::format("{} alpha 检测需要 8-bit RGBA ImageBuffer。", context)};
+  if (image.pixel_format != PixelFormat::rgba ||
+      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
+    return std::unexpected{std::format("{} alpha 检测需要 RGBA ImageBuffer。", context)};
   }
-  const auto stride = checked_rgba_stride(image.width, context);
+  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+  const auto stride = checked_rgba_stride(image.width, context, bytes_per_sample);
   if (!stride) {
     return std::unexpected{stride.error()};
   }
@@ -249,6 +258,17 @@ std::expected<bool, std::string> has_non_opaque_alpha(const ImageBuffer& image,
   const auto& plane = image.planes.front();
   if (plane.stride < *stride || plane.bytes.size() < *byte_count) {
     return std::unexpected{std::format("{} RGBA buffer 尺寸无效。", context)};
+  }
+  if (image.bit_depth == 16) {
+    for (std::size_t y = 0; y < image.height; ++y) {
+      const auto* row = reinterpret_cast<const std::uint16_t*>(plane.bytes.data() + y * plane.stride);
+      for (std::size_t x = 0; x < image.width; ++x) {
+        if (row[x * 4 + 3] != 65535) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
   for (std::size_t y = 0; y < image.height; ++y) {
     const auto* row = reinterpret_cast<const std::uint8_t*>(plane.bytes.data() + y * plane.stride);

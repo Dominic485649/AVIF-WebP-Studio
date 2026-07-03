@@ -5,6 +5,7 @@
 #include <dwmapi.h>
 #include <scn/scan.h>
 #include <shellapi.h>
+#include <shlobj_core.h>
 #include <shobjidl.h>
 #include <slint.h>
 #include <windows.h>
@@ -176,7 +177,7 @@ struct UiState {
   std::chrono::steady_clock::time_point drag_started{};
   std::chrono::steady_clock::time_point last_click_time{};
   bool drag_reordered{};
-  std::array<std::string, 4> format_quality_text{};
+  std::array<std::string, 5> format_quality_text{};
   int last_format_index{};
 };
 
@@ -452,14 +453,16 @@ std::filesystem::path studio_config_path() {
 
 std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
   try {
-    const auto size = app.window().size();
+    const auto physical_size = app.window().size();
     const auto scale = std::max(app.window().scale_factor(), 1.0f);
-    const auto width = size.width == 0
+    const auto width = physical_size.width == 0
                            ? awj::studio_defaults::default_window_width
-                           : std::lround(static_cast<double>(size.width) / scale);
-    const auto height = size.height == 0
+                           : std::lround(static_cast<double>(physical_size.width) /
+                                         scale);
+    const auto height = physical_size.height == 0
                             ? awj::studio_defaults::default_window_height
-                            : std::lround(static_cast<double>(size.height) / scale);
+                            : std::lround(
+                                  static_cast<double>(physical_size.height) / scale);
     return {std::clamp(static_cast<int>(width),
                        awj::studio_defaults::min_window_width,
                        awj::studio_defaults::max_window_width),
@@ -1664,7 +1667,9 @@ void add_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
       auto ext = result.output_path.extension().wstring();
       std::ranges::transform(ext, ext.begin(),
                              [](wchar_t ch) { return std::towlower(ch); });
-      if (ext == L".webp") {
+      if (ext == L".png") {
+        inferred = awj::OutputFormat::png;
+      } else if (ext == L".webp") {
         inferred = awj::OutputFormat::webp;
       } else if (ext == L".jxl") {
         inferred = awj::OutputFormat::jxl;
@@ -1982,6 +1987,8 @@ bool force_stop_current_worker(const std::shared_ptr<UiState>& state) noexcept {
 
 std::wstring cli_output_format_arg(awj::OutputFormat format) {
   switch (format) {
+    case awj::OutputFormat::png:
+      return L"png";
     case awj::OutputFormat::webp:
       return L"webp";
     case awj::OutputFormat::jxl:
@@ -2195,6 +2202,176 @@ std::wstring command_line_from_args(std::span<const std::wstring> args) {
   return command;
 }
 
+struct ShellConvertCommand {
+  std::wstring_view key{};
+  std::wstring_view label{};
+  std::wstring_view format{};
+};
+
+constexpr std::wstring_view shell_image_menu_key =
+    L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJImage";
+constexpr std::wstring_view shell_icofile_menu_key =
+    L"Software\\Classes\\icofile\\shell\\AWJImage";
+constexpr std::wstring_view shell_directory_menu_key =
+    L"Software\\Classes\\Directory\\shell\\AWJImage";
+constexpr std::wstring_view shell_legacy_subcommands_key =
+    L"Software\\Classes\\AWJImage.ContextMenu";
+
+constexpr std::wstring_view shell_supported_image_extensions[] = {
+    L".jpg",    L".jpeg", L".jpe", L".jfif", L".png",  L".webp",
+    L".bmp",    L".dib",  L".rle", L".ico",  L".tif",  L".tiff",
+    L".gif",    L".jxl",  L".avif", L".awsraw", L".dng", L".cr2",
+    L".cr3",    L".nef",  L".arw", L".rw2",  L".orf",  L".raf",
+    L".pef",    L".srw",  L".x3f", L".3fr",  L".erf",  L".kdc",
+    L".mrw",    L".raw",  L".heic", L".heif", L".jxr",  L".wdp",
+    L".hdp"};
+
+constexpr ShellConvertCommand shell_convert_commands[] = {
+    {.key = L"png", .label = L"转换为 PNG", .format = L"png"},
+    {.key = L"webp", .label = L"转换为 WebP", .format = L"webp"},
+    {.key = L"avif", .label = L"转换为 AVIF", .format = L"avif"},
+    {.key = L"jxl", .label = L"转换为 JXL", .format = L"jxl"},
+    {.key = L"jpgli", .label = L"转换为 JPGLI", .format = L"jpgli"},
+};
+
+std::expected<void, std::string> set_registry_string(HKEY root,
+                                                     std::wstring_view subkey,
+                                                     std::wstring_view value_name,
+                                                     std::wstring_view value) {
+  HKEY raw_key = nullptr;
+  const auto created = RegCreateKeyExW(root, std::wstring{subkey}.c_str(), 0, nullptr,
+                                       REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr,
+                                       &raw_key, nullptr);
+  if (created != ERROR_SUCCESS) {
+    return std::unexpected{std::format("写入右键菜单注册表失败，错误码 {}。", created)};
+  }
+  const auto bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+  const auto set = RegSetValueExW(raw_key, value_name.empty() ? nullptr : std::wstring{value_name}.c_str(),
+                                  0, REG_SZ,
+                                  reinterpret_cast<const BYTE*>(value.data()), bytes);
+  RegCloseKey(raw_key);
+  if (set != ERROR_SUCCESS) {
+    return std::unexpected{std::format("写入右键菜单注册表值失败，错误码 {}。", set)};
+  }
+  return {};
+}
+
+std::wstring shell_convert_command_line(const std::filesystem::path& awj_com,
+                                        std::wstring_view format) {
+  auto command = quote_windows_command_arg(awj_com.wstring(), true);
+  command += L" --shell-convert --format ";
+  command.append(format);
+  command += L" -i \"%1\" %*";
+  return command;
+}
+
+std::wstring shell_menu_icon_value(const std::filesystem::path& awj_exe) {
+  return quote_windows_command_arg(awj_exe.wstring(), true) + L",0";
+}
+
+std::wstring shell_extension_menu_key(std::wstring_view extension) {
+  return std::format(L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\AWJImage", extension);
+}
+
+std::expected<void, std::string> install_shell_subcommands(
+    std::wstring_view parent_key, const std::filesystem::path& awj_com,
+    std::wstring_view icon_value) {
+  const auto shell_key = std::format(L"{}\\shell", parent_key);
+  for (const auto& entry : shell_convert_commands) {
+    const auto verb_key = std::format(L"{}\\{}", shell_key, entry.key);
+    if (auto result = set_registry_string(HKEY_CURRENT_USER, verb_key, L"", entry.label); !result) {
+      return result;
+    }
+    if (auto result = set_registry_string(HKEY_CURRENT_USER, verb_key, L"MUIVerb", entry.label); !result) {
+      return result;
+    }
+    if (auto result = set_registry_string(HKEY_CURRENT_USER, verb_key, L"Icon", icon_value); !result) {
+      return result;
+    }
+    const auto command_key = verb_key + L"\\command";
+    if (auto result = set_registry_string(HKEY_CURRENT_USER, command_key, L"",
+                                          shell_convert_command_line(awj_com, entry.format)); !result) {
+      return result;
+    }
+  }
+  return {};
+}
+
+std::expected<void, std::string> install_shell_context_menu_for(
+    std::wstring_view parent_key, const std::filesystem::path& awj_com,
+    std::wstring_view icon_value) {
+  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{parent_key}.c_str());
+  if (auto result = set_registry_string(HKEY_CURRENT_USER, parent_key, L"MUIVerb", L"AWJimage 转换"); !result) {
+    return result;
+  }
+  if (auto result = set_registry_string(HKEY_CURRENT_USER, parent_key, L"Icon", icon_value); !result) {
+    return result;
+  }
+  if (auto result = set_registry_string(HKEY_CURRENT_USER, parent_key, L"SubCommands", L""); !result) {
+    return result;
+  }
+  if (auto result = install_shell_subcommands(parent_key, awj_com, icon_value); !result) {
+    return result;
+  }
+  return {};
+}
+
+std::expected<std::filesystem::path, std::string> awj_com_path_for_shell_menu() {
+  auto exe = awj::executable_path();
+  if (!exe) {
+    return std::unexpected{exe.error()};
+  }
+  auto path = exe->parent_path() / L"AWJ.com";
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec) || ec) {
+    path = exe->parent_path() / L"AWJ.exe";
+  }
+  return path;
+}
+
+std::expected<void, std::string> install_shell_context_menu() {
+  auto awj_exe = awj::executable_path();
+  if (!awj_exe) {
+    return std::unexpected{awj_exe.error()};
+  }
+  auto awj_com = awj_com_path_for_shell_menu();
+  if (!awj_com) {
+    return std::unexpected{awj_com.error()};
+  }
+  const auto icon_value = shell_menu_icon_value(*awj_exe);
+  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_legacy_subcommands_key}.c_str());
+  if (auto result = install_shell_context_menu_for(shell_image_menu_key, *awj_com, icon_value); !result) {
+    return result;
+  }
+  for (const auto extension : shell_supported_image_extensions) {
+    const auto key = shell_extension_menu_key(extension);
+    if (auto result = install_shell_context_menu_for(key, *awj_com, icon_value); !result) {
+      return result;
+    }
+  }
+  if (auto result = install_shell_context_menu_for(shell_icofile_menu_key, *awj_com, icon_value); !result) {
+    return result;
+  }
+  if (auto result = install_shell_context_menu_for(shell_directory_menu_key, *awj_com, icon_value); !result) {
+    return result;
+  }
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return {};
+}
+
+std::expected<void, std::string> remove_shell_context_menu() {
+  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_image_menu_key}.c_str());
+  for (const auto extension : shell_supported_image_extensions) {
+    const auto key = shell_extension_menu_key(extension);
+    RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
+  }
+  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_icofile_menu_key}.c_str());
+  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_directory_menu_key}.c_str());
+  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_legacy_subcommands_key}.c_str());
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return {};
+}
+
 std::expected<std::shared_ptr<StudioChildProcess>, std::string>
 start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
   auto exe_path = awj::executable_path();
@@ -2338,6 +2515,12 @@ class DropBridge {
       self->handle_drop(reinterpret_cast<HDROP>(wparam));
       return 0;
     }
+    if (self != nullptr && message == WM_DPICHANGED && lparam != 0) {
+      const auto* suggested = reinterpret_cast<const RECT*>(lparam);
+      SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, 0, 0,
+                   SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+      return 0;
+    }
     if (self != nullptr && self->previous_proc_ != nullptr) {
       return CallWindowProcW(self->previous_proc_, hwnd, message, wparam,
                              lparam);
@@ -2416,10 +2599,10 @@ LONG add_window_extent(LONG origin, LONG extent) noexcept {
 }
 
 void constrain_window_to_work_area(slint::Window& window) {
-  auto size = window.size();
+  auto physical_size = window.size();
   auto position = window.position();
-  const LONG current_width = physical_extent_to_long(size.width);
-  const LONG current_height = physical_extent_to_long(size.height);
+  const LONG current_width = physical_extent_to_long(physical_size.width);
+  const LONG current_height = physical_extent_to_long(physical_size.height);
   RECT current_rect{position.x, position.y,
                     add_window_extent(position.x, current_width),
                     add_window_extent(position.y, current_height)};
@@ -2434,17 +2617,20 @@ void constrain_window_to_work_area(slint::Window& window) {
   const auto work_width = std::max<LONG>(1, work.right - work.left);
   const auto work_height = std::max<LONG>(1, work.bottom - work.top);
   const auto clamped_width = std::min<std::uint32_t>(
-      size.width, static_cast<std::uint32_t>(work_width));
+      physical_size.width, static_cast<std::uint32_t>(work_width));
   const auto clamped_height = std::min<std::uint32_t>(
-      size.height, static_cast<std::uint32_t>(work_height));
+      physical_size.height, static_cast<std::uint32_t>(work_height));
 
-  if (clamped_width != size.width || clamped_height != size.height) {
-    size = slint::PhysicalSize{{clamped_width, clamped_height}};
-    window.set_size(size);
+  if (clamped_width != physical_size.width ||
+      clamped_height != physical_size.height) {
+    physical_size = slint::PhysicalSize{{clamped_width, clamped_height}};
+    window.set_size(physical_size);
   }
 
-  const auto max_x = work.right - static_cast<LONG>(size.width);
-  const auto max_y = work.bottom - static_cast<LONG>(size.height);
+  const auto width = physical_extent_to_long(physical_size.width);
+  const auto height = physical_extent_to_long(physical_size.height);
+  const auto max_x = work.right - width;
+  const auto max_y = work.bottom - height;
   const auto clamped_x =
       std::clamp<LONG>(position.x, work.left, std::max(work.left, max_x));
   const auto clamped_y =
@@ -2476,6 +2662,8 @@ awj::OutputFormat output_format_from_index(int index) {
       return awj::OutputFormat::jxl;
     case 3:
       return awj::OutputFormat::jpgli;
+    case 4:
+      return awj::OutputFormat::png;
     case 0:
     default:
       return awj::OutputFormat::avif;
@@ -2575,10 +2763,13 @@ void apply_preset_defaults_to_ui(AwjStudio& app, int preset_index) {
 
 void apply_format_defaults_to_ui(AwjStudio& app, int format_index, UiState& state) {
   // Save quality for the format we're leaving
-  const int old_index = app.get_format_index();
-  if (old_index >= 0 && old_index <= 3) {
+  const int old_index = state.last_format_index;
+  if (old_index >= 0 && old_index < static_cast<int>(state.format_quality_text.size())) {
     state.format_quality_text[static_cast<std::size_t>(old_index)] =
         shared_to_string(app.get_quality_text());
+  }
+  if (format_index < 0 || format_index >= static_cast<int>(state.format_quality_text.size())) {
+    format_index = 0;
   }
   state.last_format_index = format_index;
   refresh_avif_encoder_options(app);
@@ -2744,12 +2935,18 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   }
   cfg.memory_limit_bytes = *memory_limit;
 
-  const auto speed = parse_optional_int_field(
-      shared_to_string(app.get_speed_text()), "speed", 0, 10);
-  if (!speed) {
-    return std::unexpected{speed.error()};
+  if (cfg.output_format == awj::OutputFormat::avif ||
+      cfg.output_format == awj::OutputFormat::webp ||
+      cfg.output_format == awj::OutputFormat::jxl) {
+    const auto speed = parse_optional_int_field(
+        shared_to_string(app.get_speed_text()), "speed", 0, 10);
+    if (!speed) {
+      return std::unexpected{speed.error()};
+    }
+    cfg.speed = *speed;
+  } else {
+    cfg.speed.reset();
   }
-  cfg.speed = *speed;
 
   awj::apply_preset(cfg, cfg.preset);
   if (quality) {
@@ -2809,7 +3006,7 @@ std::optional<std::filesystem::path> choose_path(PathPickerMode mode) {
     const COMDLG_FILTERSPEC filters[] = {
         {L"图片文件",
          L"*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.webp;*.bmp;*.dib;*.rle;*.tif;*."
-         L"tiff;*.gif;*.jxl;*.avif;*.awsraw;*.dng;*.cr2;*.cr3;*.nef;*.arw;*."
+         L"tiff;*.gif;*.ico;*.jxl;*.avif;*.awsraw;*.dng;*.cr2;*.cr3;*.nef;*.arw;*."
          L"rw2;*.orf;*.raf;*.pef;*.srw;*.x3f;*.3fr;*.erf;*.kdc;*.mrw;*.raw;*."
          L"heic;*.heif;*.jxr;*.wdp;*.hdp"},
         {L"所有文件", L"*.*"}};
@@ -3945,6 +4142,42 @@ int run_studio_ui() {
             return;
           }
           apply_preset_defaults_to_ui(**app, index);
+        }
+      });
+    });
+
+    app->on_install_context_menu_requested([weak, state] {
+      run_ui_callback(weak, "安装右键菜单失败", [&] {
+        if (auto app = weak.lock()) {
+          if (reject_when_worker_active(**app, state,
+                                        "当前任务正在运行，无法修改右键菜单")) {
+            return;
+          }
+          if (auto result = install_shell_context_menu(); !result) {
+            (*app)->set_context_menu_status(to_shared(result.error()));
+            (*app)->set_status_text(to_shared(result.error()));
+            return;
+          }
+          (*app)->set_context_menu_status(to_shared("右键菜单已安装。"));
+          (*app)->set_status_text(to_shared("右键菜单已安装。"));
+        }
+      });
+    });
+
+    app->on_remove_context_menu_requested([weak, state] {
+      run_ui_callback(weak, "移除右键菜单失败", [&] {
+        if (auto app = weak.lock()) {
+          if (reject_when_worker_active(**app, state,
+                                        "当前任务正在运行，无法修改右键菜单")) {
+            return;
+          }
+          if (auto result = remove_shell_context_menu(); !result) {
+            (*app)->set_context_menu_status(to_shared(result.error()));
+            (*app)->set_status_text(to_shared(result.error()));
+            return;
+          }
+          (*app)->set_context_menu_status(to_shared("右键菜单已移除。"));
+          (*app)->set_status_text(to_shared("右键菜单已移除。"));
         }
       });
     });

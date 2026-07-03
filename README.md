@@ -9,6 +9,12 @@ AWJimage 是一个 Windows C++23 / Slint 批量图片转换工具。当前内置
 
 内置 ImageMagick/MagickWand 后端已经移除，Release 输出不再携带 ImageMagick XML、许可文件或模块目录。Magick 与 ffmpeg 以后只能作为外部集成重新引入；当前版本不处理该环节。
 
+如需使用ffmpeg作为后端可用参考下面两个仓库
+
+[AVIF-Console](https://github.com/CialloKing/AVIF-Console)
+
+[FFmpegPictureUI](https://github.com/luoye-cpu/ffmpegPictureUI)
+
 ## 构建
 
 推荐使用预设：
@@ -85,19 +91,19 @@ Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用
 
 以下测试均使用 AOM AV1 编码器（libavif）。AWJ 自动多核并行，ffmpeg 为单线程每实例。
 
-### 默认参数（613 张混合分辨率图片）
+### 以AWJ默认参数为基准，FFmpeg传递同样参数（613 张混合分辨率图片）
 
 | 指标 | AWJ | ffmpeg 8.1.1（scoop） |
 |------|-----|----------------------|
 | 并发方式 | 自动多核并行 | 单线程 × 12 并发 |
 | 总耗时 | 1,367.2 核秒 | 2,316 核秒 |
-| 平均每张 | 2.23 s | 3.78 s |
+| 平均每张 | 2.23 核秒 | 3.78 核秒 |
 
 > ffmpeg 测试通过 PowerShell 传参，可能含额外传参与启动开销。
 
 ### 2560×1600 固定分辨率（20 张，AWJ）
 
-平均每张 2.264 s。
+平均每张 2.264 核秒。
 
 ### 质量与体积
 

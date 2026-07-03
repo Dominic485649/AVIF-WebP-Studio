@@ -76,6 +76,11 @@ int main() {
     return fail("HEIF did not route to WIC fallback when enabled.");
   }
 
+  auto ico = awj::select_decoder_for_path("sample.ico", {.allow_wic_fallback = true});
+  if (!ico || !ico->fallback || ico->decoder->id() != "wic") {
+    return fail("ICO did not route to WIC fallback when enabled.");
+  }
+
   auto disabled = awj::select_decoder_for_path("sample.heif", {.allow_wic_fallback = false});
   if (disabled) {
     return fail("WIC-only format was accepted while WIC fallback was disabled.");

@@ -266,6 +266,7 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .applied_hdr_metadata = settings.applied_hdr_metadata,
                            .color_metadata_source = settings.color_metadata_source,
                            .color_reason = settings.color_reason,
+                           .fallback_reason = settings.encoder_fallback_reason,
                            .jpegli_progressive_level = settings.jpegli_progressive_level,
                            .jpegli_optimize_huffman = settings.jpegli_optimize_huffman,
                            .jpegli_xyb = settings.jpegli_xyb,
@@ -341,27 +342,22 @@ export SpeedMapping map_webp_speed_to_method(int speed) {
 
 export SpeedMapping map_jxl_speed_to_effort(int speed) {
   speed = std::clamp(speed, 0, 10);
-  const int effort = std::clamp(9 - (speed * 6 + 5) / 10, 3, 9);
+  const int effort = std::clamp(10 - speed, 1, 10);
   return SpeedMapping{.user_speed = speed,
                       .codec_value = effort,
                       .codec_key = "jxl:effort"};
 }
 
-export SpeedMapping map_jpegli_speed(int speed) {
-  speed = std::clamp(speed, 0, 10);
-  return SpeedMapping{.user_speed = speed,
-                      .codec_value = speed,
-                      .codec_key = "jpegli:quality-speed"};
-}
-
 export SpeedMapping map_speed_for_format(OutputFormat format, int speed) {
   switch (format) {
+    case OutputFormat::png:
+      return SpeedMapping{.user_speed = -1, .codec_value = -1, .codec_key = ""};
     case OutputFormat::webp:
       return map_webp_speed_to_method(speed);
     case OutputFormat::jxl:
       return map_jxl_speed_to_effort(speed);
     case OutputFormat::jpgli:
-      return map_jpegli_speed(speed);
+      return SpeedMapping{.user_speed = -1, .codec_value = -1, .codec_key = ""};
     case OutputFormat::avif:
     default:
       return map_avif_speed_to_svt_preset(speed);

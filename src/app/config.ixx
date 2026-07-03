@@ -36,8 +36,9 @@ enum class Preset {
   fast,
   fastest
 };
-enum class OutputFormat { avif, webp, jxl, jpgli };
+enum class OutputFormat { png, avif, webp, jxl, jpgli };
 enum class BackendMode { native };
+enum class OutputPolicy { normal, shell };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random };
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
 enum class AvifEncoderMode { automatic, svt, aom, zenrav1e };
@@ -61,6 +62,8 @@ int default_max_jobs() noexcept {
 
 constexpr int default_quality_for(OutputFormat format) noexcept {
   switch (format) {
+    case OutputFormat::png:
+      return 100;
     case OutputFormat::webp:
       return encoding_defaults::default_webp_quality;
     case OutputFormat::jxl:
@@ -75,6 +78,8 @@ constexpr int default_quality_for(OutputFormat format) noexcept {
 
 constexpr int default_speed_for(OutputFormat format) noexcept {
   switch (format) {
+    case OutputFormat::png:
+      return encoding_defaults::default_native_speed;
     case OutputFormat::jxl:
       return encoding_defaults::default_jxl_native_speed;
     case OutputFormat::jpgli:
@@ -97,6 +102,7 @@ struct AppConfig {
   Preset preset{Preset::custom};
   BackendMode backend{BackendMode::native};
   OutputFormat output_format{OutputFormat::avif};
+  OutputPolicy output_policy{OutputPolicy::normal};
   CollisionMode collision_mode{CollisionMode::overwrite};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
   AvifEncoderMode avif_encoder{AvifEncoderMode::automatic};
@@ -149,6 +155,7 @@ struct ParseResult {
   bool should_exit{false};
   int exit_code{0};
   AppConfig config{};
+  std::vector<std::filesystem::path> shell_inputs{};
 };
 
 namespace config_detail {
@@ -179,6 +186,15 @@ std::string narrow_ascii_for_diagnostics(std::wstring_view text) {
   } catch (const std::length_error&) {
     return "?";
   }
+}
+
+std::wstring shell_input_key(const std::filesystem::path& path) {
+  std::error_code ec;
+  const auto absolute = std::filesystem::absolute(path, ec);
+  auto key = (ec ? path : absolute).lexically_normal().wstring();
+  std::ranges::transform(key, key.begin(),
+                         [](wchar_t ch) { return std::towlower(ch); });
+  return key;
 }
 
 template <class Number>
@@ -406,6 +422,9 @@ std::optional<OutputFormat> parse_output_format(std::wstring_view value) {
   auto lower = lower_copy(value);
   if (!lower.empty() && lower.front() == L'.') {
     lower.erase(lower.begin());
+  }
+  if (lower == L"png") {
+    return OutputFormat::png;
   }
   if (lower == L"avif") {
     return OutputFormat::avif;
@@ -652,12 +671,39 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
                     config_detail::max_output_template_length)};
   }
   switch (cfg.output_format) {
+    case OutputFormat::png:
+      if (cfg.speed) {
+        return std::unexpected{"PNG 不支持 --speed；请移除该参数。"};
+      }
+      if (cfg.bit_depth && *cfg.bit_depth != 8 && *cfg.bit_depth != 16) {
+        return std::unexpected{"PNG 输出仅支持 8-bit 或 16-bit RGBA；请把位深设为 8/16，或留空。"};
+      }
+      if (cfg.chroma_mode != ChromaMode::auto_keep) {
+        return std::unexpected{"PNG 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
+      }
+      break;
     case OutputFormat::avif:
       if (cfg.bit_depth &&
           !config_detail::avif_bit_depth_supported(*cfg.bit_depth)) {
         return std::unexpected{
             "当前 native AVIF 输出仅支持 8、10、12-bit "
             "位深；留空表示自动选择。"};
+      }
+      if (cfg.avif_encoder == AvifEncoderMode::svt) {
+        if ((cfg.visual_quality ? *cfg.visual_quality >= 100 : cfg.quality >= 100) ||
+            cfg.svtav1hdr_crf.value_or(1) == 0) {
+          return std::unexpected{"svt-av1-hdr 不支持 AVIF 无损/q100；请改用 --avif-encoder auto/aom。"};
+        }
+        if (cfg.alpha_policy == AlphaModePolicy::force) {
+          return std::unexpected{"svt-av1-hdr 不支持保留 alpha；请改用 --alpha auto/off 或 --avif-encoder auto/aom。"};
+        }
+        if (cfg.chroma_mode == ChromaMode::yuv444 ||
+            cfg.chroma_mode == ChromaMode::yuv422) {
+          return std::unexpected{"svt-av1-hdr 只支持 420 chroma；请使用 --chroma auto/420 或改用 AOM。"};
+        }
+        if (cfg.bit_depth && *cfg.bit_depth > 10) {
+          return std::unexpected{"svt-av1-hdr 只支持 8/10-bit；请降低 bit-depth 或改用 AOM。"};
+        }
       }
       break;
     case OutputFormat::webp:
@@ -678,6 +724,9 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       }
       break;
     case OutputFormat::jpgli:
+      if (cfg.speed) {
+        return std::unexpected{"JPGLI 不支持 --speed；请移除该参数。"};
+      }
       if (cfg.bit_depth && *cfg.bit_depth != 8) {
         return std::unexpected{
             "JPGLI 输出 JPEG 兼容 bitstream，当前仅支持 8-bit 输入写入；请把位深设为 8，或留空。"};
@@ -746,8 +795,8 @@ std::string help_text() {
 =======================
 
 默认后端：内置 native（libavif/AOM/zenrav1e/svt-av1-hdr/WebP/JXL/JPGLI）
-默认质量：AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
-质量范围：q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；AVIF q100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源参数；显式 --avif-encoder svt 的 AVIF q100/visual-quality 100 是非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗
+默认质量：PNG 无损，AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
+质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源参数；显式 --avif-encoder svt 不支持 q100/visual-quality 100、alpha、444/422 或高于 10-bit
 
 用法:
   AWJ [选项]
@@ -755,9 +804,9 @@ std::string help_text() {
 常用选项:
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
-  -f, --format <avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
-  -q, --quality <1-100>       编码质量，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样；显式 --avif-encoder svt 的 AVIF 100 为非像素级无损/最高质量，允许 RGB/YUV 与 420 chroma 转换损耗。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时直通、其他输入走 AOM 无损；显式 --avif-encoder svt 时为非像素级无损/最高质量；1..99 自动搜索最小体积达标候选
+  -f, --format <png|avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；PNG 为无损 RGBA，JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
+  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样；显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时直通、其他输入走 AOM 无损；显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用 Direct3D 11 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
@@ -768,7 +817,7 @@ std::string help_text() {
   --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
   --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
-  --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；普通队列 auto 优先 svt-av1-hdr，必要时回退 AOM；超限大图移入 Studio 大图模式
+  --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 默认 AOM，显式 svt 仅用于 420/8-10bit/无 alpha/非无损输入；超限大图移入 Studio 大图模式
   --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha 通道，auto 删除无效 alpha，off 总是删除 alpha
   --svtav1hdr-crf <0-63>     svt-av1-hdr 专家 CRF；未指定时使用通用 quality，避免默认 quality 与默认 CRF 同时生效
   --svtav1hdr-preset <0-13>  svt-av1-hdr preset；默认 @SVTAV1HDR_PRESET@
@@ -785,11 +834,11 @@ std::string help_text() {
   --no-experimental-encoders 禁用实验 AVIF 编码器选项
   --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时尝试 padding；当前编码仍会拒绝尚未能安全裁切的 padding 计划，默认关闭
   --no-experimental-clamped-grid-padding 禁用 AVIF grid padding；不可整除分割会报错
-  -p, --preset <名称>         fast / balanced / best / extreme，默认 best；设置默认质量和编码超时，显式 --quality 可覆盖质量
+  -p, --preset <名称>         fast / balanced / best / extreme；未指定时为自定义默认值；设置默认质量和编码超时，显式 --quality 可覆盖质量
   -t, --threads <auto|数量>   并发数量；auto/jthread/自动 使用 CPU 线程数
   --memory-limit <auto|大小>  内存限制；auto 为总内存一半与可用内存 80% 的较小值，可用 4GiB/4096MiB
   -m, --template <模板>       输出命名，最多 512 个字符，默认 @OUTPUT_TEMPLATE@
-  --speed <0-10>             统一速度参数；WebP method / JXL effort / AVIF encoder speed-preset
+  --speed <0-10>             统一速度参数；支持 AVIF/WebP/JXL；JPGLI/PNG 不支持
   --allow-wic-fallback       允许 native 解码器失败后使用 WIC 兜底，默认开启
   --no-wic-fallback          禁用 WIC 解码兜底
   --option <key=value>       预留 native 高级选项，可重复；当前版本只记录与校验
@@ -797,8 +846,8 @@ std::string help_text() {
   --timeout-encode <分钟>     单张图片编码超时，默认 @ENCODE_TIMEOUT@
   --strip                    去除 EXIF/ICC 等元数据，通常更小且更隐私
   --keep-metadata            保留源元数据，取消 --strip
-  --summary                  生成 summary.csv
-  --no-summary               不生成 summary.csv
+  --summary                  写入 CSV 日志 summary.csv
+  --no-summary               不写入 CSV 日志 summary.csv
   --log                      生成 log\awj.log
   --no-log                   不生成日志文件
   --skip-existing            已有输出时跳过
@@ -876,6 +925,8 @@ std::expected<ParseResult, std::string> parse_arguments(
   AppConfig cfg = default_app_config();
   bool preset_was_set = false;
   bool quality_was_set = false;
+  std::vector<std::filesystem::path> shell_inputs;
+  std::vector<std::wstring> positional_args;
 
   auto require_value = [&](std::size_t& index, std::wstring_view option)
       -> std::expected<std::wstring, std::string> {
@@ -902,6 +953,7 @@ std::expected<ParseResult, std::string> parse_arguments(
         return std::unexpected{value.error()};
       }
       cfg.input_path = *value;
+      shell_inputs.emplace_back(*value);
       continue;
     }
 
@@ -922,10 +974,31 @@ std::expected<ParseResult, std::string> parse_arguments(
       const auto format = config_detail::parse_output_format(*value);
       if (!format) {
         return std::unexpected{
-            std::format("输出格式不支持: {}。可选值：avif、webp、jxl、jpgli、jpegli。",
+            std::format("输出格式不支持: {}。可选值：png、avif、webp、jxl、jpgli、jpegli。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.output_format = *format;
+      continue;
+    }
+
+    if (lower == L"--shell-convert") {
+      cfg.output_policy = OutputPolicy::shell;
+      continue;
+    }
+
+    if (lower == L"--output-policy") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto policy = config_detail::lower_copy(*value);
+      if (policy == L"shell") {
+        cfg.output_policy = OutputPolicy::shell;
+      } else if (policy == L"normal") {
+        cfg.output_policy = OutputPolicy::normal;
+      } else {
+        return std::unexpected{"output-policy 只支持 normal 或 shell。"};
+      }
       continue;
     }
 
@@ -1495,8 +1568,26 @@ std::expected<ParseResult, std::string> parse_arguments(
       continue;
     }
 
+    if (!args[i].empty() && args[i].front() != L'-') {
+      positional_args.push_back(args[i]);
+      continue;
+    }
+
     return std::unexpected{std::format(
         "未知参数: {}", config_detail::narrow_ascii_for_diagnostics(args[i]))};
+  }
+
+  if (cfg.output_policy == OutputPolicy::shell) {
+    for (const auto& arg : positional_args) {
+      shell_inputs.emplace_back(arg);
+    }
+    if (shell_inputs.empty()) {
+      shell_inputs.push_back(cfg.input_path);
+    }
+  } else if (!positional_args.empty()) {
+    return std::unexpected{std::format(
+        "未知参数: {}",
+        config_detail::narrow_ascii_for_diagnostics(positional_args.front()))};
   }
 
   if (auto valid =
@@ -1505,7 +1596,25 @@ std::expected<ParseResult, std::string> parse_arguments(
     return std::unexpected{valid.error()};
   }
 
-  return ParseResult{.should_exit = false, .exit_code = 0, .config = cfg};
+  std::vector<std::filesystem::path> unique_shell_inputs;
+  if (cfg.output_policy == OutputPolicy::shell) {
+    std::vector<std::wstring> seen_keys;
+    unique_shell_inputs.reserve(shell_inputs.size());
+    seen_keys.reserve(shell_inputs.size());
+    for (const auto& input : shell_inputs) {
+      const auto key = config_detail::shell_input_key(input);
+      if (std::ranges::find(seen_keys, key) != seen_keys.end()) {
+        continue;
+      }
+      seen_keys.push_back(key);
+      unique_shell_inputs.push_back(input);
+    }
+  }
+
+  return ParseResult{.should_exit = false,
+                     .exit_code = 0,
+                     .config = cfg,
+                     .shell_inputs = std::move(unique_shell_inputs)};
 }
 
 }  // namespace awj

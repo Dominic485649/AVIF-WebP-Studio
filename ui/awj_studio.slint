@@ -450,6 +450,7 @@ export component AwjStudio inherits Window {
     in-out property <bool> strip-metadata: false;
     in-out property <bool> write-summary: false;
     in-out property <bool> write-log: false;
+    in-out property <string> context-menu-status: "";
     in-out property <bool> running: false;
     in-out property <float> progress: 0.0;
     in-out property <string> status-text: "就绪";
@@ -530,6 +531,8 @@ export component AwjStudio inherits Window {
     callback large-image-action-requested(int, string);
     callback format-defaults-requested(int);
     callback preset-defaults-requested(int);
+    callback install-context-menu-requested();
+    callback remove-context-menu-requested();
     callback toggle-template-token(string);
     callback title-bar-theme-requested(bool);
 
@@ -798,7 +801,7 @@ export component AwjStudio inherits Window {
                                             Text { text: "留空关闭；填写 1-100 后会搜索多个候选，并以 GMSD/MS-SSIM 等指标判断是否达到目标质量。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                                         }
 
-                                        HorizontalLayout {
+                                        if root.format-index != 3: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "速度"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
@@ -858,7 +861,7 @@ export component AwjStudio inherits Window {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "大图处理"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { center-text: true; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e", enabled: true }, { text: "grid", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            SoftComboBox { close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e", enabled: true }, { text: "grid", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             Text { text: ">2000万像素时自动进入大图路径；1000万-2000万像素会等待小图完成后继续使用普通编码器。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                                         }
 
@@ -968,8 +971,7 @@ export component AwjStudio inherits Window {
 
                                 HorizontalLayout {
                                     spacing: root.page-gap;
-                                    CheckBox { text: "生成 summary.csv"; checked <=> root.write-summary; enabled: !root.running; }
-                                    CheckBox { text: "写入日志"; checked <=> root.write-log; enabled: !root.running; }
+                                    CheckBox { text: "写入 CSV 日志"; checked <=> root.write-summary; enabled: !root.running; }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
 
@@ -1197,6 +1199,17 @@ export component AwjStudio inherits Window {
                                     CheckBox { text: "启用实验性编码器（zenrav1e）"; checked <=> root.experimental-encoders; enabled: !root.running; }
                                     Text { text: "启用后，构建支持时可显式选择 zenrav1e；普通队列自动不会选择实验编码器；大图模式中可手动选择 zenrav1e。不可用时选项会置灰。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
                                 }
+                                VerticalLayout {
+                                    spacing: 8px;
+                                    Text { text: "Explorer 右键菜单"; color: root.text-body; font-size: 14px; font-weight: 700; }
+                                    HorizontalLayout {
+                                        spacing: root.page-gap;
+                                        SoftButton { dark-mode: root.dark-mode; text: "安装右键菜单"; variant: "outline"; enabled: !root.running; clicked => { root.install-context-menu-requested(); } }
+                                        SoftButton { dark-mode: root.dark-mode; text: "移除右键菜单"; variant: "outline"; enabled: !root.running; clicked => { root.remove-context-menu-requested(); } }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    }
+                                    Text { text: root.context-menu-status; color: root.text-muted; font-size: 13px; wrap: word-wrap; visible: !root.context-menu-status.is-empty; }
+                                }
                             }
                         }
 
@@ -1211,7 +1224,7 @@ export component AwjStudio inherits Window {
                                 spacing: root.page-gap;
                                 Text { text: "关于后端"; color: root.text-strong; font-size: 18px; font-weight: 800; }
                                 Text { text: "当前内置后端：native codec"; color: root.text-body; font-size: 14px; }
-                                Text { text: "支持：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI。"; color: root.text-body; font-size: 14px; }
+                                Text { text: "Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"; color: root.text-body; font-size: 14px; }
                                 Text { text: "外部后端设置已移除，编码流程统一走 native。"; color: root.text-muted; font-size: 13px; }
                             }
                         }

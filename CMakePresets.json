@@ -17,7 +17,7 @@
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
         "AWJ_VCPKG_LIBRARY_CONFIG": "Debug",
         "AVIF_STATIC_MSVC_RUNTIME": "ON",
-        "AVIF_STATIC_SLINT": "OFF",
+        "AVIF_STATIC_SLINT": "ON",
         "AWJ_ENABLE_ZENRAVIF": "ON"
       }
     },
@@ -32,7 +32,7 @@
         "VCPKG_TARGET_TRIPLET": "x64-windows-static",
         "AWJ_VCPKG_LIBRARY_CONFIG": "Release",
         "AVIF_STATIC_MSVC_RUNTIME": "ON",
-        "AVIF_STATIC_SLINT": "OFF",
+        "AVIF_STATIC_SLINT": "ON",
         "AWJ_ENABLE_ZENRAVIF": "ON",
         "AWJ_ENABLE_X64_V3": "ON",
         "AVIF_ENABLE_RELEASE_IPO": "OFF"

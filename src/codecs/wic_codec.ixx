@@ -141,12 +141,36 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
   if (frame_count == 0) {
     return std::unexpected{"WIC 不包含图像帧。"};
   }
+  UINT frame_index = 0;
   if (frame_count > 1) {
-    return std::unexpected{std::format("暂不支持多帧 WIC 输入: {}", display_path_for_user(path))};
+    static constexpr std::wstring_view ico_extensions[] = {L".ico"};
+    if (!decoder_common::extension_is_one_of(path, ico_extensions)) {
+      return std::unexpected{std::format("暂不支持多帧 WIC 输入: {}", display_path_for_user(path))};
+    }
+    std::uint64_t best_area = 0;
+    for (UINT i = 0; i < frame_count; ++i) {
+      IWICBitmapFrameDecode* candidate = nullptr;
+      hr = result.decoder->GetFrame(i, &candidate);
+      ComPtr<IWICBitmapFrameDecode> candidate_frame{candidate};
+      if (FAILED(hr) || candidate_frame == nullptr) {
+        continue;
+      }
+      UINT width = 0;
+      UINT height = 0;
+      hr = candidate_frame->GetSize(&width, &height);
+      if (FAILED(hr)) {
+        continue;
+      }
+      const auto area = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height);
+      if (area > best_area) {
+        best_area = area;
+        frame_index = i;
+      }
+    }
   }
 
   IWICBitmapFrameDecode* raw_frame = nullptr;
-  hr = result.decoder->GetFrame(0, &raw_frame);
+  hr = result.decoder->GetFrame(frame_index, &raw_frame);
   if (FAILED(hr)) {
     return std::unexpected{std::format("WIC 读取首帧失败: {}", hresult_message(hr))};
   }
@@ -313,7 +337,7 @@ export class WicImageDecoder final : public ImageDecoder {
   [[nodiscard]] bool can_decode(const fs::path& path) const override {
     static constexpr std::wstring_view extensions[] = {
         L".bmp", L".dib", L".rle", L".jpg", L".jpeg", L".jpe", L".jfif",
-        L".png", L".gif", L".tif", L".tiff", L".wdp", L".hdp", L".jxr",
+        L".png", L".gif", L".ico", L".tif", L".tiff", L".wdp", L".hdp", L".jxr",
         L".heic", L".heif"};
     return decoder_common::extension_is_one_of(path, extensions);
   }
@@ -361,6 +385,14 @@ export class WicImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("WIC 像素格式无效: {}", wic_detail::hresult_message(hr))};
       }
 
+      const auto source_details =
+          wic_detail::source_info_from_pixel_format(*frame_source->factory, source_pixel_format);
+      auto output_source_info = source_details.source_info;
+      const bool wants_high_depth = output_source_info.bit_depth > 8;
+      const auto target_format = wants_high_depth ? GUID_WICPixelFormat64bppRGBA
+                                                  : GUID_WICPixelFormat32bppRGBA;
+      int output_bit_depth = wants_high_depth ? 16 : 8;
+
       wic_detail::ComPtr<IWICFormatConverter> converter;
       IWICFormatConverter* raw_converter = nullptr;
       hr = frame_source->factory->CreateFormatConverter(&raw_converter);
@@ -369,14 +401,31 @@ export class WicImageDecoder final : public ImageDecoder {
       }
       converter.reset(raw_converter);
 
-      hr = converter->Initialize(frame_source->frame.get(), GUID_WICPixelFormat32bppRGBA,
+      hr = converter->Initialize(frame_source->frame.get(), target_format,
                                  WICBitmapDitherTypeNone, nullptr, 0.0,
                                  WICBitmapPaletteTypeCustom);
+      if (FAILED(hr) && wants_high_depth) {
+        output_bit_depth = 8;
+        output_source_info.bit_depth = 8;
+        output_source_info.has_hdr_metadata = false;
+        output_source_info.color_metadata_source = "wic-sdr-fallback";
+        hr = converter->Initialize(frame_source->frame.get(), GUID_WICPixelFormat32bppRGBA,
+                                   WICBitmapDitherTypeNone, nullptr, 0.0,
+                                   WICBitmapPaletteTypeCustom);
+      }
       if (FAILED(hr)) {
         return std::unexpected{std::format("WIC 转换 RGBA 失败: {}", wic_detail::hresult_message(hr))};
       }
 
-      const auto stride = decoder_common::checked_rgba_stride(width, "WIC decoder");
+      if (wants_high_depth && output_bit_depth == 16) {
+        output_source_info.has_hdr_metadata = true;
+        if (output_source_info.color_metadata_source.empty()) {
+          output_source_info.color_metadata_source = "wic-high-bit-depth";
+        }
+      }
+
+      const auto stride = decoder_common::checked_rgba_stride(
+          width, "WIC decoder", output_bit_depth > 8 ? 2 : 1);
       if (!stride) {
         return std::unexpected{stride.error()};
       }
@@ -398,8 +447,6 @@ export class WicImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("WIC 复制像素失败: {}", wic_detail::hresult_message(hr))};
       }
 
-      const auto source_details =
-          wic_detail::source_info_from_pixel_format(*frame_source->factory, source_pixel_format);
       const auto alpha_mode = source_details.supports_transparency.value_or(true)
                                   ? AlphaMode::straight
                                   : AlphaMode::none;
@@ -408,8 +455,12 @@ export class WicImageDecoder final : public ImageDecoder {
       if (!icc_profile) {
         return std::unexpected{icc_profile.error()};
       }
+      if (!icc_profile->empty()) {
+        output_source_info.color_metadata_source = "source-icc";
+      }
       auto image = decoder_common::make_rgba_image(width, height, std::move(*rgba), alpha_mode,
-                                                   "WIC decoder", source_details.source_info);
+                                                   "WIC decoder", output_source_info,
+                                                   output_bit_depth);
       if (!image) {
         return std::unexpected{image.error()};
       }

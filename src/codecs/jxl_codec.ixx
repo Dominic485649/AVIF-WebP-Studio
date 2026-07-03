@@ -139,15 +139,17 @@ std::expected<std::vector<std::byte>, std::string> read_file_bytes(
   return decoder_common::read_file_bytes(path, "JXL");
 }
 
-std::expected<std::size_t, std::string> checked_rgba_stride(std::size_t width,
-                                                            std::string_view context) {
-  if (width == 0) {
+std::expected<std::size_t, std::string> checked_rgba_stride(
+    std::size_t width,
+    std::string_view context,
+    std::size_t bytes_per_sample = 1) {
+  if (width == 0 || bytes_per_sample == 0) {
     return std::unexpected{std::format("{} 输入宽度无效。", context)};
   }
-  if (width > std::numeric_limits<std::size_t>::max() / 4) {
+  if (width > std::numeric_limits<std::size_t>::max() / 4 / bytes_per_sample) {
     return std::unexpected{std::format("{} 输入宽度过大。", context)};
   }
-  return width * 4;
+  return width * 4 * bytes_per_sample;
 }
 
 std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
@@ -167,12 +169,14 @@ std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
 }
 
 std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image) {
-  if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 ||
+  if (image.pixel_format != PixelFormat::rgba ||
+      (image.bit_depth != 8 && image.bit_depth != 16) ||
       image.planes.empty()) {
-    return std::unexpected{"JXL encoder 当前需要 8-bit RGBA ImageBuffer。"};
+    return std::unexpected{"JXL encoder 当前需要 RGBA ImageBuffer。"};
   }
   const auto& plane = image.planes.front();
-  const auto expected_stride = checked_rgba_stride(image.width, "JXL encoder");
+  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+  const auto expected_stride = checked_rgba_stride(image.width, "JXL encoder", bytes_per_sample);
   if (!expected_stride) {
     return std::unexpected{expected_stride.error()};
   }
@@ -265,8 +269,11 @@ int bit_depth_from_basic_info(const JxlBasicInfo& info) noexcept {
 }
 
 ImageSourceInfo source_info_from_basic_info(const JxlBasicInfo& info) {
+  const int bit_depth = bit_depth_from_basic_info(info);
   return ImageSourceInfo{.pixel_format = pixel_format_from_basic_info(info),
-                         .bit_depth = bit_depth_from_basic_info(info)};
+                         .bit_depth = bit_depth,
+                         .has_hdr_metadata = bit_depth > 8,
+                         .color_metadata_source = bit_depth > 8 ? "jxl-high-bit-depth" : ""};
 }
 
 std::uint32_t read_be_u32(std::span<const std::byte> bytes, std::size_t offset) noexcept {
@@ -358,11 +365,13 @@ std::expected<void, std::string> apply_color_profile(JxlEncoder* encoder,
 
 std::expected<std::vector<std::byte>, std::string> make_rgb_buffer(const ImagePlane& plane,
                                                                   std::size_t width,
-                                                                  std::size_t height) {
-  if (width == 0 || width > std::numeric_limits<std::size_t>::max() / 3) {
+                                                                  std::size_t height,
+                                                                  int bit_depth) {
+  const auto bytes_per_sample = bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+  if (width == 0 || width > std::numeric_limits<std::size_t>::max() / 3 / bytes_per_sample) {
     return std::unexpected{"JXL encoder RGB 输入宽度无效。"};
   }
-  const auto rgb_stride = width * 3;
+  const auto rgb_stride = width * 3 * bytes_per_sample;
   const auto rgb_size = checked_image_bytes(rgb_stride, height, "JXL encoder");
   if (!rgb_size) {
     return std::unexpected{rgb_size.error()};
@@ -371,15 +380,19 @@ std::expected<std::vector<std::byte>, std::string> make_rgb_buffer(const ImagePl
   if (!rgb) {
     return std::unexpected{rgb.error()};
   }
-  const auto* rgba_data = reinterpret_cast<const std::uint8_t*>(plane.bytes.data());
-  auto* rgb_data = reinterpret_cast<std::uint8_t*>(rgb->data());
+  const auto* rgba_data = reinterpret_cast<const std::byte*>(plane.bytes.data());
+  auto* rgb_data = reinterpret_cast<std::byte*>(rgb->data());
   for (std::size_t y = 0; y < height; ++y) {
     const auto* rgba_row = rgba_data + y * plane.stride;
     auto* rgb_row = rgb_data + y * rgb_stride;
     for (std::size_t x = 0; x < width; ++x) {
-      rgb_row[x * 3] = rgba_row[x * 4];
-      rgb_row[x * 3 + 1] = rgba_row[x * 4 + 1];
-      rgb_row[x * 3 + 2] = rgba_row[x * 4 + 2];
+      const auto src = x * 4 * bytes_per_sample;
+      const auto dst = x * 3 * bytes_per_sample;
+      std::ranges::copy_n(rgba_row + src, bytes_per_sample, rgb_row + dst);
+      std::ranges::copy_n(rgba_row + src + bytes_per_sample, bytes_per_sample,
+                          rgb_row + dst + bytes_per_sample);
+      std::ranges::copy_n(rgba_row + src + bytes_per_sample * 2, bytes_per_sample,
+                          rgb_row + dst + bytes_per_sample * 2);
     }
   }
   return rgb;
@@ -774,6 +787,8 @@ export class JXLImageDecoder final : public ImageDecoder {
           if (info.have_animation) {
             return std::unexpected{std::format("暂不支持动画 JXL 输入: {}", source_name)};
           }
+          const int output_bit_depth = info.bits_per_sample > 8 ? 16 : 8;
+          format.data_type = output_bit_depth > 8 ? JXL_TYPE_UINT16 : JXL_TYPE_UINT8;
           size_t output_size = 0;
           if (JxlDecoderImageOutBufferSize(decoder.get(), &format, &output_size) !=
                   JXL_DEC_SUCCESS ||
@@ -781,7 +796,8 @@ export class JXLImageDecoder final : public ImageDecoder {
             return std::unexpected{"计算 JXL RGBA 输出 buffer 大小失败。"};
           }
           const auto stride = jxl_detail::checked_rgba_stride(
-              static_cast<std::size_t>(info.xsize), "JXL decoder");
+              static_cast<std::size_t>(info.xsize), "JXL decoder",
+              output_bit_depth > 8 ? 2 : 1);
           if (!stride) {
             return std::unexpected{stride.error()};
           }
@@ -911,7 +927,8 @@ export class JXLImageDecoder final : public ImageDecoder {
                                                source_name)};
           }
           const auto stride = jxl_detail::checked_rgba_stride(
-              static_cast<std::size_t>(info.xsize), "JXL decoder");
+              static_cast<std::size_t>(info.xsize), "JXL decoder",
+              info.bits_per_sample > 8 ? 2 : 1);
           if (!stride) {
             return std::unexpected{stride.error()};
           }
@@ -921,7 +938,7 @@ export class JXLImageDecoder final : public ImageDecoder {
                             .height = info.ysize,
                             .pixel_format = PixelFormat::rgba,
                             .alpha_mode = alpha_mode,
-                            .bit_depth = 8,
+                            .bit_depth = info.bits_per_sample > 8 ? 16 : 8,
                             .source_info = jxl_detail::source_info_from_basic_info(info)};
           if (!icc_profile.empty()) {
             image.metadata.push_back(MetadataBlock{.kind = MetadataKind::icc,
@@ -959,7 +976,7 @@ export class JXLImageEncoder final : public ImageEncoder {
                              .max_quality = 100,
                              .min_speed = 0,
                              .max_speed = 10,
-                             .bit_depths = {8}};
+                             .bit_depths = {8, 16}};
   }
 
   std::expected<NativeEncodeResult, std::string> encode_jpeg_bitstream(
@@ -1097,11 +1114,11 @@ export class JXLImageEncoder final : public ImageEncoder {
       JxlEncoderInitBasicInfo(&info);
       info.xsize = static_cast<std::uint32_t>(image.width);
       info.ysize = static_cast<std::uint32_t>(image.height);
-      info.bits_per_sample = 8;
+      info.bits_per_sample = static_cast<std::uint32_t>(image.bit_depth);
       info.num_color_channels = 3;
       if (keep_alpha) {
         info.num_extra_channels = 1;
-        info.alpha_bits = 8;
+        info.alpha_bits = static_cast<std::uint32_t>(image.bit_depth);
         info.alpha_premultiplied =
             image.alpha_mode == AlphaMode::premultiplied ? JXL_TRUE : JXL_FALSE;
       }
@@ -1159,7 +1176,7 @@ export class JXLImageEncoder final : public ImageEncoder {
 
       if (keep_alpha) {
         JxlPixelFormat format{.num_channels = 4,
-                              .data_type = JXL_TYPE_UINT8,
+                              .data_type = image.bit_depth > 8 ? JXL_TYPE_UINT16 : JXL_TYPE_UINT8,
                               .endianness = JXL_NATIVE_ENDIAN,
                               .align = 0};
         const auto& rgba = (*plane)->bytes;
@@ -1182,17 +1199,21 @@ export class JXLImageEncoder final : public ImageEncoder {
         std::vector<std::byte> rgb;
         auto rgb_input = settings.jxl_rgb8_input;
         if (rgb_input.empty()) {
-          auto prepared_rgb = jxl_detail::make_rgb_buffer(**plane, image.width, image.height);
+          auto prepared_rgb = jxl_detail::make_rgb_buffer(**plane, image.width, image.height,
+                                                          image.bit_depth);
           if (!prepared_rgb) {
             return std::unexpected{prepared_rgb.error()};
           }
           rgb = std::move(*prepared_rgb);
           rgb_input = std::span<const std::byte>{rgb};
         } else {
-          if (image.width == 0 || image.width > std::numeric_limits<std::size_t>::max() / 3) {
+          const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+          if (image.width == 0 ||
+              image.width > std::numeric_limits<std::size_t>::max() / 3 / bytes_per_sample) {
             return std::unexpected{"JXL encoder RGB 输入宽度无效。"};
           }
-          const auto expected_rgb_size = jxl_detail::checked_image_bytes(image.width * 3,
+          const auto expected_rgb_size = jxl_detail::checked_image_bytes(
+                                                                         image.width * 3 * bytes_per_sample,
                                                                          image.height,
                                                                          "JXL encoder");
           if (!expected_rgb_size) {
@@ -1203,7 +1224,7 @@ export class JXLImageEncoder final : public ImageEncoder {
           }
         }
         JxlPixelFormat format{.num_channels = 3,
-                              .data_type = JXL_TYPE_UINT8,
+                              .data_type = image.bit_depth > 8 ? JXL_TYPE_UINT16 : JXL_TYPE_UINT8,
                               .endianness = JXL_NATIVE_ENDIAN,
                               .align = 0};
         if (stop_token.stop_requested()) {

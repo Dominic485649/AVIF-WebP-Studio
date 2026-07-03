@@ -2,12 +2,14 @@ module;
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <new>
 #include <span>
@@ -18,6 +20,10 @@ module;
 #include <vector>
 
 #include <png.h>
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4611)
+#endif
 
 export module awj.png_codec;
 
@@ -132,10 +138,22 @@ struct DecodeContext {
   std::vector<std::byte> xmp_metadata{};
 };
 
+struct WriteState {
+  std::vector<std::byte> bytes{};
+};
+
 struct PngReadDeleter {
   void operator()(png_structp value) const noexcept {
     if (value != nullptr) {
       png_destroy_read_struct(&value, nullptr, nullptr);
+    }
+  }
+};
+
+struct PngWriteDeleter {
+  void operator()(png_structp value) const noexcept {
+    if (value != nullptr) {
+      png_destroy_write_struct(&value, nullptr);
     }
   }
 };
@@ -150,6 +168,7 @@ struct PngInfoDeleter {
 };
 
 using PngReadPtr = std::unique_ptr<png_struct, PngReadDeleter>;
+using PngWritePtr = std::unique_ptr<png_struct, PngWriteDeleter>;
 using PngInfoPtr = std::unique_ptr<png_info, PngInfoDeleter>;
 
 void read_callback(png_structp png, png_bytep out, png_size_t count) {
@@ -161,6 +180,55 @@ void read_callback(png_structp png, png_bytep out, png_size_t count) {
   std::ranges::copy_n(reinterpret_cast<const png_byte*>(state->data + state->offset),
                       count, out);
   state->offset += count;
+}
+
+void write_callback(png_structp png, png_bytep data, png_size_t count) {
+  auto* state = static_cast<WriteState*>(png_get_io_ptr(png));
+  if (state == nullptr) {
+    png_error(png, "PNG output state is missing");
+    return;
+  }
+  if (count > encoding_defaults::max_input_file_bytes - state->bytes.size()) {
+    png_error(png, "PNG output exceeds runtime limit");
+    return;
+  }
+  const auto* begin = reinterpret_cast<const std::byte*>(data);
+  state->bytes.insert(state->bytes.end(), begin, begin + count);
+}
+
+void flush_callback(png_structp) {}
+
+std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image) {
+  if (image.pixel_format != PixelFormat::rgba ||
+      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
+    return std::unexpected{"PNG encoder 当前需要 RGBA ImageBuffer。"};
+  }
+  const auto& plane = image.planes.front();
+  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+  const auto expected_stride = decoder_common::checked_rgba_stride(image.width, "PNG encoder", bytes_per_sample);
+  if (!expected_stride) {
+    return std::unexpected{expected_stride.error()};
+  }
+  if (plane.stride != *expected_stride) {
+    return std::unexpected{"PNG encoder 当前需要紧凑排列的 RGBA buffer。"};
+  }
+  const auto expected_bytes = decoder_common::checked_image_bytes(plane.stride, image.height, "PNG encoder");
+  if (!expected_bytes) {
+    return std::unexpected{expected_bytes.error()};
+  }
+  if (plane.bytes.size() < *expected_bytes) {
+    return std::unexpected{"PNG encoder 输入 RGBA buffer 尺寸无效。"};
+  }
+  return &plane;
+}
+
+const MetadataBlock* first_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
+  for (const auto& block : image.metadata) {
+    if (block.kind == kind && !block.bytes.empty()) {
+      return &block;
+    }
+  }
+  return nullptr;
 }
 
 PixelFormat source_pixel_format_for_png(int color_type) noexcept {
@@ -528,6 +596,105 @@ export class PngImageDecoder final : public ImageDecoder {
       return std::unexpected{"PNG 解码数据超过运行时限制。"};
     } catch (const std::filesystem::filesystem_error&) {
       return std::unexpected{"PNG 解码文件系统访问失败。"};
+    }
+  }
+};
+
+export class PngImageEncoder final : public ImageEncoder {
+ public:
+  [[nodiscard]] std::string_view id() const noexcept override { return "libpng"; }
+
+  [[nodiscard]] CodecCapabilities capabilities() const override {
+    return CodecCapabilities{.output_format = OutputFormat::png,
+                             .features = CodecFeature::lossless | CodecFeature::alpha,
+                             .min_quality = 100,
+                             .max_quality = 100,
+                             .min_speed = 0,
+                             .max_speed = 10,
+                             .bit_depths = {8, 16}};
+  }
+
+  std::expected<NativeEncodeResult, std::string> encode(
+      const ImageBuffer& image,
+      const NativeEncodeSettings& settings,
+      std::stop_token stop_token = {}) const override {
+    try {
+      if (stop_token.stop_requested()) {
+        return std::unexpected{"任务已取消。"};
+      }
+      auto plane = png_detail::rgba_plane(image);
+      if (!plane) {
+        return std::unexpected{plane.error()};
+      }
+      if (image.width > std::numeric_limits<png_uint_32>::max() ||
+          image.height > std::numeric_limits<png_uint_32>::max()) {
+        return std::unexpected{"PNG encoder 输入尺寸超过 libpng API 限制。"};
+      }
+
+      png_detail::WriteState state{};
+      state.bytes.reserve(std::min((*plane)->bytes.size(), std::size_t{1u << 20}));
+      png_detail::PngWritePtr png{png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr)};
+      if (!png) {
+        return std::unexpected{"创建 PNG encoder 失败。"};
+      }
+      png_detail::PngInfoPtr info{png_create_info_struct(png.get()),
+                                  png_detail::PngInfoDeleter{.png = png.get()}};
+      if (!info) {
+        return std::unexpected{"创建 PNG info 失败。"};
+      }
+      if (setjmp(png_jmpbuf(png.get())) != 0) {
+        return std::unexpected{"PNG 编码失败。"};
+      }
+
+      png_set_write_fn(png.get(), &state, png_detail::write_callback,
+                       png_detail::flush_callback);
+      const int bit_depth = image.bit_depth > 8 ? 16 : 8;
+      png_set_IHDR(png.get(), info.get(), static_cast<png_uint_32>(image.width),
+                   static_cast<png_uint_32>(image.height), bit_depth,
+                   PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                   PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+      if (!settings.strip_metadata && settings.applied_icc == "kept") {
+        if (const auto* icc = png_detail::first_metadata(image, MetadataKind::icc)) {
+          png_set_iCCP(png.get(), info.get(), "ICC profile", PNG_COMPRESSION_TYPE_BASE,
+                       reinterpret_cast<png_const_bytep>(icc->bytes.data()),
+                       static_cast<png_uint_32>(icc->bytes.size()));
+        }
+      }
+      png_write_info(png.get(), info.get());
+      if (bit_depth == 16 && std::endian::native == std::endian::little) {
+        png_set_swap(png.get());
+      }
+
+      std::vector<png_bytep> rows{};
+      rows.reserve(image.height);
+      for (std::size_t y = 0; y < image.height; ++y) {
+        rows.push_back(const_cast<png_bytep>(reinterpret_cast<png_const_bytep>(
+            (*plane)->bytes.data() + y * (*plane)->stride)));
+      }
+      if (stop_token.stop_requested()) {
+        return std::unexpected{"任务已取消。"};
+      }
+      png_write_image(png.get(), rows.data());
+      png_write_end(png.get(), nullptr);
+      if (state.bytes.empty()) {
+        return std::unexpected{"PNG encoder 输出失败。"};
+      }
+
+      auto diagnostics = diagnostics_from_settings(settings);
+      diagnostics.encoder_id = "libpng";
+      diagnostics.integration_mode = "libpng";
+      diagnostics.encoder_threads = 1;
+      diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
+      return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(state.bytes),
+                                                        .codec_name = "libpng"},
+                                .diagnostics = std::move(diagnostics),
+                                .final_quality = 100,
+                                .lossless = true,
+                                .search_attempt_count = 1};
+    } catch (const std::bad_alloc&) {
+      return std::unexpected{"PNG 编码内存不足。"};
+    } catch (const std::length_error&) {
+      return std::unexpected{"PNG 编码数据超过运行时限制。"};
     }
   }
 };

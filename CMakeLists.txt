@@ -19,7 +19,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(AVIF_STATIC_SLINT "Link Slint statically so AWJ does not need slint_cpp.dll" OFF)
+option(AVIF_STATIC_SLINT "Link Slint statically so AWJ does not need slint_cpp.dll" ON)
 option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bundles when all dependencies allow it" ON)
 option(AVIF_ENABLE_RELEASE_IPO "Enable interprocedural optimization for Release builds when the compiler supports it" OFF)
 option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targets" ON)
@@ -31,7 +31,7 @@ option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple st
 set(AWJ_SVTAV1HDR_GIT_REPOSITORY "https://github.com/juliobbv-p/svt-av1-hdr.git" CACHE STRING "svt-av1-hdr repository")
 set(AWJ_SVTAV1HDR_GIT_TAG "cfb4e17693ae16945a7fe288d45437243d96c12e" CACHE STRING "svt-av1-hdr git tag or commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
-set(AWJ_LIBAVIF_GIT_TAG "cc1ba78b3c37066e57f2879b2696d4d7fbc1244b" CACHE STRING "libavif git tag or commit")
+set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING "libavif git tag or commit")
 set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
 set(AWJ_JPEGLI_GIT_TAG "031a0077f5799a6041004267fc12b956c1f52a20" CACHE STRING "google/jpegli git tag or commit")
 
@@ -473,7 +473,7 @@ set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
 FetchContent_Declare(Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG e9c1ca295f9356af71f1e251c287de18406b46f6
+    GIT_TAG fdde7a535305d2ab2d4072dee637bad186a49723
     SOURCE_SUBDIR api/cpp)
 FetchContent_MakeAvailable(Slint)
 
@@ -708,6 +708,10 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_webp_codec_tests)
     target_link_libraries(awj_webp_codec_tests PRIVATE awj_native_codecs)
 
+    add_executable(awj_png_codec_tests tests/png_codec_tests.cpp)
+    avif_enable_common_options(awj_png_codec_tests)
+    target_link_libraries(awj_png_codec_tests PRIVATE awj_native_codecs)
+
     add_executable(awj_avif_aom_codec_tests tests/avif_aom_codec_tests.cpp)
     avif_enable_common_options(awj_avif_aom_codec_tests)
     target_link_libraries(awj_avif_aom_codec_tests PRIVATE awj_avif_base_codec)
@@ -768,6 +772,7 @@ if(BUILD_TESTING)
         awj_resource_planner_tests
         awj_visual_metrics_tests
         awj_webp_codec_tests
+        awj_png_codec_tests
         awj_avif_aom_codec_tests
         awj_avif_registry_tests
         awj_jxl_codec_tests
@@ -792,6 +797,7 @@ if(BUILD_TESTING)
     add_test(NAME resource_planner_core COMMAND awj_resource_planner_tests)
     add_test(NAME visual_metrics_core COMMAND awj_visual_metrics_tests)
     add_test(NAME webp_codec_core COMMAND awj_webp_codec_tests)
+    add_test(NAME png_codec_core COMMAND awj_png_codec_tests)
     add_test(NAME avif_aom_codec_core COMMAND awj_avif_aom_codec_tests)
     add_test(NAME avif_registry_core COMMAND awj_avif_registry_tests)
     add_test(NAME jxl_codec_core COMMAND awj_jxl_codec_tests)

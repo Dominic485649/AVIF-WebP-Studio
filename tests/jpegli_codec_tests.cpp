@@ -13,7 +13,6 @@
 
 import awj.codec;
 import awj.config;
-import awj.encoding_defaults;
 import awj.image;
 import awj.jpegli_codec;
 import awj.resource_planner;
@@ -99,9 +98,8 @@ int main() {
   }
   if (encoded->final_quality != 42 ||
       encoded->diagnostics.encoder_id != "jpegli" ||
-      encoded->diagnostics.speed_mapping.codec_key != "jpegli:quality-speed" ||
-      encoded->diagnostics.speed_mapping.codec_value !=
-          awj::encoding_defaults::default_jpegli_native_speed) {
+      !encoded->diagnostics.speed_mapping.codec_key.empty() ||
+      encoded->diagnostics.speed_mapping.codec_value != 0) {
     return fail("JPGLI quality or diagnostics invalid.");
   }
 

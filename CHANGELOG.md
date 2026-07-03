@@ -1,5 +1,18 @@
 # 更新日志
 
+## 0.9.0 - 2026-07-04
+
+0.9.0 是一次以编码器 preset/speed 语义修正、Studio 输出格式行为调整和 JXL JPEG 无损转封装为核心的版本更新。
+
+- 修正默认质量策略：AVIF 默认 q70，JXL 默认 q85，WebP 默认 speed4，AVIF/JXL 默认 speed6。
+- 调整 JXL speed 到 effort 的映射为 `speed0 => effort10`、`speed6 => effort4`、`speed10 => effort1`，覆盖 libjxl 当前 effort 1..10 范围。
+- 明确 AOM/AVIF 默认路径：不设置不存在的 `--good`，保留 libavif/AOM 自身 still image / all-intra / speed 逻辑；AVIF auto 文案同步为默认 AOM。
+- 显式选择 SVT-AV1-HDR 编码 AVIF 时，对 lossless/q100、需要保留 alpha、显式 444/422 和 >10-bit 等不支持场景直接报错，避免隐式降级。
+- JXL 对 JPEG 输入默认优先使用 JPEG bitstream 无损转封装；遇到 strip metadata 或色彩/HDR 元数据冲突时回退普通 JXL 有损编码。
+- Studio 输出格式下拉移除 PNG，PNG 保留 CLI 与右键菜单支持；Studio 的 speed 输入仅对 AVIF/WebP/JXL 显示和传入。
+- JPEGli 关闭伪 speed 支持：Studio 不展示 speed，CLI 显式传入 `--speed` 时直接报错。
+- 修复 Studio 切换输出格式时质量值跨格式污染的问题：各格式在本次运行内独立记忆质量，重启后恢复内置默认值。
+
 ## 0.8.5 - 2026-06-18
 
 0.8.5 是一次以 AVIF/JXR 位深兼容、默认质量策略调整和深层编码性能优化为核心的版本更新。

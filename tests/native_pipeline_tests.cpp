@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -9,12 +10,15 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 #include <windows.h>
 
 import awj.config;
 import awj.core;
 import awj.encoding_defaults;
 import awj.image;
+import awj.jpegli_codec;
+import awj.jxl_codec;
 import awj.native_backend;
 import awj.resource_planner;
 import awj.webp_codec;
@@ -52,6 +56,28 @@ awj::ImageBuffer make_test_image() {
                           .pixel_format = awj::PixelFormat::rgba,
                           .alpha_mode = awj::AlphaMode::straight,
                           .bit_depth = 8};
+  image.planes.push_back(std::move(plane));
+  return image;
+}
+
+void push_u16(std::vector<std::byte>& bytes, std::uint16_t value) {
+  bytes.push_back(std::byte{static_cast<unsigned char>(value & 0xffu)});
+  bytes.push_back(std::byte{static_cast<unsigned char>(value >> 8)});
+}
+
+awj::ImageBuffer make_hdr_test_image() {
+  awj::ImagePlane plane{.stride = 16};
+  for (const std::uint16_t value : {std::uint16_t{0}, std::uint16_t{32768},
+                                    std::uint16_t{65535}, std::uint16_t{65535},
+                                    std::uint16_t{65535}, std::uint16_t{0},
+                                    std::uint16_t{32768}, std::uint16_t{65535}}) {
+    push_u16(plane.bytes, value);
+  }
+  awj::ImageBuffer image{.width = 2,
+                          .height = 1,
+                          .pixel_format = awj::PixelFormat::rgba,
+                          .alpha_mode = awj::AlphaMode::straight,
+                          .bit_depth = 16};
   image.planes.push_back(std::move(plane));
   return image;
 }
@@ -119,6 +145,56 @@ int main() {
     return fail("native backend result metadata invalid.");
   }
 
+  const auto hdr_input = root / "input-hdr.jxl";
+  awj::JXLImageEncoder jxl_encoder;
+  auto hdr_encoded = jxl_encoder.encode(
+      make_hdr_test_image(),
+      awj::NativeEncodeSettings{.output_format = awj::OutputFormat::jxl,
+                                 .quality = 100,
+                                 .speed = 10,
+                                 .speed_explicit = true,
+                                 .resources = awj::ResourcePlan{
+                                     .file_parallelism = 1,
+                                     .encoder_threads_per_file = 1,
+                                     .global_thread_budget = 1}});
+  if (!hdr_encoded) {
+    return fail(hdr_encoded.error());
+  }
+  {
+    std::ofstream stream{hdr_input, std::ios::binary};
+    stream.write(reinterpret_cast<const char*>(hdr_encoded->encoded.bytes.data()),
+                 static_cast<std::streamsize>(hdr_encoded->encoded.bytes.size()));
+  }
+
+  auto hdr_cfg = cfg;
+  hdr_cfg.input_path = hdr_input;
+  hdr_cfg.output_format = awj::OutputFormat::webp;
+  hdr_cfg.quality = 100;
+  hdr_cfg.bit_depth = {};
+  hdr_cfg.visual_quality = {};
+  awj::NativeBackend hdr_backend{hdr_cfg, logger, awj::ResourcePlan{
+                                                   .file_parallelism = 1,
+                                                   .encoder_threads_per_file = 1,
+                                                   .global_thread_budget = 1}};
+  const auto hdr_input_bytes = std::filesystem::file_size(hdr_input, ec);
+  if (ec) {
+    return fail("failed to stat HDR input file.");
+  }
+  auto hdr_result = hdr_backend.encode(awj::ImageFile{.index = 0,
+                                                      .path = hdr_input,
+                                                      .bytes = hdr_input_bytes});
+  if (!hdr_result.ok || hdr_result.skipped || hdr_result.canceled) {
+    return fail(hdr_result.message.empty() ? "native backend HDR fallback encode failed."
+                                           : hdr_result.message);
+  }
+  if (hdr_result.source_bit_depth.value_or(0) != 16 ||
+      hdr_result.applied_bit_depth.value_or(0) != 8 ||
+      !hdr_result.source_has_hdr_metadata ||
+      hdr_result.applied_hdr_metadata != "sdr-fallback" ||
+      hdr_result.fallback_reason != "HDR -> SDR fallback") {
+    return fail("native backend HDR fallback diagnostics invalid.");
+  }
+
   cfg.output_format = awj::OutputFormat::jxl;
   awj::NativeBackend jxl_backend{cfg, logger, awj::ResourcePlan{
                                                   .file_parallelism = 1,
@@ -141,6 +217,59 @@ int main() {
   }
 
 #if AWJ_HAS_JPEGLI
+  const auto jpeg_input = root / "photo.jpg";
+  awj::JpegliImageEncoder source_jpeg_encoder;
+  auto source_jpeg = source_jpeg_encoder.encode(
+      make_test_image(),
+      awj::NativeEncodeSettings{.output_format = awj::OutputFormat::jpgli,
+                                 .quality = awj::encoding_defaults::default_jpegli_quality,
+                                 .speed = awj::default_speed_for(awj::OutputFormat::jpgli),
+                                 .resources = awj::ResourcePlan{
+                                     .file_parallelism = 1,
+                                     .encoder_threads_per_file = 1,
+                                     .global_thread_budget = 1}});
+  if (!source_jpeg) {
+    return fail(source_jpeg.error());
+  }
+  {
+    std::ofstream stream{jpeg_input, std::ios::binary};
+    stream.write(reinterpret_cast<const char*>(source_jpeg->encoded.bytes.data()),
+                 static_cast<std::streamsize>(source_jpeg->encoded.bytes.size()));
+  }
+  const auto jpeg_bytes = static_cast<std::uint64_t>(
+      std::filesystem::file_size(jpeg_input, ec));
+  cfg.output_format = awj::OutputFormat::jxl;
+  cfg.quality = awj::encoding_defaults::default_jxl_quality;
+  cfg.visual_quality = {};
+  cfg.strip_metadata = false;
+  awj::NativeBackend jxl_jpeg_backend{cfg, logger, awj::ResourcePlan{
+                                                       .file_parallelism = 1,
+                                                       .encoder_threads_per_file = 1,
+                                                       .global_thread_budget = 1}};
+  auto jxl_jpeg_result = jxl_jpeg_backend.encode(
+      awj::ImageFile{.index = 0, .path = jpeg_input, .bytes = jpeg_bytes});
+  if (!jxl_jpeg_result.ok ||
+      jxl_jpeg_result.integration_mode != "jxl-jpeg-bitstream-transcode" ||
+      !jxl_jpeg_result.lossless ||
+      jxl_jpeg_result.final_encoder_quality != 100) {
+    return fail("native backend JPEG->JXL did not use bitstream transcode.");
+  }
+
+  cfg.strip_metadata = true;
+  awj::NativeBackend jxl_strip_backend{cfg, logger, awj::ResourcePlan{
+                                                        .file_parallelism = 1,
+                                                        .encoder_threads_per_file = 1,
+                                                        .global_thread_budget = 1}};
+  auto jxl_strip_result = jxl_strip_backend.encode(
+      awj::ImageFile{.index = 0, .path = jpeg_input, .bytes = jpeg_bytes});
+  if (!jxl_strip_result.ok ||
+      jxl_strip_result.integration_mode == "jxl-jpeg-bitstream-transcode" ||
+      jxl_strip_result.lossless ||
+      jxl_strip_result.final_encoder_quality != awj::encoding_defaults::default_jxl_quality) {
+    return fail("native backend JPEG->JXL strip fallback did not use default JXL lossy encode.");
+  }
+  cfg.strip_metadata = false;
+
   cfg.output_format = awj::OutputFormat::jpgli;
   cfg.quality = awj::encoding_defaults::default_jpegli_quality;
   cfg.bit_depth = 8;

@@ -191,13 +191,13 @@ int main() {
   }
   if (const int rc = decode_bytes_to_temp(ten_bit->encoded,
                                           temp_dir / "avif-aom-codec-test-10.avif",
-                                          2, 2, 8, 10);
+                                          2, 2, 16, 10);
       rc != 0) {
     return rc;
   }
   if (const int rc = decode_bytes_to_temp(twelve_bit->encoded,
                                           temp_dir / "avif-aom-codec-test-12.avif",
-                                          2, 2, 8, 12);
+                                          2, 2, 16, 12);
       rc != 0) {
     return rc;
   }

@@ -167,8 +167,8 @@ int main() {
   const auto jxl_speed = awj::map_speed_for_format(awj::OutputFormat::jxl, 10);
   const auto jpegli_speed = awj::map_speed_for_format(awj::OutputFormat::jpgli, 10);
   if (avif_speed.codec_value != 0 || webp_speed.codec_value != 0 ||
-      jxl_speed.codec_value != 3 || jpegli_speed.codec_value != 10 ||
-      jpegli_speed.codec_key != "jpegli:quality-speed") {
+      jxl_speed.codec_value != 1 || jpegli_speed.codec_value != -1 ||
+      !jpegli_speed.codec_key.empty()) {
     return fail("speed=10 未映射到最快 codec 档位。");
   }
 

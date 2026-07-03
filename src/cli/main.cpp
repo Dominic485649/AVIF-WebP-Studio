@@ -126,8 +126,26 @@ int run_cli(int argc, wchar_t* argv[]) {
         }, studio_cancel_event.get()};
       }
     }
-    const auto exit_code = capture_expected<int>(
-        [&] { return awj::run_pipeline(parsed->config, g_cli_stop_source.get_token()); });
+    const auto exit_code = capture_expected<int>([&] {
+      const auto token = g_cli_stop_source.get_token();
+      if (parsed->config.output_policy == awj::OutputPolicy::shell &&
+          !parsed->shell_inputs.empty()) {
+        int final_code = 0;
+        for (const auto& input : parsed->shell_inputs) {
+          if (token.stop_requested()) {
+            return final_code == 0 ? 1 : final_code;
+          }
+          auto cfg = parsed->config;
+          cfg.input_path = input;
+          const int code = awj::run_pipeline(cfg, token);
+          if (code != 0) {
+            final_code = code;
+          }
+        }
+        return final_code;
+      }
+      return awj::run_pipeline(parsed->config, token);
+    });
     studio_cancel_watcher.request_stop();
     studio_cancel_watcher = {};
     studio_cancel_event.reset();

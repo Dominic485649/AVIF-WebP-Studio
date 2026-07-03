@@ -632,7 +632,7 @@ class FileLogger {
 };
 
 constexpr std::string_view kSupportedImageExtensionsText =
-    "jpg/jpeg/jpe/jfif/png/webp/bmp/dib/rle/tif/tiff/gif/jxl/avif/awsraw/dng/"
+    "jpg/jpeg/jpe/jfif/png/webp/bmp/dib/rle/ico/tif/tiff/gif/jxl/avif/awsraw/dng/"
     "cr2/cr3/nef/arw/rw2/orf/raf/pef/srw/x3f/3fr/erf/kdc/mrw/raw/heic/heif/jxr/"
     "wdp/hdp";
 
@@ -642,7 +642,7 @@ bool is_supported_image_extension(const fs::path& path) {
                          [](wchar_t ch) { return std::towlower(ch); });
   return ext == L".jpg" || ext == L".jpeg" || ext == L".jpe" ||
          ext == L".jfif" || ext == L".png" || ext == L".webp" ||
-         ext == L".bmp" || ext == L".dib" || ext == L".rle" || ext == L".tif" ||
+         ext == L".bmp" || ext == L".dib" || ext == L".rle" || ext == L".ico" || ext == L".tif" ||
          ext == L".tiff" || ext == L".gif" || ext == L".jxl" ||
          ext == L".avif" || ext == L".awsraw" || ext == L".dng" ||
          ext == L".cr2" || ext == L".cr3" || ext == L".nef" || ext == L".arw" ||
@@ -671,11 +671,20 @@ fs::path output_dir_for(const AppConfig& cfg) {
   if (!cfg.output_dir.empty()) {
     return cfg.output_dir;
   }
+  if (cfg.output_policy == OutputPolicy::shell) {
+    std::error_code ec;
+    if (fs::is_directory(cfg.input_path, ec) && !ec) {
+      const auto parent = cfg.input_path.parent_path();
+      return (parent.empty() ? cfg.input_path : parent) / L"AWJOutput";
+    }
+  }
   return default_output_dir_for(cfg.input_path);
 }
 
 std::wstring output_extension_for(OutputFormat format) {
   switch (format) {
+    case OutputFormat::png:
+      return L".png";
     case OutputFormat::avif:
       return L".avif";
     case OutputFormat::webp:
@@ -690,6 +699,8 @@ std::wstring output_extension_for(OutputFormat format) {
 
 std::string output_format_name(OutputFormat format) {
   switch (format) {
+    case OutputFormat::png:
+      return "PNG";
     case OutputFormat::avif:
       return "AVIF";
     case OutputFormat::webp:

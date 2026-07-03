@@ -6,6 +6,7 @@
 /goal.md
 /build/
 /dist/
+/vcpkg_installed/
 /docs/jpeg/
 /docs/reports/
 /.claude/

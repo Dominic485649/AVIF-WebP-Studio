@@ -107,9 +107,10 @@ struct RgbaPlaneView {
   const ImagePlane* plane{};
 };
 
-std::expected<RgbaPlaneView, std::string> rgba8_plane(const ImageBuffer& image) {
-  if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 || image.planes.empty()) {
-    return std::unexpected{"svt-av1-hdr 当前需要 8-bit RGBA ImageBuffer。"};
+std::expected<RgbaPlaneView, std::string> rgba_plane(const ImageBuffer& image) {
+  if (image.pixel_format != PixelFormat::rgba ||
+      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
+    return std::unexpected{"svt-av1-hdr 当前需要 RGBA ImageBuffer。"};
   }
   if (image.width == 0 || image.height == 0) {
     return std::unexpected{"svt-av1-hdr 输入图片尺寸为空。"};
@@ -118,7 +119,8 @@ std::expected<RgbaPlaneView, std::string> rgba8_plane(const ImageBuffer& image) 
   if (image.width > std::numeric_limits<std::size_t>::max() / 4) {
     return std::unexpected{"svt-av1-hdr 输入宽度过大。"};
   }
-  const std::size_t min_stride = image.width * 4;
+  const std::size_t bytes_per_sample = image.bit_depth > 8 ? 2 : 1;
+  const std::size_t min_stride = image.width * 4 * bytes_per_sample;
   if (plane.stride < min_stride) {
     return std::unexpected{"svt-av1-hdr 输入 RGBA stride 无效。"};
   }
@@ -162,6 +164,11 @@ std::expected<std::size_t, std::string> checked_pixel_count(std::size_t width,
 std::uint16_t expand_u8_to_depth(std::uint8_t value, int bit_depth) noexcept {
   const auto max_value = static_cast<std::uint32_t>((1u << bit_depth) - 1u);
   return static_cast<std::uint16_t>((static_cast<std::uint32_t>(value) * max_value + 127u) / 255u);
+}
+
+std::uint16_t scale_u16_to_depth(std::uint16_t value, int bit_depth) noexcept {
+  const auto max_value = static_cast<std::uint32_t>((1u << bit_depth) - 1u);
+  return static_cast<std::uint16_t>((static_cast<std::uint32_t>(value) * max_value + 32767u) / 65535u);
 }
 
 template <typename T>
@@ -455,7 +462,7 @@ std::expected<AvifImage, std::string> avif_image_from_rgba(
   if (auto stopped = stop_if_requested(stop_token); !stopped) {
     return std::unexpected{stopped.error()};
   }
-  auto plane_view = rgba8_plane(image);
+  auto plane_view = rgba_plane(image);
   if (!plane_view) {
     return std::unexpected{plane_view.error()};
   }
@@ -499,11 +506,52 @@ std::expected<AvifImage, std::string> avif_image_from_rgba(
   rgb.format = AVIF_RGB_FORMAT_RGB;
   rgb.depth = static_cast<std::uint32_t>(bit_depth);
   rgb.chromaDownsampling = AVIF_CHROMA_DOWNSAMPLING_AVERAGE;
-  if (bit_depth == 8) {
+  if (bit_depth == 8 && image.bit_depth == 8) {
     rgb.format = AVIF_RGB_FORMAT_RGBA;
     rgb.ignoreAlpha = AVIF_TRUE;
     rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(plane->bytes.data()));
     rgb.rowBytes = static_cast<std::uint32_t>(plane->stride);
+    if (auto stopped = stop_if_requested(stop_token); !stopped) {
+      return std::unexpected{stopped.error()};
+    }
+    const avifResult converted = avifImageRGBToYUV(avif_image.get(), &rgb);
+    if (auto stopped = stop_if_requested(stop_token); !stopped) {
+      return std::unexpected{stopped.error()};
+    }
+    if (converted != AVIF_RESULT_OK) {
+      return std::unexpected{std::format("svt-av1-hdr RGB 转 YUV 失败: {}", avifResultToString(converted))};
+    }
+    return avif_image;
+  }
+
+  if (bit_depth == 8) {
+    const auto pixel_count = checked_pixel_count(image.width, image.height, "svt-av1-hdr");
+    if (!pixel_count) {
+      return std::unexpected{pixel_count.error()};
+    }
+    if (*pixel_count > std::numeric_limits<std::size_t>::max() / 3) {
+      return std::unexpected{"svt-av1-hdr 8-bit 临时 buffer 过大。"};
+    }
+    auto rgb8_pixels = make_typed_buffer<std::uint8_t>(
+        *pixel_count * 3, "svt-av1-hdr", "8-bit 临时 buffer");
+    if (!rgb8_pixels) {
+      return std::unexpected{rgb8_pixels.error()};
+    }
+    for (std::size_t y = 0; y < image.height; ++y) {
+      if (auto stopped = stop_if_requested(stop_token); !stopped) {
+        return std::unexpected{stopped.error()};
+      }
+      const auto* row = reinterpret_cast<const std::uint16_t*>(
+          plane->bytes.data() + y * plane->stride);
+      auto* out = rgb8_pixels->data() + y * image.width * 3;
+      for (std::size_t x = 0; x < image.width; ++x) {
+        out[x * 3 + 0] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(row[x * 4 + 0]) + 128u) / 257u);
+        out[x * 3 + 1] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(row[x * 4 + 1]) + 128u) / 257u);
+        out[x * 3 + 2] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(row[x * 4 + 2]) + 128u) / 257u);
+      }
+    }
+    rgb.pixels = rgb8_pixels->data();
+    rgb.rowBytes = static_cast<std::uint32_t>(image.width * 3);
     if (auto stopped = stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
@@ -538,12 +586,21 @@ std::expected<AvifImage, std::string> avif_image_from_rgba(
     if (auto stopped = stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
-    const auto* row = reinterpret_cast<const std::uint8_t*>(plane->bytes.data() + y * plane->stride);
     auto* out = high_depth_pixels->data() + y * image.width * 3;
-    for (std::size_t x = 0; x < image.width; ++x) {
-      out[x * 3 + 0] = expand_u8_to_depth(row[x * 4 + 0], bit_depth);
-      out[x * 3 + 1] = expand_u8_to_depth(row[x * 4 + 1], bit_depth);
-      out[x * 3 + 2] = expand_u8_to_depth(row[x * 4 + 2], bit_depth);
+    if (image.bit_depth == 16) {
+      const auto* row = reinterpret_cast<const std::uint16_t*>(plane->bytes.data() + y * plane->stride);
+      for (std::size_t x = 0; x < image.width; ++x) {
+        out[x * 3 + 0] = scale_u16_to_depth(row[x * 4 + 0], bit_depth);
+        out[x * 3 + 1] = scale_u16_to_depth(row[x * 4 + 1], bit_depth);
+        out[x * 3 + 2] = scale_u16_to_depth(row[x * 4 + 2], bit_depth);
+      }
+    } else {
+      const auto* row = reinterpret_cast<const std::uint8_t*>(plane->bytes.data() + y * plane->stride);
+      for (std::size_t x = 0; x < image.width; ++x) {
+        out[x * 3 + 0] = expand_u8_to_depth(row[x * 4 + 0], bit_depth);
+        out[x * 3 + 1] = expand_u8_to_depth(row[x * 4 + 1], bit_depth);
+        out[x * 3 + 2] = expand_u8_to_depth(row[x * 4 + 2], bit_depth);
+      }
     }
   }
   rgb.pixels = reinterpret_cast<std::uint8_t*>(high_depth_pixels->data());
@@ -716,6 +773,15 @@ export std::expected<NativeEncodeResult, std::string> encode_svtav1hdr_in_proces
     if (settings.chroma_mode != ChromaMode::yuv420) {
       return std::unexpected{"svt-av1-hdr 只支持 420 chroma。"};
     }
+    const int final_quality = settings.svtav1hdr.crf
+                                  ? svtav1hdr_detail::avif_quality_from_crf(*settings.svtav1hdr.crf)
+                                  : std::clamp(settings.quality, 1, 100);
+    if (settings.visual_quality ? *settings.visual_quality >= 100 : final_quality >= 100) {
+      return std::unexpected{"svt-av1-hdr 不支持 AVIF 无损/q100；请改用 AOM。"};
+    }
+    if (settings.applied_alpha == "kept" || settings.has_non_opaque_alpha) {
+      return std::unexpected{"svt-av1-hdr 不支持保留 alpha；请改用 AOM。"};
+    }
     const int bit_depth = settings.bit_depth.value_or(8);
     if (bit_depth != 8 && bit_depth != 10) {
       return std::unexpected{"svt-av1-hdr 当前只支持 8-bit 或 10-bit 输出。"};
@@ -757,13 +823,7 @@ export std::expected<NativeEncodeResult, std::string> encode_svtav1hdr_in_proces
         settings.resources.encoder_threads_per_file);
     diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
 
-    const int final_quality = settings.svtav1hdr.crf
-                                  ? svtav1hdr_detail::avif_quality_from_crf(*settings.svtav1hdr.crf)
-                                  : std::clamp(settings.quality, 1, 100);
-    const bool highest_quality = settings.visual_quality ? *settings.visual_quality >= 100 : final_quality >= 100;
-    diagnostics.svtav1hdr_note = highest_quality
-                                     ? "svt-av1-hdr q100 为非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗。"
-                                     : "svt-av1-hdr 通过 libavif SVT backend 静态链接";
+    diagnostics.svtav1hdr_note = "svt-av1-hdr 通过 libavif SVT backend 静态链接";
     return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(*bytes),
                                                       .codec_name = "svt-av1-hdr"},
                               .diagnostics = std::move(diagnostics),

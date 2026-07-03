@@ -37,6 +37,7 @@ import awj.jpegli_codec;
 import awj.jxl_codec;
 import awj.large_image_plan;
 import awj.native_visual_search;
+import awj.png_codec;
 import awj.resource_planner;
 import awj.svtav1hdr_codec;
 import awj.visual_quality;
@@ -101,6 +102,8 @@ class UnsupportedDecoder final : public ImageDecoder {
 std::unique_ptr<ImageDecoder> decoder_for_output_format(OutputFormat format, int decode_threads) {
   const auto clamped_decode_threads = std::max(1, decode_threads);
   switch (format) {
+    case OutputFormat::png:
+      return std::make_unique<PngImageDecoder>();
     case OutputFormat::webp:
       return std::make_unique<WebPImageDecoder>();
     case OutputFormat::jxl:
@@ -121,6 +124,8 @@ std::unique_ptr<ImageDecoder> decoder_for_output_format(OutputFormat format, int
 std::unique_ptr<ImageEncoder> encoder_for_output_format(OutputFormat format,
                                                         AvifEncoderMode avif_encoder) {
   switch (format) {
+    case OutputFormat::png:
+      return std::make_unique<PngImageEncoder>();
     case OutputFormat::webp:
       return std::make_unique<WebPImageEncoder>();
     case OutputFormat::jxl:
@@ -282,11 +287,6 @@ bool effective_lossless_requested(int quality, std::optional<int> visual_quality
 
 bool avif_lossless_requested(const AppConfig& cfg) noexcept {
   return cfg.output_format == OutputFormat::avif &&
-         effective_lossless_requested(cfg.quality, cfg.visual_quality);
-}
-
-bool jxl_lossless_requested(const AppConfig& cfg) noexcept {
-  return cfg.output_format == OutputFormat::jxl &&
          effective_lossless_requested(cfg.quality, cfg.visual_quality);
 }
 
@@ -458,6 +458,51 @@ bool image_has_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
          }) != image.metadata.end();
 }
 
+bool hdr_to_sdr_fallback_needed(OutputFormat format, const ImageBuffer& image) noexcept {
+  return (format == OutputFormat::webp || format == OutputFormat::jpgli) &&
+         (image.bit_depth > 8 ||
+          (image.source_info && image.source_info->has_hdr_metadata));
+}
+
+std::expected<ImageBuffer, std::string> rgba16_to_rgba8_sdr(const ImageBuffer& image) {
+  if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 16 ||
+      image.planes.empty()) {
+    return std::unexpected{"HDR -> SDR fallback 需要 16-bit RGBA ImageBuffer。"};
+  }
+  const auto& plane = image.planes.front();
+  const auto stride = decoder_common::checked_rgba_stride(image.width, "HDR -> SDR fallback");
+  if (!stride) {
+    return std::unexpected{stride.error()};
+  }
+  const auto bytes = decoder_common::checked_image_bytes(*stride, image.height,
+                                                         "HDR -> SDR fallback");
+  if (!bytes) {
+    return std::unexpected{bytes.error()};
+  }
+  auto rgba8 = decoder_common::make_byte_buffer(*bytes, "HDR -> SDR fallback");
+  if (!rgba8) {
+    return std::unexpected{rgba8.error()};
+  }
+  auto* out = reinterpret_cast<std::uint8_t*>(rgba8->data());
+  for (std::size_t y = 0; y < image.height; ++y) {
+    const auto* row = reinterpret_cast<const std::uint16_t*>(
+        plane.bytes.data() + y * plane.stride);
+    auto* dst = out + y * *stride;
+    for (std::size_t x = 0; x < image.width * 4; ++x) {
+      dst[x] = static_cast<std::uint8_t>(
+          (static_cast<std::uint32_t>(row[x]) + 128u) / 257u);
+    }
+  }
+  auto fallback = decoder_common::make_rgba_image(
+      image.width, image.height, std::move(*rgba8), image.alpha_mode,
+      "HDR -> SDR fallback", image.source_info, 8);
+  if (!fallback) {
+    return std::unexpected{fallback.error()};
+  }
+  fallback->metadata = image.metadata;
+  return fallback;
+}
+
 std::string chroma_name_from_pixel_format(PixelFormat pixel_format) {
   const auto chroma = chroma_from_source_pixel_format(pixel_format);
   return chroma == ChromaMode::auto_keep ? "unknown" : chroma_mode_name(chroma);
@@ -534,7 +579,7 @@ bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
 
 bool jxl_jpeg_bitstream_transcode_allowed(const AppConfig& cfg,
                                           const fs::path& path) {
-  return jxl_lossless_requested(cfg) && jxl_jpeg_bitstream_source(path) &&
+  return cfg.output_format == OutputFormat::jxl && jxl_jpeg_bitstream_source(path) &&
          !cfg.strip_metadata && !has_user_color_settings(cfg);
 }
 
@@ -543,7 +588,8 @@ bool encoder_supports_alpha(AvifEncoderMode mode) noexcept {
 }
 
 bool encoder_supports_alpha(OutputFormat format) noexcept {
-  return format == OutputFormat::jxl || format == OutputFormat::webp;
+  return format == OutputFormat::png || format == OutputFormat::jxl ||
+         format == OutputFormat::webp;
 }
 
 bool alpha_must_be_preserved(AlphaModePolicy policy,
@@ -1179,12 +1225,13 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
 }
 
 void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) {
+  const bool has_speed_mapping = !native.diagnostics.speed_mapping.codec_key.empty();
   result.output_bytes = native.encoded.bytes.size();
   result.final_encoder_quality = native.final_quality;
   result.visual_quality_target_met = native.visual_quality_target_met;
   result.search_attempt_count = native.search_attempt_count;
   result.lossless = native.lossless;
-  result.speed = native.diagnostics.speed_mapping.user_speed;
+  result.speed = has_speed_mapping ? native.diagnostics.speed_mapping.user_speed : -1;
   result.decoder_id = native.diagnostics.decoder_id;
   result.encoder_id = native.diagnostics.encoder_id;
   result.requested_encoder_id = native.diagnostics.requested_encoder_id;
@@ -1236,8 +1283,8 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.svtav1hdr_keyint = native.diagnostics.svtav1hdr_keyint;
   result.svtav1hdr_hdr_metadata = native.diagnostics.svtav1hdr_hdr_metadata;
   result.svtav1hdr_note = native.diagnostics.svtav1hdr_note;
-  result.speed_parameter_kind = native.diagnostics.speed_mapping.codec_key;
-  result.applied_speed = native.diagnostics.speed_mapping.codec_value;
+  result.speed_parameter_kind = has_speed_mapping ? native.diagnostics.speed_mapping.codec_key : std::string{};
+  result.applied_speed = has_speed_mapping ? native.diagnostics.speed_mapping.codec_value : -1;
   result.encoder_threads = native.diagnostics.encoder_threads;
   result.memory_budget_bytes = native.diagnostics.memory_budget_bytes;
   result.decode_seconds = native.diagnostics.timing.decode_seconds;
@@ -1271,7 +1318,9 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
                                result.decoder_id,
                                native.diagnostics.encoder_id,
                                native.final_quality,
-                               native.diagnostics.speed_mapping.user_speed);
+                               has_speed_mapping
+                                   ? std::to_string(native.diagnostics.speed_mapping.user_speed)
+                                   : std::string{"n/a"});
   if (native.diagnostics.encoder_id == "jpegli") {
     result.command += std::format(" chroma={} bit-depth={} progressive={} huffman={} xyb={}",
                                   result.applied_chroma.empty() ? "auto" : result.applied_chroma,
@@ -1673,6 +1722,32 @@ export class NativeBackend final {
       const bool avif_lossless = native_backend_detail::avif_lossless_requested(cfg_);
       const auto source_chroma = native_backend_detail::lossless_source_chroma(decoded.image);
       const bool explicit_svt = requested_avif_encoder == AvifEncoderMode::svt;
+      const bool must_preserve_alpha = native_backend_detail::alpha_must_be_preserved(
+          cfg_.alpha_policy, prepared.settings.source_has_alpha_channel, *has_non_opaque_alpha);
+
+      if (explicit_svt) {
+        if (avif_lossless) {
+          return prepare_failed(
+              "svt-av1-hdr 不支持 AVIF 无损/q100；请改用 --avif-encoder auto/aom。",
+              prepared.settings);
+        }
+        if (must_preserve_alpha) {
+          prepared.settings.alpha_reason = cfg_.alpha_policy == AlphaModePolicy::force
+                                               ? "force 请求保留 alpha，但 SVT 不支持 alpha"
+                                               : "auto 需要保留非不透明 alpha，但 SVT 不支持 alpha";
+          return prepare_failed(
+              "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha off 或改用 AOM。",
+              prepared.settings);
+        }
+        if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth > 10) {
+          prepared.settings.bit_depth_reason = std::format(
+              "显式选择 SVT 但源图为 {}-bit，超过 SVT 10-bit 上限",
+              *prepared.settings.source_bit_depth);
+          return prepare_failed(
+              "svt-av1-hdr 只支持 8/10-bit；请改用 AOM 或先降位深。",
+              prepared.settings);
+        }
+      }
 
       const auto selection_requested_encoder =
           avif_lossless && requested_avif_encoder == AvifEncoderMode::automatic
@@ -1691,14 +1766,9 @@ export class NativeBackend final {
               prepared.settings);
         }
         selection_requested_chroma = ChromaMode::yuv420;
-        if (avif_lossless) {
-          prepared.settings.chroma_reason =
-              "显式选择 SVT q100 使用非像素级无损/最高质量路径，强制使用 420 chroma";
-        } else {
-          prepared.settings.chroma_reason = cfg_.chroma_mode == ChromaMode::yuv420
-                                               ? "显式选择 SVT 使用 420 chroma"
-                                               : "显式选择 SVT 有损编码强制使用 420 chroma";
-        }
+        prepared.settings.chroma_reason = cfg_.chroma_mode == ChromaMode::yuv420
+                                             ? "显式选择 SVT 使用 420 chroma"
+                                             : "显式选择 SVT 有损编码强制使用 420 chroma";
       } else if (avif_lossless) {
         selection_requested_chroma = source_chroma == ChromaMode::auto_keep
                                          ? ChromaMode::yuv444
@@ -1726,18 +1796,10 @@ export class NativeBackend final {
         if (cfg_.bit_depth) {
           selection_requested_bit_depth = cfg_.bit_depth;
           prepared.settings.bit_depth_reason = "用户明确请求 bit-depth";
-        } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth > 10) {
-          selection_requested_bit_depth = 10;
-          prepared.settings.bit_depth_reason = std::format(
-              "显式选择 SVT 将源图 {}-bit 限制为 SVT 支持的 10-bit 输出",
-              *prepared.settings.source_bit_depth);
         } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth >= 10) {
           selection_requested_bit_depth = prepared.settings.source_bit_depth;
           prepared.settings.bit_depth_reason = std::format(
               "显式选择 SVT 继承源图 {}-bit 输出", *prepared.settings.source_bit_depth);
-        } else if (avif_lossless) {
-          prepared.settings.bit_depth_reason =
-              "显式选择 SVT q100 使用 SVT 支持的 8/10-bit auto 输出，不执行严格无损 bit-depth 继承";
         }
       } else if (avif_lossless) {
         selection_requested_bit_depth = native_backend_detail::lossless_source_bit_depth(decoded.image);
@@ -1756,8 +1818,6 @@ export class NativeBackend final {
           prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth == 8) {
         prepared.settings.bit_depth_reason = "有损 auto 可能将 8-bit 源图升至编码器首选 bit-depth";
       }
-      const bool must_preserve_alpha = native_backend_detail::alpha_must_be_preserved(
-          cfg_.alpha_policy, prepared.settings.source_has_alpha_channel, *has_non_opaque_alpha);
       const auto selection = select_avif_encoder_for_current_build(AvifEncoderSelectionRequest{
           .requested_encoder = selection_requested_encoder,
           .requested_chroma = selection_requested_chroma,
@@ -1864,7 +1924,8 @@ export class NativeBackend final {
             cfg_.output_format, selection->applied_encoder);
       }
     } else {
-      if (cfg_.output_format == OutputFormat::jxl ||
+      if (cfg_.output_format == OutputFormat::png ||
+          cfg_.output_format == OutputFormat::jxl ||
           cfg_.output_format == OutputFormat::webp ||
           cfg_.output_format == OutputFormat::jpgli) {
         native_backend_detail::populate_source_image_diagnostics(prepared.settings,
@@ -1875,6 +1936,18 @@ export class NativeBackend final {
           return prepare_failed(alpha_decision.error(), prepared.settings);
         }
         native_backend_detail::populate_regular_color_decision(prepared.settings, cfg_);
+        if (cfg_.output_format == OutputFormat::png) {
+          if (cfg_.bit_depth && *cfg_.bit_depth != decoded.image.bit_depth) {
+            return prepare_failed(
+                std::format("PNG 当前按解码 RGBA buffer 写入 {}-bit；请留空 bit-depth，或使用匹配的 {}。",
+                            decoded.image.bit_depth, decoded.image.bit_depth),
+                prepared.settings);
+          }
+          prepared.settings.bit_depth = decoded.image.bit_depth;
+          prepared.settings.bit_depth_reason = cfg_.bit_depth
+                                                   ? "用户明确请求 PNG 源图匹配 bit-depth"
+                                                   : "PNG 继承解码 RGBA buffer bit-depth";
+        }
         if (cfg_.output_format == OutputFormat::jpgli) {
           prepared.settings.user_chroma =
               chroma_mode_name(prepared.settings.requested_chroma_mode);
@@ -1926,11 +1999,29 @@ export class NativeBackend final {
     if (stop_token.stop_requested()) {
       return std::unexpected{"任务已取消。"};
     }
+    auto effective_settings = settings;
+    const ImageBuffer* effective_image = &decoded.image;
+    std::optional<ImageBuffer> sdr_fallback;
+    if (native_backend_detail::hdr_to_sdr_fallback_needed(cfg_.output_format,
+                                                          decoded.image)) {
+      if (decoded.image.bit_depth > 8) {
+        auto converted = native_backend_detail::rgba16_to_rgba8_sdr(decoded.image);
+        if (!converted) {
+          return std::unexpected{converted.error()};
+        }
+        sdr_fallback = std::move(*converted);
+        effective_image = &*sdr_fallback;
+      }
+      effective_settings.bit_depth = 8;
+      effective_settings.applied_hdr_metadata = "sdr-fallback";
+      effective_settings.encoder_fallback_reason = "HDR -> SDR fallback";
+      effective_settings.color_reason = "目标格式不支持 HDR，已自动 fallback SDR";
+    }
     const bool use_svtav1hdr = cfg_.output_format == OutputFormat::avif &&
-                               settings.avif_encoder == AvifEncoderMode::svt;
+                               effective_settings.avif_encoder == AvifEncoderMode::svt;
     if (cfg_.visual_quality) {
       auto output_decoder = native_backend_detail::decoder_for_output_format(
-          cfg_.output_format, settings.resources.encoder_threads_per_file);
+          cfg_.output_format, effective_settings.resources.encoder_threads_per_file);
       const auto candidate_path = output_path.parent_path() /
                                   (output_path.filename().wstring() + L".candidate");
       if (use_svtav1hdr) {
@@ -1950,8 +2041,8 @@ export class NativeBackend final {
             return encode_svtav1hdr_in_process(image, settings, stop_token);
           }
         } svt_encoder;
-        auto search = encode_with_native_visual_quality_search(decoded.image, svt_encoder,
-                                                               *output_decoder, settings,
+        auto search = encode_with_native_visual_quality_search(*effective_image, svt_encoder,
+                                                               *output_decoder, effective_settings,
                                                                candidate_path, stop_token);
         if (!search) {
           return std::unexpected{search.error()};
@@ -1962,8 +2053,8 @@ export class NativeBackend final {
         return std::move(search->encode_result);
       }
 
-      auto search = encode_with_native_visual_quality_search(decoded.image, *encoder,
-                                                             *output_decoder, settings,
+      auto search = encode_with_native_visual_quality_search(*effective_image, *encoder,
+                                                             *output_decoder, effective_settings,
                                                              candidate_path, stop_token);
       if (!search) {
         return std::unexpected{search.error()};
@@ -1975,14 +2066,14 @@ export class NativeBackend final {
     }
 
     if (use_svtav1hdr) {
-      auto encoded = encode_svtav1hdr_in_process(decoded.image, settings, stop_token);
+      auto encoded = encode_svtav1hdr_in_process(*effective_image, effective_settings, stop_token);
       if (encoded) {
         encoded->diagnostics.timing.encode_seconds =
             native_backend_detail::elapsed_seconds(encode_started);
       }
       return encoded;
     }
-    auto encoded = encoder->encode(decoded.image, settings, stop_token);
+    auto encoded = encoder->encode(*effective_image, effective_settings, stop_token);
     if (encoded) {
       encoded->diagnostics.timing.encode_seconds =
           native_backend_detail::elapsed_seconds(encode_started);

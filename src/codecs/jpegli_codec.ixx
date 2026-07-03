@@ -584,7 +584,6 @@ export class JpegliImageEncoder final : public ImageEncoder {
       auto diagnostics = diagnostics_from_settings(settings);
       diagnostics.encoder_id = "jpegli";
       diagnostics.integration_mode = "jpegli-native";
-      diagnostics.speed_mapping = map_jpegli_speed(settings.speed);
       diagnostics.encoder_threads = 1;
       diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
       return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(*bytes),
