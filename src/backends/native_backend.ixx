@@ -5,6 +5,7 @@ module;
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -458,16 +459,84 @@ bool image_has_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
          }) != image.metadata.end();
 }
 
-bool hdr_to_sdr_fallback_needed(OutputFormat format, const ImageBuffer& image) noexcept {
+bool sdr_only_format_conversion_needed(OutputFormat format, const ImageBuffer& image) noexcept {
   return (format == OutputFormat::webp || format == OutputFormat::jpgli) &&
          (image.bit_depth > 8 ||
           (image.source_info && image.source_info->has_hdr_metadata));
 }
 
-std::expected<ImageBuffer, std::string> rgba16_to_rgba8_sdr(const ImageBuffer& image) {
-  if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 16 ||
-      image.planes.empty()) {
-    return std::unexpected{"HDR -> SDR fallback 需要 16-bit RGBA ImageBuffer。"};
+bool source_is_bt2020_pq(const ImageBuffer& image) noexcept {
+  return image.source_info &&
+         image.source_info->color_primaries == 9 &&
+         image.source_info->transfer_characteristics == 16;
+}
+
+bool source_is_wic_scrgb_hdr(const ImageBuffer& image) noexcept {
+  return image.source_info &&
+         image.source_info->color_metadata_source == "wic-scrgb-half-bt2020-pq";
+}
+
+double pq_code_to_linear(double code) noexcept {
+  constexpr double source_reference_nits = 80.0;
+  constexpr double pq_max_nits = 10000.0;
+  constexpr double m1 = 2610.0 / 16384.0;
+  constexpr double m2 = 2523.0 / 32.0;
+  constexpr double c1 = 3424.0 / 4096.0;
+  constexpr double c2 = 2413.0 / 128.0;
+  constexpr double c3 = 2392.0 / 128.0;
+  const double v = std::pow(std::clamp(code, 0.0, 1.0), 1.0 / m2);
+  const double y = std::pow(std::max(v - c1, 0.0) / (c2 - c3 * v), 1.0 / m1);
+  return (y * pq_max_nits) / source_reference_nits;
+}
+
+double tone_map_sdr_luma(double linear) noexcept {
+  linear = std::max(0.0, linear);
+  constexpr double knee = 0.75;
+  if (linear <= knee) {
+    return linear;
+  }
+  const double t = (linear - knee) / (1.0 - knee);
+  return knee + (1.0 - knee) * t / (1.0 + t);
+}
+
+double srgb_encode(double linear) noexcept {
+  linear = std::clamp(linear, 0.0, 1.0);
+  return linear <= 0.0031308 ? linear * 12.92
+                             : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055;
+}
+
+std::uint8_t unorm8_from_unit(double value) noexcept {
+  return static_cast<std::uint8_t>(std::clamp(std::lround(value * 255.0), 0l, 255l));
+}
+
+std::uint8_t rgba_sample_to_u8(const std::byte* row, std::size_t sample,
+                               int bit_depth) noexcept {
+  if (bit_depth > 8) {
+    const auto* row16 = reinterpret_cast<const std::uint16_t*>(row);
+    return static_cast<std::uint8_t>((static_cast<std::uint32_t>(row16[sample]) + 128u) / 257u);
+  }
+  return std::to_integer<std::uint8_t>(row[sample]);
+}
+
+double rgba_sample_to_unit(const std::byte* row, std::size_t sample,
+                           int bit_depth) noexcept {
+  if (bit_depth > 8) {
+    const auto* row16 = reinterpret_cast<const std::uint16_t*>(row);
+    return static_cast<double>(row16[sample]) / 65535.0;
+  }
+  return static_cast<double>(std::to_integer<std::uint8_t>(row[sample])) / 255.0;
+}
+
+struct SdrImageConversion {
+  ImageBuffer image{};
+  bool hdr_tone_mapped{};
+};
+
+std::expected<SdrImageConversion, std::string> rgba_to_rgba8_for_sdr_only_format(
+    const ImageBuffer& image) {
+  if (image.pixel_format != PixelFormat::rgba ||
+      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
+    return std::unexpected{"HDR/高位深 -> SDR fallback 需要 RGBA ImageBuffer。"};
   }
   const auto& plane = image.planes.front();
   const auto stride = decoder_common::checked_rgba_stride(image.width, "HDR -> SDR fallback");
@@ -483,24 +552,185 @@ std::expected<ImageBuffer, std::string> rgba16_to_rgba8_sdr(const ImageBuffer& i
   if (!rgba8) {
     return std::unexpected{rgba8.error()};
   }
+
+  const bool hdr_tone_mapped = source_is_bt2020_pq(image);
+  const bool display_referred_hdr = source_is_wic_scrgb_hdr(image);
   auto* out = reinterpret_cast<std::uint8_t*>(rgba8->data());
+  const std::size_t input_sample_stride = image.bit_depth > 8 ? sizeof(std::uint16_t) : 1;
+  const auto expected_input_stride = decoder_common::checked_rgba_stride(
+      image.width, "HDR -> SDR fallback", input_sample_stride);
+  if (!expected_input_stride) {
+    return std::unexpected{expected_input_stride.error()};
+  }
+  if (plane.stride < *expected_input_stride) {
+    return std::unexpected{"HDR -> SDR fallback 输入 stride 无效。"};
+  }
+
   for (std::size_t y = 0; y < image.height; ++y) {
-    const auto* row = reinterpret_cast<const std::uint16_t*>(
-        plane.bytes.data() + y * plane.stride);
+    const auto* src = plane.bytes.data() + y * plane.stride;
     auto* dst = out + y * *stride;
-    for (std::size_t x = 0; x < image.width * 4; ++x) {
-      dst[x] = static_cast<std::uint8_t>(
-          (static_cast<std::uint32_t>(row[x]) + 128u) / 257u);
+    for (std::size_t x = 0; x < image.width; ++x) {
+      const std::size_t sample = x * 4;
+      if (hdr_tone_mapped) {
+        const double r2020 = pq_code_to_linear(rgba_sample_to_unit(src, sample + 0, image.bit_depth));
+        const double g2020 = pq_code_to_linear(rgba_sample_to_unit(src, sample + 1, image.bit_depth));
+        const double b2020 = pq_code_to_linear(rgba_sample_to_unit(src, sample + 2, image.bit_depth));
+        const double x_xyz = 0.63695804830129 * r2020 + 0.14461690358621 * g2020 + 0.16888097516417 * b2020;
+        const double y_xyz = 0.26270021201127 * r2020 + 0.67799807151887 * g2020 + 0.05930171646986 * b2020;
+        const double z_xyz = 0.02807269304909 * g2020 + 1.06098505771079 * b2020;
+        double sr = 3.24096994190452 * x_xyz - 1.53738317757009 * y_xyz - 0.49861076029300 * z_xyz;
+        double sg = -0.96924363628087 * x_xyz + 1.87596750150772 * y_xyz + 0.04155505740718 * z_xyz;
+        double sb = 0.05563007969699 * x_xyz - 0.20397695888897 * y_xyz + 1.05697151424288 * z_xyz;
+        const double luma = 0.21263900587151 * std::max(0.0, sr) +
+                            0.71516867876776 * std::max(0.0, sg) +
+                            0.07219231536073 * std::max(0.0, sb);
+        if (luma > 0.000001) {
+          const double scale = tone_map_sdr_luma(luma) / luma;
+          sr *= scale;
+          sg *= scale;
+          sb *= scale;
+        }
+        if (display_referred_hdr) {
+          dst[sample + 0] = unorm8_from_unit(sr);
+          dst[sample + 1] = unorm8_from_unit(sg);
+          dst[sample + 2] = unorm8_from_unit(sb);
+        } else {
+          dst[sample + 0] = unorm8_from_unit(srgb_encode(sr));
+          dst[sample + 1] = unorm8_from_unit(srgb_encode(sg));
+          dst[sample + 2] = unorm8_from_unit(srgb_encode(sb));
+        }
+      } else {
+        dst[sample + 0] = rgba_sample_to_u8(src, sample + 0, image.bit_depth);
+        dst[sample + 1] = rgba_sample_to_u8(src, sample + 1, image.bit_depth);
+        dst[sample + 2] = rgba_sample_to_u8(src, sample + 2, image.bit_depth);
+      }
+      dst[sample + 3] = rgba_sample_to_u8(src, sample + 3, image.bit_depth);
     }
   }
+
+  ImageSourceInfo source_info{.pixel_format = PixelFormat::rgba,
+                              .bit_depth = 8,
+                              .color_primaries = 1,
+                              .transfer_characteristics = 13,
+                              .matrix_coefficients = 0,
+                              .color_range = 1,
+                              .has_hdr_metadata = false,
+                              .color_metadata_source = hdr_tone_mapped
+                                                         ? (display_referred_hdr ? "hdr-sdr-display" : "hdr-sdr-srgb")
+                                                         : "high-bit-depth-sdr"};
   auto fallback = decoder_common::make_rgba_image(
       image.width, image.height, std::move(*rgba8), image.alpha_mode,
-      "HDR -> SDR fallback", image.source_info, 8);
+      "HDR -> SDR fallback", source_info, 8);
   if (!fallback) {
     return std::unexpected{fallback.error()};
   }
-  fallback->metadata = image.metadata;
-  return fallback;
+  for (const auto& block : image.metadata) {
+    if (!hdr_tone_mapped || block.kind != MetadataKind::icc) {
+      fallback->metadata.push_back(block);
+    }
+  }
+  return SdrImageConversion{.image = std::move(*fallback),
+                            .hdr_tone_mapped = hdr_tone_mapped};
+}
+
+
+std::optional<std::pair<std::size_t, std::size_t>> limited_dimensions(
+    const ImageBuffer& image, const AppConfig& cfg) {
+  if (image.width == 0 || image.height == 0 ||
+      cfg.image_size_limit.mode == ImageSizeLimitMode::none) {
+    return std::nullopt;
+  }
+  double scale = 1.0;
+  const auto apply_edge = [&](std::optional<int> limit, std::size_t value) {
+    if (limit && value > static_cast<std::size_t>(*limit)) {
+      scale = std::min(scale, static_cast<double>(*limit) / static_cast<double>(value));
+    }
+  };
+  if (cfg.image_size_limit.mode == ImageSizeLimitMode::automatic) {
+    switch (cfg.output_format) {
+      case OutputFormat::avif:
+        apply_edge(32768, std::max(image.width, image.height));
+        break;
+      case OutputFormat::webp:
+        apply_edge(16383, std::max(image.width, image.height));
+        break;
+      case OutputFormat::jpgli:
+        apply_edge(65535, std::max(image.width, image.height));
+        break;
+      case OutputFormat::png:
+      case OutputFormat::jxl:
+      default:
+        break;
+    }
+  } else {
+    apply_edge(cfg.image_size_limit.max_width, image.width);
+    apply_edge(cfg.image_size_limit.max_height, image.height);
+    apply_edge(cfg.image_size_limit.max_long_edge, std::max(image.width, image.height));
+    apply_edge(cfg.image_size_limit.max_short_edge, std::min(image.width, image.height));
+  }
+  if (scale >= 1.0) {
+    return std::nullopt;
+  }
+  const auto width = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(image.width * scale)));
+  const auto height = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(image.height * scale)));
+  if (width == image.width && height == image.height) {
+    return std::nullopt;
+  }
+  return std::pair{width, height};
+}
+
+std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
+    const ImageBuffer& image, std::size_t new_width, std::size_t new_height) {
+  if (image.pixel_format != PixelFormat::rgba || image.planes.empty() ||
+      (image.bit_depth != 8 && image.bit_depth != 16)) {
+    return std::unexpected{"图片尺寸限制当前只支持 8/16-bit RGBA buffer。"};
+  }
+  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
+  const auto stride = decoder_common::checked_rgba_stride(new_width, "image size limit", bytes_per_sample);
+  if (!stride) {
+    return std::unexpected{stride.error()};
+  }
+  const auto bytes = decoder_common::checked_image_bytes(*stride, new_height, "image size limit");
+  if (!bytes) {
+    return std::unexpected{bytes.error()};
+  }
+  auto out = decoder_common::make_byte_buffer(*bytes, "image size limit");
+  if (!out) {
+    return std::unexpected{out.error()};
+  }
+  const auto& src = image.planes.front();
+  const auto pixel_bytes = 4 * bytes_per_sample;
+  for (std::size_t y = 0; y < new_height; ++y) {
+    const auto sy = std::min(image.height - 1, y * image.height / new_height);
+    const auto* src_row = src.bytes.data() + sy * src.stride;
+    auto* dst_row = out->data() + y * *stride;
+    for (std::size_t x = 0; x < new_width; ++x) {
+      const auto sx = std::min(image.width - 1, x * image.width / new_width);
+      std::ranges::copy_n(src_row + sx * pixel_bytes, pixel_bytes, dst_row + x * pixel_bytes);
+    }
+  }
+  auto resized = decoder_common::make_rgba_image(new_width, new_height, std::move(*out),
+                                                 image.alpha_mode, "image size limit",
+                                                 image.source_info, image.bit_depth);
+  if (!resized) {
+    return std::unexpected{resized.error()};
+  }
+  resized->metadata = image.metadata;
+  return resized;
+}
+
+std::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decoded,
+                                                       const AppConfig& cfg) {
+  const auto dims = limited_dimensions(decoded.image, cfg);
+  if (!dims) {
+    return {};
+  }
+  auto resized = resize_rgba_image_nearest(decoded.image, dims->first, dims->second);
+  if (!resized) {
+    return std::unexpected{resized.error()};
+  }
+  decoded.image = std::move(*resized);
+  return {};
 }
 
 std::string chroma_name_from_pixel_format(PixelFormat pixel_format) {
@@ -1674,6 +1904,9 @@ export class NativeBackend final {
     }
 
     const bool decoder_used_fallback = decoded->used_fallback;
+    if (auto limited = native_backend_detail::apply_image_size_limit(*decoded, cfg_); !limited) {
+      return std::unexpected{limited.error()};
+    }
     return DecodedInput{.decoded = std::move(*decoded),
                         .decoder_used_fallback = decoder_used_fallback};
   }
@@ -1737,14 +1970,6 @@ export class NativeBackend final {
                                                : "auto 需要保留非不透明 alpha，但 SVT 不支持 alpha";
           return prepare_failed(
               "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha off 或改用 AOM。",
-              prepared.settings);
-        }
-        if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth > 10) {
-          prepared.settings.bit_depth_reason = std::format(
-              "显式选择 SVT 但源图为 {}-bit，超过 SVT 10-bit 上限",
-              *prepared.settings.source_bit_depth);
-          return prepare_failed(
-              "svt-av1-hdr 只支持 8/10-bit；请改用 AOM 或先降位深。",
               prepared.settings);
         }
       }
@@ -1936,6 +2161,18 @@ export class NativeBackend final {
           return prepare_failed(alpha_decision.error(), prepared.settings);
         }
         native_backend_detail::populate_regular_color_decision(prepared.settings, cfg_);
+        if (cfg_.output_format == OutputFormat::png && !cfg_.strip_metadata &&
+            prepared.settings.applied_icc != "kept" && decoded.image.source_info &&
+            (decoded.image.source_info->color_primaries ||
+             decoded.image.source_info->transfer_characteristics)) {
+          prepared.settings.applied_color_primaries = decoded.image.source_info->color_primaries;
+          prepared.settings.applied_transfer_characteristics = decoded.image.source_info->transfer_characteristics;
+          prepared.settings.applied_matrix_coefficients = 0;
+          prepared.settings.applied_color_range = decoded.image.source_info->color_range.value_or(1);
+          prepared.settings.applied_hdr_metadata = decoded.image.source_info->has_hdr_metadata ? "kept" : "none";
+          prepared.settings.color_metadata_source = "png-cicp";
+          prepared.settings.color_reason = "使用 PNG cICP 写入源图色彩/HDR 元数据";
+        }
         if (cfg_.output_format == OutputFormat::png) {
           if (cfg_.bit_depth && *cfg_.bit_depth != decoded.image.bit_depth) {
             return prepare_failed(
@@ -2001,21 +2238,29 @@ export class NativeBackend final {
     }
     auto effective_settings = settings;
     const ImageBuffer* effective_image = &decoded.image;
-    std::optional<ImageBuffer> sdr_fallback;
-    if (native_backend_detail::hdr_to_sdr_fallback_needed(cfg_.output_format,
-                                                          decoded.image)) {
-      if (decoded.image.bit_depth > 8) {
-        auto converted = native_backend_detail::rgba16_to_rgba8_sdr(decoded.image);
-        if (!converted) {
-          return std::unexpected{converted.error()};
-        }
-        sdr_fallback = std::move(*converted);
-        effective_image = &*sdr_fallback;
+    std::optional<native_backend_detail::SdrImageConversion> sdr_fallback;
+    if (native_backend_detail::sdr_only_format_conversion_needed(cfg_.output_format,
+                                                                 decoded.image)) {
+      auto converted = native_backend_detail::rgba_to_rgba8_for_sdr_only_format(decoded.image);
+      if (!converted) {
+        return std::unexpected{converted.error()};
       }
+      sdr_fallback = std::move(*converted);
+      effective_image = &sdr_fallback->image;
       effective_settings.bit_depth = 8;
-      effective_settings.applied_hdr_metadata = "sdr-fallback";
-      effective_settings.encoder_fallback_reason = "HDR -> SDR fallback";
-      effective_settings.color_reason = "目标格式不支持 HDR，已自动 fallback SDR";
+      if (sdr_fallback->hdr_tone_mapped) {
+        effective_settings.applied_color_primaries = 1;
+        effective_settings.applied_transfer_characteristics = 13;
+        effective_settings.applied_matrix_coefficients = 0;
+        effective_settings.applied_color_range = 1;
+        effective_settings.applied_icc = "stripped-hdr-sdr";
+        effective_settings.applied_hdr_metadata = "sdr-tone-map";
+        effective_settings.color_metadata_source = "hdr-sdr-srgb";
+        effective_settings.encoder_fallback_reason = "HDR -> SDR tone-map";
+        effective_settings.color_reason = "目标格式不支持 HDR，已转换为 SDR sRGB";
+      } else {
+        effective_settings.bit_depth_reason = "目标格式只支持 8-bit，已按 SDR 缩减位深";
+      }
     }
     const bool use_svtav1hdr = cfg_.output_format == OutputFormat::avif &&
                                effective_settings.avif_encoder == AvifEncoderMode::svt;

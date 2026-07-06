@@ -166,6 +166,27 @@ int main() {
     return fail("CLI shell conversion inputs were not parsed and de-duplicated.");
   }
 
+  parsed = awj::parse_arguments({L"--collision", L"number"});
+  if (!parsed || parsed->config.collision_mode != awj::CollisionMode::suffix_number) {
+    return fail("CLI numbered collision mode did not parse.");
+  }
+
+  parsed = awj::parse_arguments({L"--image-size-limit", L"manual", L"--max-width", L"1600",
+                                 L"--max-height", L"1200", L"--max-long-edge", L"2000",
+                                 L"--max-short-edge", L"900"});
+  if (!parsed || parsed->config.image_size_limit.mode != awj::ImageSizeLimitMode::manual ||
+      parsed->config.image_size_limit.max_width.value_or(0) != 1600 ||
+      parsed->config.image_size_limit.max_height.value_or(0) != 1200 ||
+      parsed->config.image_size_limit.max_long_edge.value_or(0) != 2000 ||
+      parsed->config.image_size_limit.max_short_edge.value_or(0) != 900) {
+    return fail("CLI image size limit did not parse.");
+  }
+
+  parsed = awj::parse_arguments({L"--suffix-number"});
+  if (!parsed || parsed->config.collision_mode != awj::CollisionMode::suffix_number) {
+    return fail("CLI --suffix-number did not parse.");
+  }
+
   parsed = awj::parse_arguments({L"C:\\img\\a.webp"});
   if (parsed || parsed.error().find("未知参数") == std::string::npos) {
     return fail("normal CLI mode should still reject positional inputs.");

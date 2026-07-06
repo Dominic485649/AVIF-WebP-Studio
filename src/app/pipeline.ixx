@@ -1007,7 +1007,8 @@ MemoryStatus current_memory_status() noexcept {
 
 std::expected<BatchSummary, std::string> run_batch(
     const AppConfig& cfg, ProgressCallback progress = {},
-    std::stop_token stop_token = {}) {
+    std::stop_token stop_token = {},
+    std::span<const std::filesystem::path> input_paths = {}) {
   try {
     if (!cfg.studio_large_action.empty()) {
       if (auto valid = validate_config(cfg); !valid) {
@@ -1112,7 +1113,9 @@ std::expected<BatchSummary, std::string> run_batch(
     const auto output_dir = output_dir_for(cfg);
 
     std::vector<ImageFile> files;
-    if (auto scanned = scan_images(cfg, files); !scanned) {
+    if (auto scanned = input_paths.empty() ? scan_images(cfg, files)
+                                           : scan_images(cfg, input_paths, files);
+        !scanned) {
       return std::unexpected{scanned.error()};
     }
 
@@ -1524,7 +1527,17 @@ std::expected<BatchSummary, std::string> run_batch(
 }
 
 // 顶层流水线返回进程退出码；单张图片错误会落到 CSV，不会让程序闪退。
+int run_pipeline(const AppConfig& cfg,
+                 std::span<const std::filesystem::path> input_paths,
+                 std::stop_token stop_token);
+
 int run_pipeline(const AppConfig& cfg, std::stop_token stop_token = {}) {
+  return run_pipeline(cfg, std::span<const std::filesystem::path>{}, stop_token);
+}
+
+int run_pipeline(const AppConfig& cfg,
+                 std::span<const std::filesystem::path> input_paths,
+                 std::stop_token stop_token) {
   std::mutex print_mutex;
   const auto summary = run_batch(
       cfg,
@@ -1535,7 +1548,8 @@ int run_pipeline(const AppConfig& cfg, std::stop_token stop_token = {}) {
         }
         print_line(event.text);
       },
-      stop_token);
+      stop_token,
+      input_paths);
   if (!summary) {
     print_line(std::format("[FAIL] {}", summary.error()));
     return 1;

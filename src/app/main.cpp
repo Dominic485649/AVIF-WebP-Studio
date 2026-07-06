@@ -6,11 +6,26 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cwchar>
 
 int run_cli(int argc, wchar_t* argv[]);
 int run_studio_ui();
+int run_shell_convert_window(int argc, wchar_t* argv[]);
 
 namespace {
+
+void enable_process_dpi_awareness() noexcept {
+  const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (user32 == nullptr) {
+    return;
+  }
+  using SetDpiAwarenessContext = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+  auto set_dpi_awareness_context = reinterpret_cast<SetDpiAwarenessContext>(
+      GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+  if (set_dpi_awareness_context != nullptr) {
+    set_dpi_awareness_context(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  }
+}
 
 void release_explorer_console_if_lonely() {
   std::array<DWORD, 2> process_ids{};
@@ -24,9 +39,17 @@ void release_explorer_console_if_lonely() {
 }  // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+  enable_process_dpi_awareness();
   if (argc <= 1) {
     release_explorer_console_if_lonely();
     return run_studio_ui();
+  }
+
+  for (int i = 1; i < argc; ++i) {
+    if (std::wcscmp(argv[i], L"--shell-window") == 0) {
+      release_explorer_console_if_lonely();
+      return run_shell_convert_window(argc, argv);
+    }
   }
 
   std::setvbuf(stdout, nullptr, _IONBF, 0);

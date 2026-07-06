@@ -127,6 +127,74 @@ int main() {
     return fail("suffix collision did not create two distinct outputs.");
   }
 
+  const auto numbered_dir = root / "numbered";
+  std::filesystem::create_directories(numbered_dir, ec);
+  if (ec) {
+    return fail("failed to create numbered dir.");
+  }
+  const auto numbered_input = numbered_dir / "name.webp";
+  if (auto ok = write_webp(numbered_input, std::byte{32}); !ok) {
+    return fail(ok.error());
+  }
+  awj::AppConfig number_cfg = awj::default_app_config();
+  number_cfg.input_path = numbered_input;
+  number_cfg.output_dir = numbered_dir;
+  number_cfg.output_format = awj::OutputFormat::webp;
+  number_cfg.collision_mode = awj::CollisionMode::suffix_number;
+  number_cfg.max_jobs = 1;
+  number_cfg.quality = 100;
+  auto number_summary = awj::run_batch(number_cfg);
+  if (!number_summary || number_summary->ok_count != 1 ||
+      !std::filesystem::exists(numbered_dir / "name(1).webp")) {
+    return fail(number_summary ? "numbered collision did not create name(1)."
+                               : number_summary.error());
+  }
+  number_cfg.input_path = numbered_dir / "name(1).webp";
+  number_summary = awj::run_batch(number_cfg);
+  if (!number_summary || number_summary->ok_count != 1 ||
+      !std::filesystem::exists(numbered_dir / "name(2).webp") ||
+      std::filesystem::exists(numbered_dir / "name(1)(1).webp")) {
+    return fail(number_summary ? "numbered collision did not advance existing suffix."
+                               : number_summary.error());
+  }
+
+  const auto short_dir = root / "short-path";
+  std::filesystem::create_directories(short_dir, ec);
+  if (ec) {
+    return fail("failed to create short-path dir.");
+  }
+  const auto long_webp = short_dir / "20B07A very long filename that must stay complete.webp";
+  if (auto ok = write_webp(long_webp, std::byte{16}); !ok) {
+    return fail(ok.error());
+  }
+  const DWORD needed = GetShortPathNameW(long_webp.c_str(), nullptr, 0);
+  if (needed > 0) {
+    std::wstring short_buffer(static_cast<std::size_t>(needed) + 1, L'\0');
+    const DWORD written = GetShortPathNameW(
+        long_webp.c_str(), short_buffer.data(), static_cast<DWORD>(short_buffer.size()));
+    if (written > 0 && written < short_buffer.size()) {
+      short_buffer.resize(written);
+      const std::filesystem::path short_webp{short_buffer};
+      if (short_webp.native() != long_webp.native()) {
+        const auto short_out = root / "short-out";
+        awj::AppConfig short_cfg = awj::default_app_config();
+        short_cfg.input_path = short_webp;
+        short_cfg.output_dir = short_out;
+        short_cfg.output_format = awj::OutputFormat::webp;
+        short_cfg.collision_mode = awj::CollisionMode::suffix_number;
+        short_cfg.max_jobs = 1;
+        short_cfg.quality = 100;
+        auto short_summary = awj::run_batch(short_cfg);
+        if (!short_summary || short_summary->ok_count != 1 ||
+            !std::filesystem::exists(
+                short_out / "20B07A very long filename that must stay complete.webp")) {
+          return fail(short_summary ? "short WEBP path did not keep long output name."
+                                    : short_summary.error());
+        }
+      }
+    }
+  }
+
   const auto csv = read_text(output_dir / "summary.csv");
   if (csv.find("same-a.webp") == std::string::npos ||
       csv.find(root.string()) != std::string::npos) {

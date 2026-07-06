@@ -39,10 +39,19 @@ enum class Preset {
 enum class OutputFormat { png, avif, webp, jxl, jpgli };
 enum class BackendMode { native };
 enum class OutputPolicy { normal, shell };
-enum class CollisionMode { overwrite, skip, suffix_time, suffix_random };
+enum class CollisionMode { overwrite, skip, suffix_time, suffix_random, suffix_number };
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
 enum class AvifEncoderMode { automatic, svt, aom, zenrav1e };
 enum class AlphaModePolicy { force, automatic, off };
+enum class ImageSizeLimitMode { automatic, none, manual };
+
+struct ImageSizeLimit {
+  ImageSizeLimitMode mode{ImageSizeLimitMode::automatic};
+  std::optional<int> max_width{};
+  std::optional<int> max_height{};
+  std::optional<int> max_long_edge{};
+  std::optional<int> max_short_edge{};
+};
 
 int default_max_jobs() noexcept {
   // 自动并发不是“吃满 CPU”，而是给桌面、UI 线程和编码器内部线程预留余量。
@@ -140,6 +149,8 @@ struct AppConfig {
   bool strip_metadata{false};
   bool write_summary{false};
   bool write_log{false};
+  bool shell_close_on_finish{true};
+  ImageSizeLimit image_size_limit{};
   std::wstring studio_cancel_event_name{};
   std::wstring studio_large_action{};
 };
@@ -455,6 +466,10 @@ std::optional<CollisionMode> parse_collision(std::wstring_view value) {
   if (lower == L"random" || lower == L"suffix-random" || lower == L"随机") {
     return CollisionMode::suffix_random;
   }
+  if (lower == L"number" || lower == L"suffix-number" ||
+      lower == L"numeric" || lower == L"copy" || lower == L"编号") {
+    return CollisionMode::suffix_number;
+  }
   return std::nullopt;
 }
 
@@ -533,6 +548,20 @@ std::string alpha_policy_name(AlphaModePolicy policy) {
     default:
       return "auto";
   }
+}
+
+std::optional<ImageSizeLimitMode> parse_image_size_limit_mode(std::wstring_view value) {
+  const auto lower = lower_copy(value);
+  if (lower == L"auto" || lower == L"automatic" || lower == L"common" || lower == L"自动") {
+    return ImageSizeLimitMode::automatic;
+  }
+  if (lower == L"none" || lower == L"unlimited" || lower == L"off" || lower == L"无限制") {
+    return ImageSizeLimitMode::none;
+  }
+  if (lower == L"manual" || lower == L"custom" || lower == L"手动") {
+    return ImageSizeLimitMode::manual;
+  }
+  return std::nullopt;
 }
 
 std::string avif_encoder_name(AvifEncoderMode mode) {
@@ -837,12 +866,14 @@ std::string help_text() {
   -p, --preset <名称>         fast / balanced / best / extreme；未指定时为自定义默认值；设置默认质量和编码超时，显式 --quality 可覆盖质量
   -t, --threads <auto|数量>   并发数量；auto/jthread/自动 使用 CPU 线程数
   --memory-limit <auto|大小>  内存限制；auto 为总内存一半与可用内存 80% 的较小值，可用 4GiB/4096MiB
+  --image-size-limit <auto|none|manual> 图片边长限制；manual 可配合 --max-width/--max-height/--max-long-edge/--max-short-edge
   -m, --template <模板>       输出命名，最多 512 个字符，默认 @OUTPUT_TEMPLATE@
   --speed <0-10>             统一速度参数；支持 AVIF/WebP/JXL；JPGLI/PNG 不支持
   --allow-wic-fallback       允许 native 解码器失败后使用 WIC 兜底，默认开启
   --no-wic-fallback          禁用 WIC 解码兜底
+  --close-on-finish / --no-close-on-finish 右键转换窗口完成后是否自动关闭
   --option <key=value>       预留 native 高级选项，可重复；当前版本只记录与校验
-  --collision <策略>          overwrite / skip / time / random，默认 overwrite
+  --collision <策略>          overwrite / skip / number / time / random，默认 overwrite
   --timeout-encode <分钟>     单张图片编码超时，默认 @ENCODE_TIMEOUT@
   --strip                    去除 EXIF/ICC 等元数据，通常更小且更隐私
   --keep-metadata            保留源元数据，取消 --strip
@@ -852,6 +883,7 @@ std::string help_text() {
   --no-log                   不生成日志文件
   --skip-existing            已有输出时跳过
   --overwrite                已有输出时覆盖，默认行为
+  --suffix-number            输出名按 name(1)、name(2) 避免重名
   --suffix-time              输出名追加时间后缀
   --suffix-random            输出名追加随机后缀
   --help                     显示帮助
@@ -1290,6 +1322,71 @@ std::expected<ParseResult, std::string> parse_arguments(
       continue;
     }
 
+    if (lower == L"--image-size-limit") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto mode = config_detail::parse_image_size_limit_mode(*value);
+      if (!mode) {
+        return std::unexpected{"image-size-limit 只支持 auto、none 或 manual。"};
+      }
+      cfg.image_size_limit.mode = *mode;
+      continue;
+    }
+
+    if (lower == L"--max-width" || lower == L"--image-max-width") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-width");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.image_size_limit.max_width = *parsed;
+      continue;
+    }
+
+    if (lower == L"--max-height" || lower == L"--image-max-height") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-height");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.image_size_limit.max_height = *parsed;
+      continue;
+    }
+
+    if (lower == L"--max-long-edge" || lower == L"--image-max-long-edge") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-long-edge");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.image_size_limit.max_long_edge = *parsed;
+      continue;
+    }
+
+    if (lower == L"--max-short-edge" || lower == L"--image-max-short-edge") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-short-edge");
+      if (!parsed) {
+        return std::unexpected{parsed.error()};
+      }
+      cfg.image_size_limit.max_short_edge = *parsed;
+      continue;
+    }
+
     if (lower == L"--speed") {
       const auto value = require_value(i, args[i]);
       if (!value) {
@@ -1310,6 +1407,16 @@ std::expected<ParseResult, std::string> parse_arguments(
 
     if (lower == L"--no-wic-fallback") {
       cfg.allow_wic_fallback = false;
+      continue;
+    }
+
+    if (lower == L"--close-on-finish") {
+      cfg.shell_close_on_finish = true;
+      continue;
+    }
+
+    if (lower == L"--no-close-on-finish") {
+      cfg.shell_close_on_finish = false;
       continue;
     }
 
@@ -1511,7 +1618,7 @@ std::expected<ParseResult, std::string> parse_arguments(
       const auto collision = config_detail::parse_collision(*value);
       if (!collision) {
         return std::unexpected{std::format(
-            "冲突策略不支持: {}。可选值：overwrite、skip、time、random。",
+            "冲突策略不支持: {}。可选值：overwrite、skip、number、time、random。",
             config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.collision_mode = *collision;
@@ -1535,6 +1642,11 @@ std::expected<ParseResult, std::string> parse_arguments(
 
     if (lower == L"--skip-existing") {
       cfg.collision_mode = CollisionMode::skip;
+      continue;
+    }
+
+    if (lower == L"--suffix-number") {
+      cfg.collision_mode = CollisionMode::suffix_number;
       continue;
     }
 

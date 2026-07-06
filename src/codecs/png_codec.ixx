@@ -46,6 +46,154 @@ std::uint32_t read_be_u32(std::span<const std::byte> bytes,
          std::to_integer<std::uint32_t>(bytes[offset + 3]);
 }
 
+bool chunk_type_is(std::span<const std::byte> header, std::string_view type) noexcept;
+
+void append_be_u32(std::vector<std::byte>& out, std::uint32_t value) {
+  out.push_back(std::byte{static_cast<unsigned char>((value >> 24) & 0xffu)});
+  out.push_back(std::byte{static_cast<unsigned char>((value >> 16) & 0xffu)});
+  out.push_back(std::byte{static_cast<unsigned char>((value >> 8) & 0xffu)});
+  out.push_back(std::byte{static_cast<unsigned char>(value & 0xffu)});
+}
+
+std::uint32_t png_crc_update(std::uint32_t crc, std::byte value) noexcept {
+  crc ^= std::to_integer<std::uint8_t>(value);
+  for (int k = 0; k < 8; ++k) {
+    crc = (crc & 1u) != 0u ? 0xedb88320u ^ (crc >> 1) : crc >> 1;
+  }
+  return crc;
+}
+
+std::uint32_t png_chunk_crc(std::string_view type,
+                            std::span<const std::byte> payload) noexcept {
+  std::uint32_t crc = 0xffffffffu;
+  for (const char ch : type) {
+    crc = png_crc_update(crc, std::byte{static_cast<unsigned char>(ch)});
+  }
+  for (const auto value : payload) {
+    crc = png_crc_update(crc, value);
+  }
+  return crc ^ 0xffffffffu;
+}
+
+void append_png_chunk(std::vector<std::byte>& out, std::string_view type,
+                      std::span<const std::byte> payload) {
+  append_be_u32(out, static_cast<std::uint32_t>(payload.size()));
+  for (const char ch : type) {
+    out.push_back(std::byte{static_cast<unsigned char>(ch)});
+  }
+  out.insert(out.end(), payload.begin(), payload.end());
+  append_be_u32(out, png_chunk_crc(type, payload));
+}
+
+struct PngColorChunks {
+  std::optional<int> color_primaries{};
+  std::optional<int> transfer_characteristics{};
+  std::optional<int> matrix_coefficients{};
+  std::optional<int> color_range{};
+  std::optional<HdrContentLightMetadata> content_light{};
+  bool has_cicp{};
+};
+
+std::expected<PngColorChunks, std::string> inspect_color_chunks(
+    std::span<const std::byte> bytes, std::string_view source_name) {
+  PngColorChunks chunks{};
+  if (bytes.size() < 8 ||
+      png_sig_cmp(reinterpret_cast<png_const_bytep>(bytes.data()), 0, 8) != 0) {
+    return std::unexpected{std::format("PNG 签名无效: {}", source_name)};
+  }
+  std::size_t offset = 8;
+  while (offset + 12 <= bytes.size()) {
+    const auto chunk_size = read_be_u32(bytes, offset);
+    if (chunk_size > bytes.size() - offset - 12) {
+      return std::unexpected{std::format("PNG 文件截断: {}", source_name)};
+    }
+    const auto header = bytes.subspan(offset, 8);
+    const auto data_offset = offset + 8;
+    if (chunk_type_is(header, "cICP") && chunk_size == 4) {
+      chunks.color_primaries = std::to_integer<int>(bytes[data_offset]);
+      chunks.transfer_characteristics = std::to_integer<int>(bytes[data_offset + 1]);
+      chunks.matrix_coefficients = std::to_integer<int>(bytes[data_offset + 2]);
+      chunks.color_range = std::to_integer<int>(bytes[data_offset + 3]) != 0 ? 1 : 0;
+      chunks.has_cicp = true;
+    } else if (chunk_type_is(header, "cLLI") && chunk_size == 8) {
+      const auto max_cll = read_be_u32(bytes, data_offset) / 10000u;
+      const auto max_fall = read_be_u32(bytes, data_offset + 4) / 10000u;
+      chunks.content_light = HdrContentLightMetadata{
+          .max_cll = static_cast<std::uint16_t>(std::min<std::uint32_t>(max_cll, 65535u)),
+          .max_pall = static_cast<std::uint16_t>(std::min<std::uint32_t>(max_fall, 65535u))};
+    }
+    if (chunk_type_is(header, "IDAT")) {
+      break;
+    }
+    offset += 12 + chunk_size;
+  }
+  return chunks;
+}
+
+std::expected<void, std::string> insert_png_chunks_after_ihdr(
+    std::vector<std::byte>& png_bytes, std::vector<std::byte> chunks) {
+  if (chunks.empty()) {
+    return {};
+  }
+  if (png_bytes.size() < 33 ||
+      png_sig_cmp(reinterpret_cast<png_const_bytep>(png_bytes.data()), 0, 8) != 0) {
+    return std::unexpected{"PNG encoder 输出签名无效，无法写入 cICP/cLLI。"};
+  }
+  const auto ihdr_size = read_be_u32(png_bytes, 8);
+  if (ihdr_size != 13 || !chunk_type_is(std::span<const std::byte>{png_bytes.data(), png_bytes.size()}.subspan(8, 8), "IHDR")) {
+    return std::unexpected{"PNG encoder 输出缺少 IHDR，无法写入 cICP/cLLI。"};
+  }
+  const std::size_t insert_at = 8 + 12 + ihdr_size;
+  if (insert_at > png_bytes.size()) {
+    return std::unexpected{"PNG encoder 输出截断，无法写入 cICP/cLLI。"};
+  }
+  png_bytes.insert(png_bytes.begin() + static_cast<std::ptrdiff_t>(insert_at),
+                   chunks.begin(), chunks.end());
+  return {};
+}
+
+std::expected<void, std::string> add_png_hdr_chunks(
+    std::vector<std::byte>& png_bytes,
+    const ImageBuffer& image,
+    const NativeEncodeSettings& settings) {
+  if (settings.strip_metadata || settings.applied_icc == "kept") {
+    return {};
+  }
+  const auto primaries = settings.applied_color_primaries
+                             ? settings.applied_color_primaries
+                             : (image.source_info ? image.source_info->color_primaries : std::optional<int>{});
+  const auto transfer = settings.applied_transfer_characteristics
+                            ? settings.applied_transfer_characteristics
+                            : (image.source_info ? image.source_info->transfer_characteristics : std::optional<int>{});
+  if (!primaries || !transfer) {
+    return {};
+  }
+  const int range = settings.applied_color_range.value_or(
+      image.source_info && image.source_info->color_range ? *image.source_info->color_range : 1);
+  if (*primaries < 0 || *primaries > 255 || *transfer < 0 || *transfer > 255) {
+    return std::unexpected{"PNG cICP 色彩字段超过 1-byte 范围。"};
+  }
+  std::vector<std::byte> chunks;
+  const int matrix = 0;
+  if (matrix < 0 || matrix > 255) {
+    return std::unexpected{"PNG cICP matrix 字段超过 1-byte 范围。"};
+  }
+  std::array<std::byte, 4> cicp{
+      std::byte{static_cast<unsigned char>(*primaries)},
+      std::byte{static_cast<unsigned char>(*transfer)},
+      std::byte{static_cast<unsigned char>(matrix)},
+      std::byte{static_cast<unsigned char>(range != 0 ? 1 : 0)}};
+  append_png_chunk(chunks, "cICP", cicp);
+  if (image.source_info && image.source_info->content_light) {
+    std::vector<std::byte> clli;
+    clli.reserve(8);
+    append_be_u32(clli, static_cast<std::uint32_t>(image.source_info->content_light->max_cll) * 10000u);
+    append_be_u32(clli, static_cast<std::uint32_t>(image.source_info->content_light->max_pall) * 10000u);
+    append_png_chunk(chunks, "cLLI", clli);
+  }
+  return insert_png_chunks_after_ihdr(png_bytes, std::move(chunks));
+}
+
 bool chunk_type_is(std::span<const std::byte> header, std::string_view type) noexcept {
   return header.size() >= 8 &&
          header[4] == std::byte{static_cast<unsigned char>(type[0])} &&
@@ -487,9 +635,6 @@ export class PngImageDecoder final : public ImageDecoder {
       const bool source_has_alpha = (color_type & PNG_COLOR_MASK_ALPHA) != 0 ||
                                     png_get_valid(png.get(), info.get(), PNG_INFO_tRNS) != 0;
 
-      if (bit_depth == 16) {
-        png_set_strip_16(png.get());
-      }
       if (color_type == PNG_COLOR_TYPE_PALETTE) {
         png_set_palette_to_rgb(png.get());
       }
@@ -503,14 +648,19 @@ export class PngImageDecoder final : public ImageDecoder {
         png_set_gray_to_rgb(png.get());
       }
       if ((color_type & PNG_COLOR_MASK_ALPHA) == 0 && !png_get_valid(png.get(), info.get(), PNG_INFO_tRNS)) {
-        png_set_filler(png.get(), 0xff, PNG_FILLER_AFTER);
+        png_set_filler(png.get(), bit_depth == 16 ? 0xffff : 0xff, PNG_FILLER_AFTER);
       }
       png_set_interlace_handling(png.get());
       png_read_update_info(png.get(), info.get());
+      const int output_bit_depth = bit_depth == 16 ? 16 : 8;
+      if (output_bit_depth == 16 && std::endian::native == std::endian::little) {
+        png_set_swap(png.get());
+      }
 
       std::size_t stride = 0;
       {
-        const auto checked_stride = decoder_common::checked_rgba_stride(width, "PNG decoder");
+        const auto checked_stride = decoder_common::checked_rgba_stride(
+            width, "PNG decoder", output_bit_depth > 8 ? 2 : 1);
         if (!checked_stride) {
           return std::unexpected{checked_stride.error()};
         }
@@ -569,11 +719,33 @@ export class PngImageDecoder final : public ImageDecoder {
         context->xmp_metadata = std::move(*xmp_metadata);
       }
 
+      auto color_chunks = png_detail::inspect_color_chunks(*bytes, display_path_for_user(path));
+      if (!color_chunks) {
+        return std::unexpected{color_chunks.error()};
+      }
+      ImageSourceInfo source_info{.pixel_format = png_detail::source_pixel_format_for_png(color_type),
+                                  .bit_depth = bit_depth};
+      if (color_chunks->has_cicp) {
+        source_info.color_primaries = color_chunks->color_primaries;
+        source_info.transfer_characteristics = color_chunks->transfer_characteristics;
+        source_info.matrix_coefficients = color_chunks->matrix_coefficients;
+        source_info.color_range = color_chunks->color_range;
+        source_info.has_hdr_metadata = source_info.transfer_characteristics == 16 ||
+                                       source_info.transfer_characteristics == 18;
+        source_info.color_metadata_source = "png-cicp";
+      }
+      if (color_chunks->content_light) {
+        source_info.content_light = color_chunks->content_light;
+        source_info.has_hdr_metadata = true;
+        if (source_info.color_metadata_source.empty()) {
+          source_info.color_metadata_source = "png-clli";
+        }
+      }
+
       auto image = decoder_common::make_rgba_image(
           width, height, std::move(context->rgba),
           source_has_alpha ? AlphaMode::straight : AlphaMode::none, "PNG decoder",
-          ImageSourceInfo{.pixel_format = png_detail::source_pixel_format_for_png(color_type),
-                          .bit_depth = bit_depth});
+          source_info, output_bit_depth);
       if (!image) {
         return std::unexpected{image.error()};
       }
@@ -676,6 +848,10 @@ export class PngImageEncoder final : public ImageEncoder {
       }
       png_write_image(png.get(), rows.data());
       png_write_end(png.get(), nullptr);
+      if (auto hdr_chunks = png_detail::add_png_hdr_chunks(state.bytes, image, settings);
+          !hdr_chunks) {
+        return std::unexpected{hdr_chunks.error()};
+      }
       if (state.bytes.empty()) {
         return std::unexpected{"PNG encoder 输出失败。"};
       }

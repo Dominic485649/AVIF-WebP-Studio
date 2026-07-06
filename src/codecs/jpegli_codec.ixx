@@ -200,15 +200,15 @@ std::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
   if (settings.strip_metadata) {
     return {};
   }
-  if (!settings.jpegli_xyb) {
+  if (!settings.jpegli_xyb && settings.applied_icc == "kept") {
     if (const auto* icc = first_metadata(image, MetadataKind::icc); icc != nullptr) {
-    if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes ||
-        icc->bytes.size() > std::numeric_limits<unsigned int>::max()) {
-      return std::unexpected{"JPGLI ICC profile 超过运行时上限。"};
-    }
-    jpegli_write_icc_profile(&cinfo,
-                             reinterpret_cast<const JOCTET*>(icc->bytes.data()),
-                             static_cast<unsigned int>(icc->bytes.size()));
+      if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes ||
+          icc->bytes.size() > std::numeric_limits<unsigned int>::max()) {
+        return std::unexpected{"JPGLI ICC profile 超过运行时上限。"};
+      }
+      jpegli_write_icc_profile(&cinfo,
+                               reinterpret_cast<const JOCTET*>(icc->bytes.data()),
+                               static_cast<unsigned int>(icc->bytes.size()));
     }
   }
   if (const auto* exif = first_metadata(image, MetadataKind::exif); exif != nullptr) {

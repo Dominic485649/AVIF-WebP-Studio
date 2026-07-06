@@ -356,9 +356,18 @@ std::expected<void, std::string> apply_color_profile(JxlEncoder* encoder,
   }
 
   JxlColorEncoding color{};
-  JxlColorEncodingSetToSRGB(&color, JXL_FALSE);
+  if (image.source_info && image.source_info->color_primaries == 9 &&
+      image.source_info->transfer_characteristics == 16) {
+    color.color_space = JXL_COLOR_SPACE_RGB;
+    color.white_point = JXL_WHITE_POINT_D65;
+    color.primaries = JXL_PRIMARIES_2100;
+    color.transfer_function = JXL_TRANSFER_FUNCTION_PQ;
+    color.rendering_intent = JXL_RENDERING_INTENT_RELATIVE;
+  } else {
+    JxlColorEncodingSetToSRGB(&color, JXL_FALSE);
+  }
   if (JxlEncoderSetColorEncoding(encoder, &color) != JXL_ENC_SUCCESS) {
-    return std::unexpected{"设置 JXL sRGB 色彩信息失败。"};
+    return std::unexpected{"设置 JXL 色彩信息失败。"};
   }
   return {};
 }

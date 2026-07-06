@@ -31,6 +31,7 @@ module;
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -454,6 +455,29 @@ std::string display_path_for_user(const fs::path& path) {
     return path_to_utf8(root);
   }
   return path_to_utf8(path);
+}
+
+fs::path long_existing_path_or_self(const fs::path& path) {
+  try {
+    const auto native = path.wstring();
+    if (native.empty()) {
+      return path;
+    }
+    const DWORD needed = GetLongPathNameW(native.c_str(), nullptr, 0);
+    if (needed == 0) {
+      return path;
+    }
+    std::wstring buffer(static_cast<std::size_t>(needed) + 1, L'\0');
+    const DWORD length = GetLongPathNameW(
+        native.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) {
+      return path;
+    }
+    buffer.resize(length);
+    return fs::path{std::move(buffer)};
+  } catch (...) {
+    return path;
+  }
 }
 
 std::string redact_path_for_user(std::string message, const fs::path& path) {
@@ -1045,6 +1069,38 @@ std::optional<std::wstring> scan_output_directory_key(
 
 std::atomic_uint64_t output_collision_counter{};
 
+struct NumberedCollisionStem {
+  std::wstring base;
+  std::uint64_t next{1};
+};
+
+NumberedCollisionStem numbered_collision_stem(std::wstring stem) {
+  if (stem.ends_with(L')')) {
+    const auto open = stem.find_last_of(L'(');
+    if (open != std::wstring::npos && open + 1 < stem.size() - 1) {
+      std::uint64_t value = 0;
+      bool digits = true;
+      for (std::size_t i = open + 1; i + 1 < stem.size(); ++i) {
+        const wchar_t ch = stem[i];
+        if (ch < L'0' || ch > L'9') {
+          digits = false;
+          break;
+        }
+        value = value * 10 + static_cast<std::uint64_t>(ch - L'0');
+        if (value > 999'999'999ULL) {
+          digits = false;
+          break;
+        }
+      }
+      if (digits) {
+        stem.resize(open);
+        return NumberedCollisionStem{.base = std::move(stem), .next = value + 1};
+      }
+    }
+  }
+  return NumberedCollisionStem{.base = std::move(stem), .next = 1};
+}
+
 std::wstring collision_suffix(CollisionMode mode) {
   const auto now = std::chrono::floor<std::chrono::seconds>(
       std::chrono::system_clock::now());
@@ -1058,6 +1114,7 @@ std::wstring collision_suffix(CollisionMode mode) {
           L"-{:08x}",
           static_cast<unsigned int>((value ^ GetTickCount64()) & 0xffffffffu));
     }
+    case CollisionMode::suffix_number:
     case CollisionMode::overwrite:
     case CollisionMode::skip:
     default:
@@ -1084,7 +1141,8 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
     };
 
     if (mode != CollisionMode::suffix_time &&
-        mode != CollisionMode::suffix_random) {
+        mode != CollisionMode::suffix_random &&
+        mode != CollisionMode::suffix_number) {
       if (auto reserved = reserve_available(planned); !reserved) {
         return std::unexpected{reserved.error()};
       }
@@ -1092,25 +1150,65 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
     }
 
     std::error_code ec;
-    const auto planned_exists = fs::exists(planned, ec);
-    if (ec) {
-      return std::unexpected{std::format("无法检查输出路径 {}: {}",
-                                         display_path_for_user(planned),
-                                         ec.message())};
-    }
-    if (!planned_exists) {
-      if (auto reserved = reserve_available(planned); !reserved) {
-        return std::unexpected{reserved.error()};
-      } else if (*reserved) {
-        return planned;
+    const auto path_available =
+        [&](const fs::path& path) -> std::expected<bool, std::string> {
+      const auto exists = fs::exists(path, ec);
+      if (ec) {
+        return std::unexpected{std::format("无法检查输出路径 {}: {}",
+                                           display_path_for_user(path),
+                                           ec.message())};
       }
+      if (exists) {
+        return false;
+      }
+      if (auto reserved = reserve_available(path); !reserved) {
+        return std::unexpected{reserved.error()};
+      } else {
+        return *reserved;
+      }
+    };
+
+    if (auto available = path_available(planned); !available) {
+      return std::unexpected{available.error()};
+    } else if (*available) {
+      return planned;
     }
 
     const auto parent = planned.parent_path();
     const auto stem = planned.stem().wstring();
     const auto extension = planned.extension().wstring();
-    const auto suffix = collision_suffix(mode);
     const auto planned_key = normalized_lower_path_key(planned);
+
+    if (mode == CollisionMode::suffix_number) {
+      auto numbered = numbered_collision_stem(stem);
+      for (const auto offset : std::views::iota(0ULL, 10000ULL)) {
+        const auto number = numbered.next + offset;
+        auto candidate = parent /
+                         (numbered.base + std::format(L"({})", number) +
+                          extension);
+        if (normalized_lower_path_key(candidate) == planned_key) {
+          continue;
+        }
+        if (auto available = path_available(candidate); !available) {
+          return std::unexpected{available.error()};
+        } else if (*available) {
+          return candidate;
+        }
+      }
+      const auto fallback =
+          parent / (numbered.base +
+                    std::format(L"({}-{})", numbered.next, GetCurrentProcessId()) +
+                    extension);
+      if (auto available = path_available(fallback); !available) {
+        return std::unexpected{available.error()};
+      } else if (*available) {
+        return fallback;
+      }
+      return std::unexpected{std::format("无法找到可用输出路径: {}",
+                                         display_path_for_user(planned))};
+    }
+
+    const auto suffix = collision_suffix(mode);
     for (const auto attempt : std::views::iota(0, 1000)) {
       auto candidate = parent / (stem + suffix +
                                  (attempt == 0 ? std::wstring{}
@@ -1119,36 +1217,20 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
       if (normalized_lower_path_key(candidate) == planned_key) {
         continue;
       }
-      const auto candidate_exists = fs::exists(candidate, ec);
-      if (ec) {
-        return std::unexpected{std::format("无法检查输出路径 {}: {}",
-                                           display_path_for_user(candidate),
-                                           ec.message())};
-      }
-      if (!candidate_exists) {
-        if (auto reserved = reserve_available(candidate); !reserved) {
-          return std::unexpected{reserved.error()};
-        } else if (*reserved) {
-          return candidate;
-        }
+      if (auto available = path_available(candidate); !available) {
+        return std::unexpected{available.error()};
+      } else if (*available) {
+        return candidate;
       }
     }
 
     const auto fallback =
         parent / (stem + suffix + std::format(L"-{}", GetCurrentProcessId()) +
                   extension);
-    const auto fallback_exists = fs::exists(fallback, ec);
-    if (ec) {
-      return std::unexpected{std::format("无法检查输出路径 {}: {}",
-                                         display_path_for_user(fallback),
-                                         ec.message())};
-    }
-    if (!fallback_exists) {
-      if (auto reserved = reserve_available(fallback); !reserved) {
-        return std::unexpected{reserved.error()};
-      } else if (*reserved) {
-        return fallback;
-      }
+    if (auto available = path_available(fallback); !available) {
+      return std::unexpected{available.error()};
+    } else if (*available) {
+      return fallback;
     }
     return std::unexpected{std::format("无法找到可用输出路径: {}",
                                        display_path_for_user(planned))};
@@ -1164,7 +1246,8 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
 std::expected<void, std::string> resolve_batch_output_paths(
     const AppConfig& cfg, std::vector<ImageFile>& files) {
   if (cfg.collision_mode != CollisionMode::suffix_time &&
-      cfg.collision_mode != CollisionMode::suffix_random) {
+      cfg.collision_mode != CollisionMode::suffix_random &&
+      cfg.collision_mode != CollisionMode::suffix_number) {
     return {};
   }
 
@@ -1195,7 +1278,7 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
   // 输入可以是单张图片或一个目录。这里不再抛异常，而是把失败原因、路径和建议
   // 作为 std::expected 的 error 返回给 CLI/UI，避免用户只看到“未知异常”。
   std::error_code ec;
-  const auto input_path = cfg.input_path;
+  const auto input_path = long_existing_path_or_self(cfg.input_path);
   const bool exists = fs::exists(input_path, ec);
   if (ec) {
     return std::unexpected{std::format(
@@ -1339,31 +1422,32 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
       ec.clear();
       continue;
     }
-    if (!is_supported_image_extension(it->path())) {
+    const auto image_path = long_existing_path_or_self(it->path());
+    if (!is_supported_image_extension(image_path)) {
       continue;
     }
 
-    auto bytes = fs::file_size(it->path(), ec);
+    auto bytes = fs::file_size(image_path, ec);
     if (ec) {
       ++skipped_access;
       ec.clear();
       continue;
     }
-    if (auto within_limit = check_scanned_input_file_size(it->path(), bytes);
+    if (auto within_limit = check_scanned_input_file_size(image_path, bytes);
         !within_limit) {
       return std::unexpected{within_limit.error()};
     }
     std::wstring hash;
-    if (auto ok = build_hash(it->path(), hash); !ok) {
+    if (auto ok = build_hash(image_path, hash); !ok) {
       return std::unexpected{ok.error()};
     }
     std::wstring sha256;
-    if (auto ok = build_sha256(it->path(), sha256); !ok) {
+    if (auto ok = build_sha256(image_path, sha256); !ok) {
       return std::unexpected{ok.error()};
     }
     try {
       files.push_back(make_image_file(
-          files.size(), it->path(), relative_output_dir(input_path, it->path()),
+          files.size(), image_path, relative_output_dir(input_path, image_path),
           bytes, rng, std::move(hash), std::move(sha256)));
     } catch (const std::bad_alloc&) {
       return std::unexpected{"文件列表内存不足，无法继续扫描输入目录。"};
@@ -1394,6 +1478,74 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
     return std::unexpected{resolved.error()};
   }
   return {};
+}
+
+
+std::expected<void, std::string> scan_images(const AppConfig& cfg,
+                                             std::span<const fs::path> input_paths,
+                                             std::vector<ImageFile>& files) {
+  if (input_paths.empty()) {
+    return scan_images(cfg, files);
+  }
+  if (input_paths.size() == 1) {
+    auto one = cfg;
+    one.input_path = input_paths.front();
+    return scan_images(one, files);
+  }
+
+  files.clear();
+  std::unordered_set<std::wstring> seen;
+  try {
+    seen.reserve(input_paths.size());
+    for (const auto& raw_input : input_paths) {
+      auto one_cfg = cfg;
+      one_cfg.input_path = raw_input;
+      std::vector<ImageFile> batch;
+      if (auto scanned = scan_images(one_cfg, batch); !scanned) {
+        return std::unexpected{scanned.error()};
+      }
+      const auto input_path = long_existing_path_or_self(raw_input);
+      std::error_code type_ec;
+      const bool input_is_file = fs::is_regular_file(input_path, type_ec) && !type_ec;
+      for (auto& image : batch) {
+        const auto key = normalized_lower_path_key(image.path);
+        if (!key.empty() && !seen.insert(key).second) {
+          continue;
+        }
+        image.index = files.size();
+        image.source_extension_disambiguator.clear();
+        image.extension_disambiguated = false;
+        image.resolved_output_path.clear();
+        image.output_path_resolved = false;
+        if (cfg.output_policy == OutputPolicy::shell && cfg.output_dir.empty() &&
+            input_is_file) {
+          image.relative_dir = fs::absolute(image.path.parent_path(), type_ec);
+          if (type_ec) {
+            image.relative_dir = image.path.parent_path();
+            type_ec.clear();
+          }
+        }
+        files.push_back(std::move(image));
+      }
+    }
+    for (const auto i : std::views::iota(std::size_t{}, files.size())) {
+      files[i].index = i;
+    }
+    if (auto disambiguated = apply_source_extension_disambiguation(cfg, files);
+        !disambiguated) {
+      return std::unexpected{disambiguated.error()};
+    }
+    if (auto resolved = resolve_batch_output_paths(cfg, files); !resolved) {
+      return std::unexpected{resolved.error()};
+    }
+    return {};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"文件列表内存不足，无法记录多选图片。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"文件列表数量超过运行时限制。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"扫描多选输入时文件系统访问失败。"};
+  }
 }
 
 std::wstring encode_params_token_for(const AppConfig& cfg) {
@@ -1509,6 +1661,9 @@ fs::path output_path_for(const AppConfig& cfg, const ImageFile& image) {
   const bool same_existing_file =
       fs::equivalent(output, image.path, equivalent_ec);
   if (!same_path_text && (!same_existing_file || equivalent_ec)) {
+    return output;
+  }
+  if (cfg.collision_mode == CollisionMode::suffix_number) {
     return output;
   }
 

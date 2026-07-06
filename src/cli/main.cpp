@@ -130,19 +130,7 @@ int run_cli(int argc, wchar_t* argv[]) {
       const auto token = g_cli_stop_source.get_token();
       if (parsed->config.output_policy == awj::OutputPolicy::shell &&
           !parsed->shell_inputs.empty()) {
-        int final_code = 0;
-        for (const auto& input : parsed->shell_inputs) {
-          if (token.stop_requested()) {
-            return final_code == 0 ? 1 : final_code;
-          }
-          auto cfg = parsed->config;
-          cfg.input_path = input;
-          const int code = awj::run_pipeline(cfg, token);
-          if (code != 0) {
-            final_code = code;
-          }
-        }
-        return final_code;
+        return awj::run_pipeline(parsed->config, parsed->shell_inputs, token);
       }
       return awj::run_pipeline(parsed->config, token);
     });
