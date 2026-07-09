@@ -37,6 +37,101 @@
         "AWJ_ENABLE_X64_V3": "ON",
         "AVIF_ENABLE_RELEASE_IPO": "OFF"
       }
+    },
+    {
+      "name": "linux-gcc-x64-debug",
+      "displayName": "Linux GCC 16 x64 Debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-16.1-awj",
+        "CMAKE_CXX_COMPILER": "$env{HOME}/.local/gcc-16.1-deb/wrappers/g++-16.1-awj",
+        "CMAKE_TOOLCHAIN_FILE": "$env{HOME}/.local/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_AR": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-ar-16.1-awj",
+        "CMAKE_RANLIB": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-ranlib-16.1-awj",
+        "CMAKE_NM": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-nm-16.1-awj",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "AVIF_STATIC_MSVC_RUNTIME": "OFF",
+        "AVIF_STATIC_SLINT": "ON",
+        "AWJ_ENABLE_ZENRAVIF": "OFF",
+        "AWJ_ENABLE_SVTAV1HDR": "ON",
+        "AWJ_ENABLE_JPEGLI": "ON",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "AWJ_VCPKG_LIBRARY_CONFIG": "Debug"
+      },
+      "binaryDir": "${sourceDir}/build/linux-gcc-x64-debug"
+    },
+    {
+      "name": "linux-gcc-x64-release",
+      "displayName": "Linux GCC 16 x64 Release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-16.1-awj",
+        "CMAKE_CXX_COMPILER": "$env{HOME}/.local/gcc-16.1-deb/wrappers/g++-16.1-awj",
+        "CMAKE_TOOLCHAIN_FILE": "$env{HOME}/.local/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_AR": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-ar-16.1-awj",
+        "CMAKE_RANLIB": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-ranlib-16.1-awj",
+        "CMAKE_NM": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-nm-16.1-awj",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "AVIF_STATIC_MSVC_RUNTIME": "OFF",
+        "AVIF_STATIC_SLINT": "ON",
+        "AWJ_ENABLE_ZENRAVIF": "OFF",
+        "AWJ_ENABLE_SVTAV1HDR": "ON",
+        "AWJ_ENABLE_JPEGLI": "ON",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "AWJ_VCPKG_LIBRARY_CONFIG": "Release",
+        "AVIF_ENABLE_RELEASE_IPO": "ON",
+        "AWJ_ENABLE_X64_V3": "ON"
+      },
+      "binaryDir": "${sourceDir}/build/linux-gcc-x64-release"
+    },
+    {
+      "name": "linux-clang-x64-debug",
+      "displayName": "Linux Clang 20 x64 Debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/clang-20",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++-20",
+        "CMAKE_TOOLCHAIN_FILE": "$env{HOME}/.local/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "AVIF_STATIC_MSVC_RUNTIME": "OFF",
+        "AVIF_STATIC_SLINT": "ON",
+        "AWJ_ENABLE_ZENRAVIF": "OFF",
+        "AWJ_ENABLE_SVTAV1HDR": "ON",
+        "AWJ_ENABLE_JPEGLI": "ON",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "AWJ_VCPKG_LIBRARY_CONFIG": "Debug"
+      },
+      "binaryDir": "${sourceDir}/build/linux-clang-x64-debug"
+    },
+    {
+      "name": "linux-clang-x64-release",
+      "displayName": "Linux Clang 20 x64 Release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/clang-20",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++-20",
+        "CMAKE_TOOLCHAIN_FILE": "$env{HOME}/.local/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "AVIF_STATIC_MSVC_RUNTIME": "OFF",
+        "AVIF_STATIC_SLINT": "ON",
+        "AWJ_ENABLE_ZENRAVIF": "OFF",
+        "AWJ_ENABLE_SVTAV1HDR": "ON",
+        "AWJ_ENABLE_JPEGLI": "ON",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "AWJ_VCPKG_LIBRARY_CONFIG": "Release",
+        "AVIF_ENABLE_RELEASE_IPO": "ON",
+        "AWJ_ENABLE_X64_V3": "ON",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=lld"
+      },
+      "binaryDir": "${sourceDir}/build/linux-clang-x64-release"
     }
   ],
   "buildPresets": [
@@ -49,6 +144,22 @@
       "name": "windows-msvc-x64-release",
       "configurePreset": "windows-msvc-x64-release",
       "configuration": "Release"
+    },
+    {
+      "name": "linux-gcc-x64-debug",
+      "configurePreset": "linux-gcc-x64-debug"
+    },
+    {
+      "name": "linux-gcc-x64-release",
+      "configurePreset": "linux-gcc-x64-release"
+    },
+    {
+      "name": "linux-clang-x64-debug",
+      "configurePreset": "linux-clang-x64-debug"
+    },
+    {
+      "name": "linux-clang-x64-release",
+      "configurePreset": "linux-clang-x64-release"
     }
   ]
 }

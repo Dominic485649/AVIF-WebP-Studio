@@ -1,5 +1,21 @@
 # 更新日志
 
+## 0.10.0 - 2026-07-10
+
+0.10.0 是一次把 Linux/Vulkan 首版并入主线、统一 Windows/Linux 共用 core，并落地超大图自动处理链路的版本。
+
+- 合并 Linux GCC/Vulkan 构建到主线：`linux-gcc-x64-debug` / `linux-gcc-x64-release` 预设可用；Linux 只生成单个 ELF `AWJ`，不生成 `AWJ.com`。
+- Linux Release 默认使用 GCC 16 side-by-side、`-O3`、IPO/LTO、`-march=x86-64-v3`，并静态链接 `libstdc++` / `libgcc`，降低跨发行版运行时依赖。
+- Linux visual_quality GPU 指标路径改为 Vulkan compute；失败、小图或资源不足时自动回退 CPU，日志记录 `vulkan-session` / `cpu-fallback`。
+- Linux 不启用、不展示 WIC 兜底；JXR/WIC/`AWJ.com`/Windows 注册表 shell 仍仅限 Windows。Linux 提供用户级 Nautilus Scripts 与 Thunar UCA 右键入口。
+- 超过 AOM 单图上限后自动走大图链路：默认 `zenrav1e` 优先并回退 `grid`，参数页可改为 `grid` 优先；两条路径都失败或触达内存/输入上限时明确报错。
+- Studio 大图页保留状态展示，并可对单项强制指定 `zenrav1e` / `grid`；手动强制路径不会静默改路。
+- 新增会话内“解除 20 GiB 输入/运行时上限”（UI 设置页 / `--unlock-max-input-file-bytes`），默认关闭、红字警告 OOM 风险，且不写入 `AWJ.jsonc`。
+- 参数设置页编码参数保持“本次运行内有效、不写入 jsonc”的策略；主题/模板/菜单参数等既有持久化项不变。
+- 补强 grid 失败诊断：不可整除且需要 padding 时，明确提示当前版本未启用安全裁切，并建议改用可整除尺寸、experimental clamped padding 或 `zenrav1e`（边长 <= 65536）。
+- Windows 与 Linux 共用 core/pipeline/codecs；平台差异仅保留 Win32 shell、WIC/JXR、D3D11、`AWJ.com` 与 Linux Vulkan/POSIX 入口。
+- 同步中英文 README / 迁移文档，并提交 Linux Release `AWJ` 产物。
+
 ## 0.9.1 - 2026-07-06
 
 0.9.1 是一次以 Windows 右键菜单转换体验、菜单参数持久化、图片边长限制和 HDR 色彩修正为核心的小版本更新。
@@ -11,9 +27,12 @@
 - 新增图片边长限制：支持自动、无限制和手动模式；手动模式可同时设置最大宽、高、长边和短边，并按最严格限制缩放。
 - 新增 `suffix-number` 输出重名策略，按 `name(1)`、`name(2)` 递增，避免重复编码时出现 `name(1)(1)` 一类文件名。
 - 修复右键单文件 WebP 输入识别/解码路径，优先使用 native WebP 解码，允许 WIC 作为兜底解码器。
-- 改进 JXR/WIC scRGB HDR 解码到 BT.2020 + PQ 16-bit 的色彩路径，并为 PNG HDR 写入 cICP RGB identity / full range，避免 HDR PNG 发灰。
-- WebP 与 JPGLI 等 SDR-only 输出遇到 HDR 输入时会先做 SDR 映射，修正由 JXR HDR 转换时色彩过亮的问题。
+- 改进 JXR/WIC scRGB HDR 解码到 BT.2020 + PQ 16-bit 的色彩路径，但 WebP、PNG、JPGLI 的 HDR 输出仍为异常/不可靠场景。
+- 重要提醒：如果源图是 HDR，请不要选择 WebP、PNG 或 JPGLI 作为目标格式；HDR 源图建议优先使用 AVIF 或 JXL。
 - 修复窗口底部下拉框向下展开空间不足时显示不全的问题，仅在空间不足时改为向上展开。
+- AVIF 大图模式阈值改为真实单图编码上限：AOM/libaom 允许 65536 边和 `2^30` 像素内继续普通编码，`svt-av1-hdr` 标记为 16384×8704 上限；1000 万像素以上但未超限的图片只延后到普通队列尾部。
+- Studio 主页队列改用新版 Slint `DragArea`/`DropArea`，未开始项目可直接拖动排序；同时修复“下移”排序插回原位的问题。
+- 保留普通 AVIF 的单任务多线程编码路径，大图阈值调整不会把 1000 万像素级图片强制切到 grid/大图 worker。
 
 ## 0.9.0 - 2026-07-04
 
@@ -184,3 +203,4 @@
 
 - 初始 C++23 / Slint / MagickWand 迁移版本。
 - 提供 AVIF/WebP CLI 批处理和 Studio 桌面 UI。
+

@@ -34,6 +34,18 @@ namespace native_visual_search_detail {
 
 using Clock = std::chrono::steady_clock;
 
+std::string_view gpu_session_path() noexcept {
+#if AWJ_HAS_VULKAN
+  return "vulkan-session";
+#else
+  return "d3d11-session";
+#endif
+}
+
+std::string gpu_session_cpu_fallback_path() {
+  return std::format("{}+cpu-fallback", gpu_session_path());
+}
+
 double elapsed_seconds(Clock::time_point started) {
   return std::chrono::duration<double>(Clock::now() - started).count();
 }
@@ -94,9 +106,9 @@ std::expected<std::size_t, std::string> checked_visual_quality_image_bytes(
   }
   const auto byte_count = stride * height;
   if (static_cast<std::uint64_t>(byte_count) >
-      encoding_defaults::max_input_file_bytes) {
+      encoding_defaults::effective_max_input_file_bytes()) {
     return std::unexpected{
-        std::format("{} 图像 buffer 超过 20 GiB 运行时上限。", context)};
+        std::format("{} 图像 buffer 超过当前运行时上限。", context)};
   }
   return byte_count;
 }
@@ -105,9 +117,9 @@ std::expected<std::vector<std::byte>, std::string>
 make_visual_quality_byte_buffer(std::size_t byte_count,
                                 std::string_view context) {
   if (static_cast<std::uint64_t>(byte_count) >
-      encoding_defaults::max_input_file_bytes) {
+      encoding_defaults::effective_max_input_file_bytes()) {
     return std::unexpected{
-        std::format("{} 输出缓冲区超过 20 GiB 运行时上限。", context)};
+        std::format("{} 输出缓冲区超过当前运行时上限。", context)};
   }
   std::vector<std::byte> buffer;
   try {
@@ -274,7 +286,7 @@ struct EvaluatedVisualQualityCandidate {
   EncodeTimingDiagnostics timing{};
 };
 
-export std::expected<EvaluatedVisualQualityCandidate, std::string>
+std::expected<EvaluatedVisualQualityCandidate, std::string>
 evaluate_visual_quality_candidate(
     std::optional<LumaImage>& reference_luma,
     const ImageBuffer& reference_image, const ImageEncoder& encoder,
@@ -350,7 +362,7 @@ evaluate_visual_quality_candidate(
     encode_result.diagnostics.timing = timing;
     encode_result.diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
     encode_result.diagnostics.visual_quality_gpu_used = true;
-    encode_result.diagnostics.visual_quality_gpu_path = "d3d11-session";
+    encode_result.diagnostics.visual_quality_gpu_path = std::string{native_visual_search_detail::gpu_session_path()};
     return EvaluatedVisualQualityCandidate{
         .candidate =
             VisualQualityCandidate{
@@ -493,7 +505,7 @@ evaluate_visual_quality_candidate(
       .timing = timing};
 }
 
-export std::expected<NativeVisualQualitySearchResult, std::string>
+std::expected<NativeVisualQualitySearchResult, std::string>
 encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
                                          const ImageEncoder& encoder,
                                          const ImageDecoder& decoder,
@@ -558,14 +570,14 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
 
   const bool gpu_requested = settings.visual_quality_gpu;
   bool gpu_used = false;
-  std::string gpu_path = gpu_requested ? "cpu-fallback" : "cpu-disabled";
+  std::string gpu_path = gpu_requested ? native_visual_search_detail::gpu_session_cpu_fallback_path() : "cpu-disabled";
   std::string gpu_fallback_reason;
   std::optional<AcceleratedVisualMetricSession> metric_session;
   if (gpu_requested) {
     if (auto session =
             AcceleratedVisualMetricSession::create(reference_image)) {
       metric_session.emplace(std::move(*session));
-      gpu_path = "d3d11-session";
+      gpu_path = std::string{native_visual_search_detail::gpu_session_path()};
     } else {
       ++timing.visual_quality_gpu_fallback_count;
       gpu_fallback_reason = session.error();
@@ -689,7 +701,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       gpu_session_available = false;
       metric_session.reset();
       if (gpu_used) {
-        gpu_path = "d3d11-session+cpu-fallback";
+        gpu_path = native_visual_search_detail::gpu_session_cpu_fallback_path();
       }
     }
     retain_candidate_result(std::move(*candidate));
@@ -807,7 +819,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   encoded.diagnostics.timing = timing;
   encoded.diagnostics.visual_quality_gpu_requested = gpu_requested;
   encoded.diagnostics.visual_quality_gpu_used = gpu_used;
-  encoded.diagnostics.visual_quality_gpu_path = gpu_requested ? (gpu_used ? gpu_path : "cpu-fallback") : "cpu-disabled";
+  encoded.diagnostics.visual_quality_gpu_path = gpu_requested ? gpu_path : "cpu-disabled";
   encoded.diagnostics.visual_quality_gpu_fallback_reason = gpu_fallback_reason;
   encoded.diagnostics.visual_quality_search_trace =
       native_visual_search_detail::format_visual_quality_trace(search_trace);

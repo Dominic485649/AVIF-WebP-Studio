@@ -20,6 +20,7 @@ import awj.codec;
 import awj.core;
 import awj.decoder_common;
 import awj.image;
+import awj.large_image_plan;
 
 export namespace awj {
 
@@ -716,7 +717,7 @@ std::expected<ImageBuffer, std::string> decode_bmp(const std::vector<std::byte>&
 
 }  // namespace bmp_detail
 
-export class BmpImageDecoder final : public ImageDecoder {
+class BmpImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "awj-bmp"; }
 

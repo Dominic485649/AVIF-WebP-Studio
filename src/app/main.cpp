@@ -1,17 +1,24 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
 
+#ifdef _WIN32
 int run_cli(int argc, wchar_t* argv[]);
+#else
+int run_cli(int argc, char* argv[]);
+#endif
 int run_studio_ui();
 int run_shell_convert_window(int argc, wchar_t* argv[]);
 
+#ifdef _WIN32
 namespace {
 
 void enable_process_dpi_awareness() noexcept {
@@ -37,7 +44,9 @@ void release_explorer_console_if_lonely() {
 }
 
 }  // namespace
+#endif
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t* argv[]) {
   enable_process_dpi_awareness();
   if (argc <= 1) {
@@ -62,3 +71,16 @@ int wmain(int argc, wchar_t* argv[]) {
   // std::_Exit 避免运行 CRT/第三方静态析构，比 ExitProcess 更稳定。
   std::_Exit(exit_code);
 }
+#else
+int main(int argc, char* argv[]) {
+  if (argc <= 1) {
+    return run_studio_ui();
+  }
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  std::setvbuf(stderr, nullptr, _IONBF, 0);
+  const int exit_code = run_cli(argc, argv);
+  std::fflush(stdout);
+  std::fflush(stderr);
+  return exit_code;
+}
+#endif

@@ -19,7 +19,13 @@ module;
 #include <system_error>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 export module awj.native_backend;
 
@@ -116,7 +122,7 @@ std::unique_ptr<ImageDecoder> decoder_for_output_format(OutputFormat format, int
       return std::make_unique<UnsupportedDecoder>("jpegli");
 #endif
     case OutputFormat::avif:
-      return std::make_unique<AvifImageDecoder>(clamped_decode_threads);
+      return make_avif_image_decoder(clamped_decode_threads);
     default:
       return std::make_unique<UnsupportedDecoder>("avif");
   }
@@ -138,28 +144,64 @@ std::unique_ptr<ImageEncoder> encoder_for_output_format(OutputFormat format,
       return nullptr;
 #endif
     case OutputFormat::avif:
-      if (avif_encoder == AvifEncoderMode::zenrav1e) {
-        return std::make_unique<ZenravifImageEncoder>();
-      }
-      if (avif_encoder == AvifEncoderMode::svt) {
-        return nullptr;
-      }
-      return std::make_unique<AvifLibavifImageEncoder>(avif_encoder);
+      return make_avif_image_encoder(avif_encoder);
     default:
       return nullptr;
   }
 }
 
-struct HandleDeleter {
-  using pointer = HANDLE;
-  void operator()(HANDLE value) const noexcept {
-    if (value != nullptr && value != INVALID_HANDLE_VALUE) {
-      CloseHandle(value);
-    }
-  }
-};
+class UniqueHandle {
+ public:
+#ifdef _WIN32
+  using native_handle = HANDLE;
+  static constexpr native_handle invalid() noexcept { return INVALID_HANDLE_VALUE; }
+#else
+  using native_handle = int;
+  static constexpr native_handle invalid() noexcept { return -1; }
+#endif
 
-using UniqueHandle = std::unique_ptr<void, HandleDeleter>;
+  UniqueHandle() noexcept = default;
+  explicit UniqueHandle(native_handle handle) noexcept : handle_{handle} {}
+  ~UniqueHandle() { reset(); }
+  UniqueHandle(const UniqueHandle&) = delete;
+  UniqueHandle& operator=(const UniqueHandle&) = delete;
+  UniqueHandle(UniqueHandle&& other) noexcept : handle_{other.release()} {}
+  UniqueHandle& operator=(UniqueHandle&& other) noexcept {
+    if (this != &other) {
+      reset(other.release());
+    }
+    return *this;
+  }
+
+  [[nodiscard]] native_handle get() const noexcept { return handle_; }
+  explicit operator bool() const noexcept {
+#ifdef _WIN32
+    return handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE;
+#else
+    return handle_ >= 0;
+#endif
+  }
+  native_handle release() noexcept {
+    const auto old = handle_;
+    handle_ = invalid();
+    return old;
+  }
+  void reset(native_handle handle = invalid()) noexcept {
+#ifdef _WIN32
+    if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(handle_);
+    }
+#else
+    if (handle_ >= 0) {
+      ::close(handle_);
+    }
+#endif
+    handle_ = handle;
+  }
+
+ private:
+  native_handle handle_{invalid()};
+};
 
 void remove_file_noexcept(const fs::path& path) noexcept {
   try {
@@ -189,6 +231,7 @@ class TempOutputFile {
 
 std::expected<void, std::string> clear_transient_file_attributes(const fs::path& path,
                                                                  std::string_view label) {
+#ifdef _WIN32
   const DWORD attributes = GetFileAttributesW(path.c_str());
   if (attributes == INVALID_FILE_ATTRIBUTES) {
     const auto error = GetLastError();
@@ -212,25 +255,34 @@ std::expected<void, std::string> clear_transient_file_attributes(const fs::path&
                                        display_path_for_user(path),
                                        win32_error_message(error))};
   }
+#else
+  (void)path;
+  (void)label;
+#endif
   return {};
 }
 
 struct TempOutputWriteFailure {
   std::string message;
-  DWORD create_error{};
+  int create_error{};
 };
 
-bool output_temp_name_collision(DWORD error) noexcept {
+bool output_temp_name_collision(int error) noexcept {
+#ifdef _WIN32
   return error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS;
+#else
+  return error == EEXIST;
+#endif
 }
 
 std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs::path& path,
                                                                          std::span<const std::byte> bytes) {
-  if (bytes.size() > encoding_defaults::max_input_file_bytes) {
+  if (bytes.size() > encoding_defaults::effective_max_input_file_bytes()) {
     return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("临时输出文件内容超过 20 GiB 运行时上限: {}",
+        .message = std::format("临时输出文件内容超过当前运行时上限: {}",
                                display_path_for_user(path))}};
   }
+#ifdef _WIN32
   const auto raw_file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                    FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
                                    nullptr);
@@ -240,14 +292,26 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
         .message = std::format("无法创建临时输出文件 {}: {}",
                                display_path_for_user(path),
                                win32_error_message(error)),
+        .create_error = static_cast<int>(error)}};
+  }
+#else
+  const int raw_file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+  if (raw_file < 0) {
+    const int error = errno;
+    return std::unexpected{TempOutputWriteFailure{
+        .message = std::format("无法创建临时输出文件 {}: {}",
+                               display_path_for_user(path),
+                               posix_error_message(error)),
         .create_error = error}};
   }
+#endif
   TempOutputFile cleanup{path};
   UniqueHandle file{raw_file};
 
   auto remaining = bytes.size();
   const auto* cursor = reinterpret_cast<const std::uint8_t*>(bytes.data());
   while (remaining > 0) {
+#ifdef _WIN32
     const auto chunk = static_cast<DWORD>(
         std::min<std::size_t>(remaining, std::numeric_limits<DWORD>::max()));
     DWORD written = 0;
@@ -257,13 +321,26 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
                                  display_path_for_user(path),
                                  win32_error_message(GetLastError()))}};
     }
+#else
+    const auto written = ::write(file.get(), cursor, remaining);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return std::unexpected{TempOutputWriteFailure{
+          .message = std::format("写入临时输出文件失败 {}: {}",
+                                 display_path_for_user(path),
+                                 posix_error_message(errno))}};
+    }
+#endif
     if (written == 0) {
       return std::unexpected{TempOutputWriteFailure{
           .message = std::format("写入临时输出文件失败 {}", display_path_for_user(path))}};
     }
     cursor += written;
-    remaining -= written;
+    remaining -= static_cast<std::size_t>(written);
   }
+#ifdef _WIN32
   if (!FlushFileBuffers(file.get())) {
     return std::unexpected{TempOutputWriteFailure{
         .message = std::format("刷新临时输出文件失败 {}: {}",
@@ -277,18 +354,73 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
                                display_path_for_user(path),
                                win32_error_message(GetLastError()))}};
   }
+#else
+  const int file_handle = file.get();
+  if (::fsync(file_handle) != 0) {
+    return std::unexpected{TempOutputWriteFailure{
+        .message = std::format("刷新临时输出文件失败 {}: {}",
+                               display_path_for_user(path),
+                               posix_error_message(errno))}};
+  }
+  if (::close(file_handle) != 0) {
+    return std::unexpected{TempOutputWriteFailure{
+        .message = std::format("关闭临时输出文件失败 {}: {}",
+                               display_path_for_user(path),
+                               posix_error_message(errno))}};
+  }
+#endif
   file.release();
   cleanup.release();
   return {};
 }
 
-bool effective_lossless_requested(int quality, std::optional<int> visual_quality) noexcept {
-  return visual_quality ? *visual_quality >= 100 : quality >= 100;
+std::expected<void, std::string> commit_temp_output(const fs::path& temp_path,
+                                                    const fs::path& path,
+                                                    bool replace_existing) {
+#ifdef _WIN32
+  const DWORD move_flags = replace_existing
+                               ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+                               : MOVEFILE_WRITE_THROUGH;
+  if (!MoveFileExW(temp_path.c_str(), path.c_str(), move_flags)) {
+    const auto error = GetLastError();
+    if (!replace_existing && output_temp_name_collision(static_cast<int>(error))) {
+      return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
+    }
+    return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+                                       win32_error_message(error))};
+  }
+#else
+  if (replace_existing) {
+    if (::rename(temp_path.c_str(), path.c_str()) != 0) {
+      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+                                         posix_error_message(errno))};
+    }
+  } else {
+    if (::link(temp_path.c_str(), path.c_str()) != 0) {
+      const int error = errno;
+      if (error == EEXIST) {
+        return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
+      }
+      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+                                         posix_error_message(error))};
+    }
+    (void)::unlink(temp_path.c_str());
+  }
+  const auto parent = path.parent_path();
+  if (!parent.empty()) {
+    const int dir = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir >= 0) {
+      (void)::fsync(dir);
+      (void)::close(dir);
+    }
+  }
+#endif
+  return {};
 }
 
 bool avif_lossless_requested(const AppConfig& cfg) noexcept {
   return cfg.output_format == OutputFormat::avif &&
-         effective_lossless_requested(cfg.quality, cfg.visual_quality);
+         (cfg.visual_quality ? *cfg.visual_quality >= 100 : cfg.quality >= 100);
 }
 
 bool avif_lossless_passthrough_source(const fs::path& path) {
@@ -1171,7 +1303,7 @@ std::atomic<std::uint64_t> output_temp_counter{};
 fs::path make_output_temp_path(const fs::path& target) {
   const auto parent = target.parent_path();
   const auto id = output_temp_counter.fetch_add(1, std::memory_order_relaxed);
-  return parent / std::format(L".awj-output-{}-{}.tmp", GetCurrentProcessId(), id);
+  return parent / std::format(L".awj-output-{}-{}.tmp", current_process_id(), id);
 }
 
 std::expected<void, std::string> write_output_bytes(const fs::path& path,
@@ -1185,8 +1317,8 @@ std::expected<void, std::string> write_output_bytes(const fs::path& path,
     if (bytes.empty()) {
       return std::unexpected{std::format("输出内容为空，无法写入输出文件: {}", display_path_for_user(path))};
     }
-    if (bytes.size() > encoding_defaults::max_input_file_bytes) {
-      return std::unexpected{std::format("输出内容超过 20 GiB 运行时上限，无法写入输出文件: {}",
+    if (bytes.size() > encoding_defaults::effective_max_input_file_bytes()) {
+      return std::unexpected{std::format("输出内容超过当前运行时上限，无法写入输出文件: {}",
                                         display_path_for_user(path))};
     }
     const auto parent = path.parent_path();
@@ -1230,17 +1362,8 @@ std::expected<void, std::string> write_output_bytes(const fs::path& path,
     if (auto attributes = clear_transient_file_attributes(*temp_path, "临时输出文件"); !attributes) {
       return std::unexpected{attributes.error()};
     }
-    const DWORD move_flags = replace_existing
-                                 ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-                                 : MOVEFILE_WRITE_THROUGH;
-    if (!MoveFileExW(temp_path->c_str(), path.c_str(), move_flags)) {
-      const auto error = GetLastError();
-      if (!replace_existing &&
-          (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)) {
-        return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
-      }
-      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
-                                         win32_error_message(error))};
+    if (auto committed = commit_temp_output(*temp_path, path, replace_existing); !committed) {
+      return std::unexpected{committed.error()};
     }
     temp.release();
     return {};
@@ -1272,8 +1395,8 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
       return std::unexpected{std::format("AVIF 直通输入文件为空: {}",
                                          display_path_for_user(source))};
     }
-    if (source_size > encoding_defaults::max_input_file_bytes) {
-      return std::unexpected{std::format("AVIF 直通输入超过 20 GiB 输入上限: {}",
+    if (source_size > encoding_defaults::effective_max_input_file_bytes()) {
+      return std::unexpected{std::format("AVIF 直通输入超过当前输入上限: {}",
                                          display_path_for_user(source))};
     }
     const auto parent = path.parent_path();
@@ -1292,6 +1415,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
     std::optional<fs::path> temp_path;
     std::optional<TempOutputFile> temp;
     {
+#ifdef _WIN32
       const HANDLE raw_source = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                            nullptr, OPEN_EXISTING,
                                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
@@ -1301,6 +1425,14 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
                                            display_path_for_user(source),
                                            win32_error_message(GetLastError()))};
       }
+#else
+      const int raw_source = ::open(source.c_str(), O_RDONLY | O_CLOEXEC);
+      if (raw_source < 0) {
+        return std::unexpected{std::format("无法读取 AVIF 直通输入文件 {}: {}",
+                                           display_path_for_user(source),
+                                           posix_error_message(errno))};
+      }
+#endif
       UniqueHandle source_file{raw_source};
 
       UniqueHandle output_file;
@@ -1311,19 +1443,32 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
         if (normalized_lower_path_key(candidate) == normalized_lower_path_key(path)) {
           continue;
         }
+#ifdef _WIN32
         const HANDLE raw_output = CreateFileW(candidate.c_str(), GENERIC_WRITE, 0, nullptr,
                                              CREATE_NEW,
                                              FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
                                              nullptr);
         if (raw_output == INVALID_HANDLE_VALUE) {
           const auto error = GetLastError();
-          if (output_temp_name_collision(error)) {
+          if (output_temp_name_collision(static_cast<int>(error))) {
             continue;
           }
           return std::unexpected{std::format("无法创建临时输出文件 {}: {}",
                                              display_path_for_user(candidate),
                                              win32_error_message(error))};
         }
+#else
+        const int raw_output = ::open(candidate.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+        if (raw_output < 0) {
+          const int error = errno;
+          if (output_temp_name_collision(error)) {
+            continue;
+          }
+          return std::unexpected{std::format("无法创建临时输出文件 {}: {}",
+                                             display_path_for_user(candidate),
+                                             posix_error_message(error))};
+        }
+#endif
         output_file.reset(raw_output);
         temp_path = std::move(candidate);
         temp.emplace(*temp_path);
@@ -1339,6 +1484,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
         if (stop_token.stop_requested()) {
           return std::unexpected{"任务已取消。"};
         }
+#ifdef _WIN32
         DWORD read = 0;
         if (!ReadFile(source_file.get(), buffer.data(), static_cast<DWORD>(buffer.size()),
                       &read, nullptr)) {
@@ -1346,33 +1492,61 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
                                              display_path_for_user(source),
                                              win32_error_message(GetLastError()))};
         }
+#else
+        const auto read = ::read(source_file.get(), buffer.data(), buffer.size());
+        if (read < 0) {
+          if (errno == EINTR) {
+            continue;
+          }
+          return std::unexpected{std::format("读取 AVIF 直通输入文件失败 {}: {}",
+                                             display_path_for_user(source),
+                                             posix_error_message(errno))};
+        }
+#endif
         if (read == 0) {
           break;
         }
-        if (copied_bytes > encoding_defaults::max_input_file_bytes - read) {
-          return std::unexpected{std::format("AVIF 直通输入超过 20 GiB 输入上限: {}",
+        if (copied_bytes > encoding_defaults::effective_max_input_file_bytes() - static_cast<std::uintmax_t>(read)) {
+          return std::unexpected{std::format("AVIF 直通输入超过当前输入上限: {}",
                                              display_path_for_user(source))};
         }
         const auto* cursor = reinterpret_cast<const std::uint8_t*>(buffer.data());
+#ifdef _WIN32
         DWORD remaining = read;
+#else
+        auto remaining = static_cast<std::size_t>(read);
+#endif
         while (remaining > 0) {
+#ifdef _WIN32
           DWORD written = 0;
           if (!WriteFile(output_file.get(), cursor, remaining, &written, nullptr)) {
             return std::unexpected{std::format("写入临时输出文件失败 {}: {}",
                                                display_path_for_user(*temp_path),
                                                win32_error_message(GetLastError()))};
           }
+#else
+          const auto written = ::write(output_file.get(), cursor, remaining);
+          if (written < 0) {
+            if (errno == EINTR) {
+              continue;
+            }
+            return std::unexpected{std::format("写入临时输出文件失败 {}: {}",
+                                               display_path_for_user(*temp_path),
+                                               posix_error_message(errno))};
+          }
+#endif
           if (written == 0) {
             return std::unexpected{std::format("写入临时输出文件失败 {}", display_path_for_user(*temp_path))};
           }
           cursor += written;
           remaining -= written;
         }
-        copied_bytes += read;
+        copied_bytes += static_cast<std::uintmax_t>(read);
       }
       if (copied_bytes == 0) {
         return std::unexpected{std::format("AVIF 直通输入文件为空: {}", display_path_for_user(source))};
       }
+#ifdef _WIN32
       if (!FlushFileBuffers(output_file.get())) {
         return std::unexpected{std::format("刷新临时输出文件失败 {}: {}",
                                            display_path_for_user(*temp_path),
@@ -1384,6 +1558,19 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
                                            display_path_for_user(*temp_path),
                                            win32_error_message(GetLastError()))};
       }
+#else
+      const int output_handle = output_file.get();
+      if (::fsync(output_handle) != 0) {
+        return std::unexpected{std::format("刷新临时输出文件失败 {}: {}",
+                                           display_path_for_user(*temp_path),
+                                           posix_error_message(errno))};
+      }
+      if (::close(output_handle) != 0) {
+        return std::unexpected{std::format("关闭临时输出文件失败 {}: {}",
+                                           display_path_for_user(*temp_path),
+                                           posix_error_message(errno))};
+      }
+#endif
       output_file.release();
     }
 
@@ -1393,17 +1580,8 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
     if (auto attributes = clear_transient_file_attributes(*temp_path, "临时输出文件"); !attributes) {
       return std::unexpected{attributes.error()};
     }
-    const DWORD move_flags = replace_existing
-                                 ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-                                 : MOVEFILE_WRITE_THROUGH;
-    if (!MoveFileExW(temp_path->c_str(), path.c_str(), move_flags)) {
-      const auto error = GetLastError();
-      if (!replace_existing &&
-          (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)) {
-        return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
-      }
-      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
-                                         win32_error_message(error))};
+    if (auto committed = commit_temp_output(*temp_path, path, replace_existing); !committed) {
+      return std::unexpected{committed.error()};
     }
     temp->release();
     return copied_bytes;
@@ -1652,7 +1830,7 @@ void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResul
 
 }  // namespace native_backend_detail
 
-export class NativeBackend final {
+class NativeBackend final {
   struct EncodeOverrides {
     std::optional<AvifEncoderMode> avif_encoder{};
     std::optional<GridPlan> avif_grid_plan{};
@@ -1764,8 +1942,7 @@ export class NativeBackend final {
     }
 
     auto result = base_result;
-    auto avif_decoder = AvifImageDecoder{};
-    auto container_info = avif_decoder.parse_container_info(image.path);
+    auto container_info = parse_avif_container_info(image.path);
     if (!container_info) {
       mark_failed(result, redact_path_for_user(container_info.error(), image.path));
       return result;

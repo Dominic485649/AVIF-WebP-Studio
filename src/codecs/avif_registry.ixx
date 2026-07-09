@@ -5,6 +5,7 @@ module;
 #include <expected>
 #include <format>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -17,57 +18,6 @@ import awj.config;
 import awj.encoding_defaults;
 
 export namespace awj {
-
-struct AvifEncoderCapability {
-  AvifEncoderMode mode{AvifEncoderMode::automatic};
-  std::string id{};
-  std::vector<ChromaMode> chroma_modes{};
-  std::vector<int> bit_depths{};
-  bool supports_alpha{};
-  bool supports_avif_grid{};
-  std::optional<std::uint32_t> max_single_image_width{};
-  std::optional<std::uint32_t> max_single_image_height{};
-  bool experimental{};
-  bool enabled{true};
-  bool feature_enabled{true};
-  bool auto_selectable{true};
-  bool auto_alpha_selectable{};
-  std::string unavailable_reason{};
-  std::string license{};
-  int default_speed{};
-};
-
-struct AvifEncoderSelectionRequest {
-  AvifEncoderMode requested_encoder{AvifEncoderMode::automatic};
-  ChromaMode requested_chroma{ChromaMode::auto_keep};
-  std::optional<int> requested_bit_depth{};
-  bool requested_bit_depth_explicit{true};
-  std::string requested_bit_depth_reason{};
-  bool has_alpha{};
-  bool must_preserve_alpha{};
-  bool visual_quality_search{};
-  bool speed_explicit{};
-  bool allow_zenrav1e_alpha{};
-  std::uint64_t pixel_count{};
-  std::uint32_t width{};
-  std::uint32_t height{};
-  int speed{default_speed_for(OutputFormat::avif)};
-};
-
-struct AvifEncoderSelection {
-  AvifEncoderMode requested_encoder{AvifEncoderMode::automatic};
-  AvifEncoderMode applied_encoder{AvifEncoderMode::automatic};
-  ChromaMode requested_chroma{ChromaMode::auto_keep};
-  ChromaMode applied_chroma{ChromaMode::auto_keep};
-  std::optional<int> requested_bit_depth{};
-  std::optional<int> applied_bit_depth{};
-  std::string bit_depth_reason{};
-  std::uint64_t pixel_count{};
-  int speed{};
-  bool experimental{};
-  std::string license{};
-  std::string fallback_reason{};
-};
 
 namespace avif_registry_detail {
 
@@ -184,6 +134,10 @@ bool capability_matches(const AvifEncoderCapability& capability,
   if (capability.max_single_image_height && request.height > *capability.max_single_image_height) {
     return false;
   }
+  if (capability.mode == AvifEncoderMode::aom &&
+      request.pixel_count > encoding_defaults::avif_single_image_max_pixels) {
+    return false;
+  }
   if (capability.mode == AvifEncoderMode::svt &&
       request.pixel_count > encoding_defaults::svt_safe_max_pixels) {
     return false;
@@ -239,9 +193,16 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
     return std::format("AVIF encoder {} 不支持输入高度 {} 超过 {}。",
                        capability.id, request.height, *capability.max_single_image_height);
   }
+  if (capability.mode == AvifEncoderMode::aom &&
+      request.pixel_count > encoding_defaults::avif_single_image_max_pixels) {
+    return std::format("AOM/libaom AVIF 单图上限为 65536 边 / {} 像素；将自动走 zenrav1e/grid 大图链路。",
+                       encoding_defaults::avif_single_image_max_pixels);
+  }
   if (capability.mode == AvifEncoderMode::svt &&
       request.pixel_count > encoding_defaults::svt_safe_max_pixels) {
-    return std::format("svt-av1-hdr AVIF encoder 已对超过 {} 像素的图像禁用；请使用 --avif-encoder auto/aom。",
+    return std::format("svt-av1-hdr AVIF encoder 单图上限为 {}x{} / {} 像素；请使用 --avif-encoder auto/aom。",
+                       encoding_defaults::svtav1hdr_single_image_max_width,
+                       encoding_defaults::svtav1hdr_single_image_max_height,
                        encoding_defaults::svt_safe_max_pixels);
   }
   return std::format("AVIF encoder {} 不适用于当前请求。", capability.id);
@@ -349,7 +310,7 @@ std::expected<AvifEncoderSelection, std::string> select_auto_capability(
 
 }  // namespace awj_registry_detail
 
-export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experimental(
+std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experimental(
     bool enable_experimental) {
   return {
       AvifEncoderCapability{.mode = AvifEncoderMode::svt,
@@ -358,6 +319,8 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experime
                             .bit_depths = {8, 10},
                             .supports_alpha = false,
                             .supports_avif_grid = false,
+                            .max_single_image_width = encoding_defaults::svtav1hdr_single_image_max_width,
+                            .max_single_image_height = encoding_defaults::svtav1hdr_single_image_max_height,
                             .enabled = false,
                             .auto_selectable = false,
                             .unavailable_reason = "AVIF encoder svt-av1-hdr 在当前构建中不可用；未构建静态 libavif/SVT 后端。",
@@ -370,6 +333,8 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experime
                             .bit_depths = {8, 10, 12},
                             .supports_alpha = true,
                             .supports_avif_grid = true,
+                            .max_single_image_width = encoding_defaults::avif_single_image_max_dimension,
+                            .max_single_image_height = encoding_defaults::avif_single_image_max_dimension,
                             .license = "BSD-2-Clause",
                             .default_speed = encoding_defaults::default_aom_cpu_used},
       AvifEncoderCapability{.mode = AvifEncoderMode::zenrav1e,
@@ -390,7 +355,7 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experime
   };
 }
 
-export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_build(
+std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_build(
     bool aom_available,
     bool svt_available,
     bool zenravif_available,
@@ -427,11 +392,11 @@ export std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_build(
   return capabilities;
 }
 
-export std::vector<AvifEncoderCapability> avif_encoder_capabilities() {
+std::vector<AvifEncoderCapability> avif_encoder_capabilities() {
   return avif_encoder_capabilities_for_experimental(false);
 }
 
-export std::expected<AvifEncoderSelection, std::string> select_avif_encoder_from_capabilities(
+std::expected<AvifEncoderSelection, std::string> select_avif_encoder_from_capabilities(
     const AvifEncoderSelectionRequest& request,
     std::span<const AvifEncoderCapability> capabilities) {
   if (request.requested_bit_depth && request.requested_bit_depth_explicit &&
@@ -454,7 +419,7 @@ export std::expected<AvifEncoderSelection, std::string> select_avif_encoder_from
   return avif_registry_detail::select_auto_capability(request, capabilities);
 }
 
-export std::expected<AvifEncoderSelection, std::string> select_avif_encoder(
+std::expected<AvifEncoderSelection, std::string> select_avif_encoder(
     const AvifEncoderSelectionRequest& request) {
   const auto capabilities = avif_encoder_capabilities();
   return select_avif_encoder_from_capabilities(request, capabilities);

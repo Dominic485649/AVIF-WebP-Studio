@@ -99,11 +99,11 @@ double lerp(double from, double to, double t) noexcept {
 
 }  // namespace visual_quality_detail
 
-export bool visual_quality_weights_are_valid() noexcept {
+bool visual_quality_weights_are_valid() noexcept {
   return std::abs((GMSD_WEIGHT + MSSSIM_WEIGHT) - 1.0) <= 1e-9;
 }
 
-export double normalize_gmsd_to_quality_score(double gmsd) noexcept {
+double normalize_gmsd_to_quality_score(double gmsd) noexcept {
   if (!std::isfinite(gmsd) || gmsd <= GMSD_BEST) {
     return 99.0;
   }
@@ -120,7 +120,7 @@ export double normalize_gmsd_to_quality_score(double gmsd) noexcept {
   return std::clamp(1.0 + 98.0 * t, 1.0, 99.0);
 }
 
-export double normalize_msssim_to_quality_score(double ms_ssim) noexcept {
+double normalize_msssim_to_quality_score(double ms_ssim) noexcept {
   if (!std::isfinite(ms_ssim) || ms_ssim >= MSSSIM_BEST) {
     return 99.0;
   }
@@ -147,7 +147,7 @@ export double normalize_msssim_to_quality_score(double ms_ssim) noexcept {
   return std::clamp(99.0 - 98.0 * penalty, 1.0, 99.0);
 }
 
-export VisualScoreBreakdown calculate_visual_score(double gmsd,
+VisualScoreBreakdown calculate_visual_score(double gmsd,
                                                    double ms_ssim) noexcept {
   const double qg = normalize_gmsd_to_quality_score(gmsd);
   const double qm = normalize_msssim_to_quality_score(ms_ssim);
@@ -156,7 +156,7 @@ export VisualScoreBreakdown calculate_visual_score(double gmsd,
                               .msssim_quality_score = qm};
 }
 
-export QualitySearchRange get_quality_search_range(int visual_quality) noexcept {
+QualitySearchRange get_quality_search_range(int visual_quality) noexcept {
   if (visual_quality >= 100) {
     return QualitySearchRange{.lossless = true,
                               .q_min = ENCODER_QUALITY_MAX,
@@ -181,13 +181,13 @@ export QualitySearchRange get_quality_search_range(int visual_quality) noexcept 
   return QualitySearchRange{.lossless = false, .q_min = q_min, .q_max = q_max};
 }
 
-export bool visual_quality_candidate_meets_target(
+bool visual_quality_candidate_meets_target(
     const VisualQualityCandidate& candidate,
     int requested_visual_quality) noexcept {
   return candidate.visual_score >= static_cast<double>(requested_visual_quality);
 }
 
-export CandidateSelection select_smallest_passing_visual_quality_candidate(
+CandidateSelection select_smallest_passing_visual_quality_candidate(
     std::span<const VisualQualityCandidate> candidates,
     int requested_visual_quality) noexcept {
   CandidateSelection selection{};
@@ -204,7 +204,7 @@ export CandidateSelection select_smallest_passing_visual_quality_candidate(
   return selection;
 }
 
-export CandidateSelection select_closest_visual_quality_candidate(
+CandidateSelection select_closest_visual_quality_candidate(
     std::span<const VisualQualityCandidate> candidates) noexcept {
   CandidateSelection selection{};
   for (const auto& candidate : candidates) {

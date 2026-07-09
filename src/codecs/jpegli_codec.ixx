@@ -14,6 +14,7 @@ module;
 #include <setjmp.h>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -375,7 +376,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
 
 }  // namespace jpegli_detail
 
-export class JpegliImageDecoder final : public ImageDecoder {
+class JpegliImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "jpegli"; }
 
@@ -454,7 +455,7 @@ export class JpegliImageDecoder final : public ImageDecoder {
   }
 };
 
-export class JpegliImageEncoder final : public ImageEncoder {
+class JpegliImageEncoder final : public ImageEncoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "jpegli"; }
 

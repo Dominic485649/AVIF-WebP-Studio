@@ -426,8 +426,10 @@ export component AwjStudio inherits Window {
     in-out property <string> quality-text: "80";
     in-out property <string> visual-quality-text: "";
     in-out property <bool> visual-quality-gpu: true;
+    in-out property <string> visual-quality-gpu-help-text: "默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。";
     in-out property <bool> visual-quality-fallback: false;
     in-out property <bool> allow-wic-fallback: true;
+    in-out property <bool> wic-ui-visible: true;
     in-out property <bool> quality-follows-format: true;
     in-out property <string> bit-depth-text: "";
     in-out property <bool> bit-depth-follows-format: true;
@@ -438,6 +440,7 @@ export component AwjStudio inherits Window {
     in-out property <int> alpha-policy-index: 1;
     in-out property <string> threads-text: "";
     in-out property <string> memory-limit-text: "";
+    in-out property <bool> unlock-max-input-file-bytes: false;
     in-out property <int> size-limit-index: 0;
     in-out property <string> max-width-text: "";
     in-out property <string> max-height-text: "";
@@ -528,6 +531,7 @@ export component AwjStudio inherits Window {
     property <color> text-soft: root.dark-mode ? #748299 : #94a3b8;
     property <color> accent: #0d6efd;
     property <color> accent-strong: root.dark-mode ? #5aa2ff : #0b5ed7;
+    property <color> accent-soft: root.dark-mode ? #14325b : #e7f1ff;
     property <color> success: #22b84c;
     property <color> success-soft: root.dark-mode ? #143522 : #eaf8ef;
     property <color> warning: #d97706;
@@ -552,6 +556,9 @@ export component AwjStudio inherits Window {
     callback cancel-conversion();
     callback clear-tasks();
     callback queue-row-pointer-event(int, int, int, float);
+    pure callback queue-drag-data(int) -> data-transfer;
+    callback queue-drag-can-drop(DropEvent, int) -> DragAction;
+    callback queue-drag-dropped(DropEvent, int) -> DragAction;
     callback queue-menu-action(int, string);
     callback combo-popup-requested();
     callback combo-popup-finished();
@@ -753,6 +760,16 @@ export component AwjStudio inherits Window {
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 3; }
                     }
+                    NavItem {
+                        label: "大图模式";
+                        selected: root.selected-page == 4;
+                        normal-background: transparent;
+                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
+                        selected-background: root.dark-mode ? #188697 : #0f7c8c;
+                        normal-text: root.text-body;
+                        selected-text: #ffffff;
+                        clicked => { root.selected-page = 4; }
+                    }
                     Rectangle { vertical-stretch: 1; background: transparent; }
 
                     NavItem {
@@ -930,9 +947,9 @@ export component AwjStudio inherits Window {
                                         if root.format-index == 0: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
-                                            Text { text: "大图处理"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e", enabled: true }, { text: "grid", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: ">2000万像素时自动进入大图路径；1000万-2000万像素会等待小图完成后继续使用普通编码器。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            Text { text: "大图优先"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e 优先", enabled: true }, { text: "grid 优先", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            Text { text: ">1000万像素排到普通队列末尾；超过 AOM 单图上限后自动走大图链路：默认 zenrav1e 优先并回退 grid，也可改为 grid 优先并回退 zenrav1e；两者都失败则报错。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                                         }
 
                                     }
@@ -970,12 +987,12 @@ export component AwjStudio inherits Window {
                                         SoftButton { dark-mode: root.dark-mode; text: "保存参数"; variant: "action"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.save-menu-params-requested(); } }
                                     }
                                 }
-                                Rectangle {
+                                if !root.context-menu-warning.is-empty: Rectangle {
                                     horizontal-stretch: 1;
                                     height: 40px;
                                     background: transparent;
-                                    Text { text: root.context-menu-warning; color: #dc2626; font-size: 13px; vertical-alignment: center; overflow: elide; visible: !root.context-menu-warning.is-empty; }
-                                    TouchArea { enabled: !root.context-menu-warning.is-empty; clicked => { root.context-menu-warning-clicked(); } }
+                                    Text { text: root.context-menu-warning; color: #dc2626; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                                    TouchArea { clicked => { root.context-menu-warning-clicked(); } }
                                 }
                             }
 
@@ -1052,7 +1069,7 @@ export component AwjStudio inherits Window {
                             }
                             HorizontalLayout { spacing: root.page-gap;
                                 CheckBox { text: "移除元数据"; checked <=> root.menu-strip-metadata; enabled: !root.running; }
-                                CheckBox { text: "允许 WIC 兜底"; checked <=> root.menu-allow-wic-fallback; enabled: !root.running; }
+                                if root.wic-ui-visible: CheckBox { text: "允许 WIC 兜底"; checked <=> root.menu-allow-wic-fallback; enabled: !root.running; }
                                 CheckBox { text: "完成后关闭窗口"; checked <=> root.menu-close-on-finish; enabled: !root.running; }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
@@ -1208,7 +1225,7 @@ export component AwjStudio inherits Window {
                             }
 
                             Text {
-                                text: "提示：右键队列项可打开菜单；长按可调整未开始项目顺序。";
+                                text: "提示：右键队列项可打开菜单；拖动未开始队列项可调整顺序。";
                                 color: root.text-muted;
                                 font-size: 12px;
                             }
@@ -1231,45 +1248,71 @@ export component AwjStudio inherits Window {
                                 }
 
                                 if root.task-rows.length > 0: ListView {
-                                     for row[index] in root.task-rows: Rectangle {
-                                         background: index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent;
-                                         border-radius: 6px;
+                                     for row[index] in root.task-rows: drop-row := DropArea {
+                                         property <length> hover-y: 0px;
+                                         property <int> drop-index: index + (drop-row.hover-y > drop-row.height / 2 ? 1 : 0);
+                                         width: parent.width;
                                          height: 34px;
-                                         opacity: row.locked ? 0.78 : 1.0;
-                                         animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
-                                         HorizontalLayout {
-                                             padding-left: 10px;
-                                             padding-right: 10px;
-                                             spacing: 10px;
-                                             Text { text: row.order; width: 40px; color: row.locked ? root.text-soft : root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                                             Text { text: row.filename; width: 230px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                             Text { text: row.folder; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                             Text { text: row.size; width: 82px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                             Text { text: row.status; width: 118px; color: row.warning ? root.warning : (row.locked ? root.text-soft : root.text-body); font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                             Text { text: row.output.is-empty ? row.log : row.output; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                         can-drop(event) => {
+                                             drop-row.hover-y = event.position.y;
+                                             return root.queue-drag-can-drop(event, drop-row.drop-index);
                                          }
-                                         row-touch := TouchArea {
-                                             width: parent.width;
-                                             height: parent.height;
-                                             pointer-event(event) => {
-                                                 if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
-                                                     root.queue-menu-index = index;
-                                                     root.queue-menu-x = max(0px, min(root.width - root.queue-menu-width - 10px, row-touch.absolute-position.x + row-touch.mouse-x));
-                                                     root.queue-menu-y = max(0px, min(root.height - root.queue-menu-height - 10px, row-touch.absolute-position.y + row-touch.mouse-y));
-                                                     root.queue-menu-origin-x = max(0px, row-touch.absolute-position.x + row-touch.mouse-x - root.queue-menu-x);
-                                                     root.queue-menu-origin-y = max(0px, row-touch.absolute-position.y + row-touch.mouse-y - root.queue-menu-y);
-                                                     root.queue-menu-opening = false;
-                                                     root.queue-menu-visible = false;
-                                                     queue-menu-popup.show();
-                                                     root.queue-menu-opening = true;
+                                         dropped(event) => {
+                                             return root.queue-drag-dropped(event, drop-row.drop-index);
+                                         }
+                                         row-drag := DragArea {
+                                             enabled: !row.locked;
+                                             allow-move: !row.locked;
+                                             data: root.queue-drag-data(index);
+                                             opacity: row-drag.dragging ? 0.45 : (row.locked ? 0.78 : 1.0);
+                                             Rectangle {
+                                                 width: parent.width;
+                                                 height: parent.height;
+                                                 background: drop-row.has-drag ? (root.dark-mode ? #24324a : #e7f1ff) : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent);
+                                                 border-radius: 6px;
+                                                 animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                                                 HorizontalLayout {
+                                                     padding-left: 10px;
+                                                     padding-right: 10px;
+                                                     spacing: 10px;
+                                                     Text { text: row.order; width: 40px; color: row.locked ? root.text-soft : root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
+                                                     Text { text: row.filename; width: 230px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                     Text { text: row.folder; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                     Text { text: row.size; width: 82px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                                     Text { text: row.status; width: 118px; color: row.warning ? root.warning : (row.locked ? root.text-soft : root.text-body); font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                     Text { text: row.output.is-empty ? row.log : row.output; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                                  }
-                                                 root.queue-row-pointer-event(
-                                                     index,
-                                                     event.button == PointerEventButton.left ? 0 : (event.button == PointerEventButton.right ? 1 : 2),
-                                                     event.kind == PointerEventKind.down ? 0 : (event.kind == PointerEventKind.up ? 1 : (event.kind == PointerEventKind.move ? 2 : 3)),
-                                                     row-touch.mouse-y / 1px
-                                                 );
+                                                 row-touch := TouchArea {
+                                                     width: parent.width;
+                                                     height: parent.height;
+                                                     pointer-event(event) => {
+                                                         if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                                                             root.queue-menu-index = index;
+                                                             root.queue-menu-x = max(0px, min(root.width - root.queue-menu-width - 10px, row-touch.absolute-position.x + row-touch.mouse-x));
+                                                             root.queue-menu-y = max(0px, min(root.height - root.queue-menu-height - 10px, row-touch.absolute-position.y + row-touch.mouse-y));
+                                                             root.queue-menu-origin-x = max(0px, row-touch.absolute-position.x + row-touch.mouse-x - root.queue-menu-x);
+                                                             root.queue-menu-origin-y = max(0px, row-touch.absolute-position.y + row-touch.mouse-y - root.queue-menu-y);
+                                                             root.queue-menu-opening = false;
+                                                             root.queue-menu-visible = false;
+                                                             queue-menu-popup.show();
+                                                             root.queue-menu-opening = true;
+                                                         }
+                                                         root.queue-row-pointer-event(
+                                                             index,
+                                                             event.button == PointerEventButton.left ? 0 : (event.button == PointerEventButton.right ? 1 : 2),
+                                                             event.kind == PointerEventKind.down ? 0 : (event.kind == PointerEventKind.up ? 1 : (event.kind == PointerEventKind.move ? 2 : 3)),
+                                                             row-touch.mouse-y / 1px
+                                                         );
+                                                     }
+                                                 }
                                              }
+                                         }
+                                         if drop-row.has-drag: Rectangle {
+                                             y: drop-row.hover-y > drop-row.height / 2 ? parent.height - 2px : 0px;
+                                             width: parent.width;
+                                             height: 2px;
+                                             background: root.accent-strong;
+                                             border-radius: 1px;
                                          }
                                      }
                                  }
@@ -1296,7 +1339,151 @@ export component AwjStudio inherits Window {
                     }
                 }
 
-                if root.selected-page == 2: ScrollView {
+                
+                if root.selected-page == 4: ScrollView {
+                    VerticalLayout {
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        spacing: 14px;
+
+                        Rectangle {
+                            height: 120px;
+                            border-radius: 18px;
+                            background: root.chrome-bg;
+                            border-color: root.panel-border;
+                            border-width: 1px;
+                            animate background, border-color { duration: 180ms; easing: ease-out; }
+                            VerticalLayout {
+                                padding: 24px;
+                                spacing: 6px;
+                                Text { text: "大图模式"; color: root.text-strong; font-size: 30px; font-weight: 800; }
+                                Text { text: "超出普通 AVIF 单图限制的图片会进入这里，并按“大图优先”自动处理（默认 zenrav1e→grid）。此页仅展示状态；也可对单项强制指定路径。"; color: root.text-muted; font-size: 14px; wrap: word-wrap; }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 14px;
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                min-height: 520px;
+                                border-radius: 18px;
+                                background: root.panel-bg;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 18px;
+                                    spacing: 10px;
+                                    Text { text: "大图队列"; color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                    Text { text: root.large-image-rows.length == 0 ? "暂无大图任务。开始 AVIF 转换后，超过 AOM 65536 边或 2^30 像素的图片会自动移入这里。" : "选择一项后使用右侧操作继续处理。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+
+                                    Rectangle {
+                                        height: 32px;
+                                        border-radius: 9px;
+                                        background: root.field-bg;
+                                        border-color: root.field-border;
+                                        border-width: 1px;
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            spacing: 10px;
+                                            Text { text: "文件名"; width: 240px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "尺寸"; width: 150px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "原因"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "状态"; width: 170px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        vertical-stretch: 1;
+                                        border-radius: 12px;
+                                        background: root.dark-mode ? #151b25 : #ffffff;
+                                        border-color: root.panel-border;
+                                        border-width: 1px;
+                                        clip: true;
+
+                                        if root.large-image-rows.length == 0: Text {
+                                            text: "暂无大图任务";
+                                            color: root.text-muted;
+                                            font-size: 13px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if root.large-image-rows.length > 0: ListView {
+                                            for row[index] in root.large-image-rows: Rectangle {
+                                                background: index == root.selected-large-image-index ? root.accent-soft : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent);
+                                                border-radius: 6px;
+                                                height: 40px;
+                                                animate background { duration: 120ms; easing: ease-out; }
+                                                HorizontalLayout {
+                                                    padding-left: 10px;
+                                                    padding-right: 10px;
+                                                    spacing: 10px;
+                                                    Text { text: row.filename; width: 240px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                    Text { text: row.dimensions; width: 150px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                                    Text { text: row.reason; horizontal-stretch: 1; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                    Text { text: row.status; width: 170px; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                }
+                                                TouchArea { clicked => { root.selected-large-image-index = index; } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: 360px;
+                                min-height: 520px;
+                                border-radius: 18px;
+                                background: root.panel-bg;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                animate background, border-color { duration: 180ms; easing: ease-out; }
+                                VerticalLayout {
+                                    padding: 22px;
+                                    spacing: 14px;
+                                    Text { text: "处理方式"; color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].filename : "未选择大图任务"; color: root.text-body; font-size: 14px; font-weight: 700; overflow: elide; }
+                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].dimensions : ""; color: root.text-muted; font-size: 13px; }
+                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].actions : "请先在左侧选择一项。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    SoftButton {
+                                        dark-mode: root.dark-mode;
+                                        text: "使用 zenrav1e";
+                                        variant: "action";
+                                        height: 42px;
+                                        enabled: !root.running && root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length && root.large-image-rows[root.selected-large-image-index].zenrav1e-available;
+                                        clicked => { root.large-image-action-requested(root.selected-large-image-index, "zenrav1e"); }
+                                    }
+                                    SoftButton {
+                                        dark-mode: root.dark-mode;
+                                        text: "使用 AVIF grid";
+                                        height: 42px;
+                                        enabled: !root.running && root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length && root.large-image-rows[root.selected-large-image-index].grid-available;
+                                        clicked => { root.large-image-action-requested(root.selected-large-image-index, "grid"); }
+                                    }
+                                    Rectangle {
+                                        border-radius: 12px;
+                                        background: root.panel-bg-soft;
+                                        border-color: root.field-border;
+                                        border-width: 1px;
+                                        VerticalLayout {
+                                            padding: 14px;
+                                            spacing: 8px;
+                                            Text { text: "规则"; color: root.text-strong; font-size: 15px; font-weight: 800; }
+                                            Text { text: "• 手动选择会严格按所选方式执行，不会静默改走另一条路径。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
+                                            Text { text: "• grid 使用 libavif + AOM 的 AVIF grid，不是 AV1 tile。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
+                                            Text { text: "• zenrav1e 仅生成单图 AVIF，不支持 grid，边长必须 <= 65536。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
+                                            Text { text: "• 自动 grid 默认 16384 x 8704 tile，优先寻找可整除分块；若必须 padding，当前会拒绝编码以避免输出尺寸扩大。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+if root.selected-page == 2: ScrollView {
                     VerticalLayout {
                         spacing: root.page-gap;
 
@@ -1370,7 +1557,7 @@ export component AwjStudio inherits Window {
                                 padding: 24px;
                                 spacing: root.page-gap;
                                 Text { text: "高级与实验功能"; color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                VerticalLayout {
+                                if root.wic-ui-visible: VerticalLayout {
                                     spacing: 8px;
                                     CheckBox { text: "允许 WIC 兜底"; checked <=> root.allow-wic-fallback; enabled: !root.running; }
                                     Text { text: "开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
@@ -1378,17 +1565,24 @@ export component AwjStudio inherits Window {
                                 VerticalLayout {
                                     spacing: 8px;
                                     CheckBox { text: "GPU 加速视觉质量"; checked <=> root.visual-quality-gpu; enabled: !root.running; }
-                                    Text { text: "默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: root.visual-quality-gpu-help-text; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
                                 }
                                 VerticalLayout {
                                     spacing: 8px;
                                     CheckBox { text: "视觉质量未达标时兜底输出"; checked <=> root.visual-quality-fallback; enabled: !root.running; }
                                     Text { text: "填写视觉质量后生效；未填写视觉质量时此选项保持可选，但不会参与本次编码。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
                                 }
+
+                                VerticalLayout {
+                                    spacing: 8px;
+                                    CheckBox { text: "解除 20 GiB 输入/运行时上限"; checked <=> root.unlock-max-input-file-bytes; enabled: !root.running; }
+                                    Text { text: "仅当前会话生效，不会写入 AWJ.jsonc。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: "警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"; color: #d13438; font-size: 13px; wrap: word-wrap; font-weight: 700; }
+                                }
                                 VerticalLayout {
                                     spacing: 8px;
                                     CheckBox { text: "启用实验性编码器（zenrav1e）"; checked <=> root.experimental-encoders; enabled: !root.running; }
-                                    Text { text: "启用后，构建支持时可显式选择 zenrav1e；普通队列自动不会选择实验编码器；大图模式中可手动选择 zenrav1e。不可用时选项会置灰。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: "启用后，构建支持时可在自动大图链路中使用 zenrav1e；普通队列自动不会选择实验编码器。不可用时相关路径会跳过或置灰。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
                                 }
 
                             }

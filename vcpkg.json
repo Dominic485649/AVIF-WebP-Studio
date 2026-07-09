@@ -1,26 +1,41 @@
 {
-  "name": "awjimage",
-  "version": "0.9.0",
-  "dependencies": [
-    "scnlib",
-    "libwebp",
-    "libjxl",
-    "libpng",
-    "libjpeg-turbo",
-    "giflib",
-    {
-      "name": "tiff",
-      "features": [
-        "jpeg"
-      ]
-    },
-    {
-      "name": "libraw",
-      "features": [
-        "dng-lossy"
-      ]
-    },
-    "aom",
-    "libyuv"
-  ]
+    "name":  "awjimage",
+    "version":  "0.10.0",
+    "dependencies":  [
+                         "scnlib",
+                         "libwebp",
+                         "libjxl",
+                         "libpng",
+                         "libjpeg-turbo",
+                         "giflib",
+                         {
+                             "name":  "tiff",
+                             "features":  [
+                                              "jpeg"
+                                          ]
+                         },
+                         {
+                             "name":  "libraw",
+                             "features":  [
+                                              "dng-lossy"
+                                          ]
+                         },
+                         "aom",
+                         {
+                             "name":  "libyuv",
+                             "platform":  "windows"
+                         },
+                         {
+                             "name":  "vulkan-headers",
+                             "platform":  "!windows"
+                         },
+                         {
+                             "name":  "vulkan-loader",
+                             "platform":  "!windows"
+                         },
+                         {
+                             "name":  "directx-dxc",
+                             "platform":  "!windows"
+                         }
+                     ]
 }

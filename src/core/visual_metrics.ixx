@@ -33,7 +33,7 @@ struct LumaImage {
   }
 };
 
-export struct VisualMetricResult {
+struct VisualMetricResult {
   double raw_gmsd{};
   double raw_ms_ssim{};
   VisualScoreBreakdown score{};
@@ -50,8 +50,8 @@ std::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pix
     return std::unexpected{std::format("{} luma buffer 尺寸超过运行时限制。", context)};
   }
   const auto byte_count = pixel_count * sizeof(float);
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} luma buffer 超过 20 GiB 运行时上限。", context)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} luma buffer 超过当前运行时上限。", context)};
   }
   std::vector<float> buffer;
   try {
@@ -66,7 +66,7 @@ std::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pix
 
 }  // namespace visual_metrics_detail
 
-export std::expected<LumaImage, std::string> make_luma_image(
+std::expected<LumaImage, std::string> make_luma_image(
     const ImageBuffer& image) {
   if (image.width == 0 || image.height == 0 || image.planes.empty()) {
     return std::unexpected{"输入图像为空，无法计算视觉指标。"};
@@ -242,7 +242,7 @@ double ssim_global(const LumaImage& reference, const LumaImage& candidate) noexc
 
 }  // namespace visual_metrics_detail
 
-export std::expected<double, std::string> compute_gmsd(
+std::expected<double, std::string> compute_gmsd(
     const LumaImage& reference,
     const LumaImage& candidate) {
   if (auto valid = visual_metrics_detail::validate_same_shape(reference, candidate); !valid) {
@@ -272,7 +272,7 @@ export std::expected<double, std::string> compute_gmsd(
   return std::sqrt(m2 / static_cast<double>(count));
 }
 
-export std::expected<double, std::string> compute_ms_ssim(
+std::expected<double, std::string> compute_ms_ssim(
     const LumaImage& reference,
     const LumaImage& candidate) {
   if (auto valid = visual_metrics_detail::validate_same_shape(reference, candidate); !valid) {
@@ -306,13 +306,13 @@ export std::expected<double, std::string> compute_ms_ssim(
   return std::clamp(value, 0.0, 1.0);
 }
 
-export VisualMetricResult make_visual_metric_result(double raw_gmsd, double raw_ms_ssim) {
+VisualMetricResult make_visual_metric_result(double raw_gmsd, double raw_ms_ssim) {
   return VisualMetricResult{.raw_gmsd = raw_gmsd,
                             .raw_ms_ssim = raw_ms_ssim,
                             .score = calculate_visual_score(raw_gmsd, raw_ms_ssim)};
 }
 
-export std::expected<VisualMetricResult, std::string> calculate_visual_metrics_cpu(
+std::expected<VisualMetricResult, std::string> calculate_visual_metrics_cpu(
     const LumaImage& reference,
     const LumaImage& candidate) {
   auto gmsd = compute_gmsd(reference, candidate);
@@ -326,7 +326,7 @@ export std::expected<VisualMetricResult, std::string> calculate_visual_metrics_c
   return make_visual_metric_result(*gmsd, *ms_ssim);
 }
 
-export std::expected<VisualScoreBreakdown, std::string> calculate_visual_score(
+std::expected<VisualScoreBreakdown, std::string> calculate_visual_score(
     const LumaImage& reference,
     const LumaImage& candidate) {
   auto metrics = calculate_visual_metrics_cpu(reference, candidate);

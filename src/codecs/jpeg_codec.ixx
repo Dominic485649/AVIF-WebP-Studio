@@ -501,7 +501,7 @@ ImageSourceInfo source_info_from_header(const jpeg_decompress_struct& cinfo) noe
 
 }  // namespace jpeg_detail
 
-export class JpegImageDecoder final : public ImageDecoder {
+class JpegImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libjpeg-turbo"; }
 
@@ -519,8 +519,8 @@ export class JpegImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("读取 JPEG 文件大小失败: {}；系统错误：{}",
                                            display_path_for_user(path), ec.message())};
       }
-      if (file_size > static_cast<std::uintmax_t>(encoding_defaults::max_input_file_bytes)) {
-        return std::unexpected{std::format("JPEG 文件超过 20 GiB 输入上限: {}",
+      if (file_size > static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
+        return std::unexpected{std::format("JPEG 文件超过当前输入上限: {}",
                                            display_path_for_user(path))};
       }
 

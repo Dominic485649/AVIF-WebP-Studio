@@ -53,8 +53,8 @@ std::expected<void, std::string> check_input_file_size(const fs::path& path) {
     return std::unexpected{std::format("读取 RAW 文件大小失败: {}；系统错误：{}",
                                        display_path_for_user(path), ec.message())};
   }
-  if (file_size > static_cast<std::uintmax_t>(encoding_defaults::max_input_file_bytes)) {
-    return std::unexpected{std::format("RAW 文件超过 20 GiB 输入上限: {}",
+  if (file_size > static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
+    return std::unexpected{std::format("RAW 文件超过当前输入上限: {}",
                                        display_path_for_user(path))};
   }
   return {};
@@ -71,7 +71,7 @@ std::expected<void, std::string> reject_multiple_raw_images(
 
 }  // namespace libraw_detail
 
-export class LibRawImageDecoder final : public ImageDecoder {
+class LibRawImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libraw"; }
 

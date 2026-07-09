@@ -19,7 +19,13 @@ module;
 #include <string>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 export module awj.raw_image_io;
 
@@ -77,16 +83,51 @@ bool alpha_mode_is_valid(std::uint32_t value) noexcept {
   return value == alpha_none || value == alpha_straight || value == alpha_premultiplied;
 }
 
-struct FileHandleDeleter {
-  using pointer = HANDLE;
-  void operator()(HANDLE value) const noexcept {
-    if (value != nullptr && value != INVALID_HANDLE_VALUE) {
-      CloseHandle(value);
-    }
-  }
-};
+class UniqueFileHandle {
+ public:
+#ifdef _WIN32
+  using native_handle = HANDLE;
+  static constexpr native_handle invalid() noexcept { return INVALID_HANDLE_VALUE; }
+#else
+  using native_handle = int;
+  static constexpr native_handle invalid() noexcept { return -1; }
+#endif
 
-using UniqueFileHandle = std::unique_ptr<void, FileHandleDeleter>;
+  UniqueFileHandle() noexcept = default;
+  explicit UniqueFileHandle(native_handle handle) noexcept : handle_{handle} {}
+  ~UniqueFileHandle() { reset(); }
+  UniqueFileHandle(const UniqueFileHandle&) = delete;
+  UniqueFileHandle& operator=(const UniqueFileHandle&) = delete;
+  UniqueFileHandle(UniqueFileHandle&& other) noexcept : handle_{other.release()} {}
+  UniqueFileHandle& operator=(UniqueFileHandle&& other) noexcept {
+    if (this != &other) {
+      reset(other.release());
+    }
+    return *this;
+  }
+
+  [[nodiscard]] native_handle get() const noexcept { return handle_; }
+  native_handle release() noexcept {
+    const auto old = handle_;
+    handle_ = invalid();
+    return old;
+  }
+  void reset(native_handle handle = invalid()) noexcept {
+#ifdef _WIN32
+    if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(handle_);
+    }
+#else
+    if (handle_ >= 0) {
+      ::close(handle_);
+    }
+#endif
+    handle_ = handle;
+  }
+
+ private:
+  native_handle handle_{invalid()};
+};
 
 class OutputFileCleanup {
  public:
@@ -113,13 +154,14 @@ class OutputFileCleanup {
   bool active_{true};
 };
 
-std::expected<void, std::string> write_all(HANDLE file,
+std::expected<void, std::string> write_all(UniqueFileHandle::native_handle file,
                                            const void* data,
                                            std::uint64_t size,
                                            const fs::path& path) {
   auto remaining = size;
   const auto* cursor = static_cast<const std::byte*>(data);
   while (remaining > 0) {
+#ifdef _WIN32
     const auto chunk = static_cast<DWORD>(
         std::min<std::uint64_t>(remaining, std::numeric_limits<DWORD>::max()));
     DWORD written = 0;
@@ -128,18 +170,29 @@ std::expected<void, std::string> write_all(HANDLE file,
                                          display_path_for_user(path),
                                          win32_error_message(GetLastError()))};
     }
+#else
+    const auto written = ::write(file, cursor, static_cast<std::size_t>(remaining));
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return std::unexpected{std::format("写入 raw 图像文件失败: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         posix_error_message(errno))};
+    }
+#endif
     if (written == 0) {
       return std::unexpected{std::format("写入 raw 图像文件失败: {}", display_path_for_user(path))};
     }
     cursor += written;
-    remaining -= written;
+    remaining -= static_cast<std::uint64_t>(written);
   }
   return {};
 }
 
 }  // namespace raw_image_detail
 
-export std::expected<void, std::string> write_raw_image_file(
+std::expected<void, std::string> write_raw_image_file(
     const fs::path& path,
     const ImageBuffer& image) {
   try {
@@ -173,8 +226,8 @@ export std::expected<void, std::string> write_raw_image_file(
     if (plane.bytes.size() < min_bytes) {
       return std::unexpected{"raw 图像 payload 小于尺寸要求。"};
     }
-    if (min_bytes > encoding_defaults::max_input_file_bytes - sizeof(raw_image_detail::Header)) {
-      return std::unexpected{"raw 图像输出超过 20 GiB 运行时上限。"};
+    if (min_bytes > encoding_defaults::effective_max_input_file_bytes() - sizeof(raw_image_detail::Header)) {
+      return std::unexpected{"raw 图像输出超过当前运行时上限。"};
     }
     raw_image_detail::Header header{};
     std::ranges::copy(raw_image_detail::magic, header.magic);
@@ -195,6 +248,7 @@ export std::expected<void, std::string> write_raw_image_file(
                                            display_path_for_user(parent), ec.message())};
       }
     }
+#ifdef _WIN32
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                     FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
@@ -206,6 +260,18 @@ export std::expected<void, std::string> write_raw_image_file(
                                          display_path_for_user(path),
                                          win32_error_message(error))};
     }
+#else
+    const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    if (file < 0) {
+      const int error = errno;
+      if (error == EEXIST) {
+        return std::unexpected{std::format("raw 图像文件已存在: {}", display_path_for_user(path))};
+      }
+      return std::unexpected{std::format("无法创建 raw 图像文件: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         posix_error_message(error))};
+    }
+#endif
     raw_image_detail::OutputFileCleanup cleanup{path};
     raw_image_detail::UniqueFileHandle output{file};
     if (auto written = raw_image_detail::write_all(output.get(), &header, sizeof(header), path); !written) {
@@ -214,6 +280,7 @@ export std::expected<void, std::string> write_raw_image_file(
     if (auto written = raw_image_detail::write_all(output.get(), plane.bytes.data(), min_bytes, path); !written) {
       return std::unexpected{written.error()};
     }
+#ifdef _WIN32
     if (!FlushFileBuffers(output.get())) {
       return std::unexpected{std::format("刷新 raw 图像文件失败: {}；系统错误：{}",
                                          display_path_for_user(path),
@@ -225,6 +292,19 @@ export std::expected<void, std::string> write_raw_image_file(
                                          display_path_for_user(path),
                                          win32_error_message(GetLastError()))};
     }
+#else
+    const int output_handle = output.get();
+    if (::fsync(output_handle) != 0) {
+      return std::unexpected{std::format("刷新 raw 图像文件失败: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         posix_error_message(errno))};
+    }
+    if (::close(output_handle) != 0) {
+      return std::unexpected{std::format("关闭 raw 图像文件失败: {}；系统错误：{}",
+                                         display_path_for_user(path),
+                                         posix_error_message(errno))};
+    }
+#endif
     output.release();
     cleanup.release();
     return {};
@@ -237,7 +317,7 @@ export std::expected<void, std::string> write_raw_image_file(
   }
 }
 
-export std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs::path& path) {
+std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs::path& path) {
   try {
     std::ifstream input{path, std::ios::binary};
     if (!input) {
@@ -278,8 +358,8 @@ export std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(co
       return std::unexpected{"读取 raw 图像文件大小失败。"};
     }
     const auto file_size_bytes = static_cast<std::uint64_t>(file_size);
-    if (file_size_bytes > encoding_defaults::max_input_file_bytes) {
-      return std::unexpected{std::format("raw 图像文件超过 20 GiB 输入上限: {}",
+    if (file_size_bytes > encoding_defaults::effective_max_input_file_bytes()) {
+      return std::unexpected{std::format("raw 图像文件超过当前输入上限: {}",
                                          display_path_for_user(path))};
     }
     if (file_size_bytes < sizeof(raw_image_detail::Header) ||
@@ -296,7 +376,7 @@ export std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(co
   }
 }
 
-export std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path) {
+std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path) {
   try {
     std::ifstream input{path, std::ios::binary};
     if (!input) {
@@ -339,8 +419,8 @@ export std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::pat
       return std::unexpected{"读取 raw 图像文件大小失败。"};
     }
     const auto file_size_bytes = static_cast<std::uint64_t>(file_size);
-    if (file_size_bytes > encoding_defaults::max_input_file_bytes) {
-      return std::unexpected{std::format("raw 图像文件超过 20 GiB 输入上限: {}",
+    if (file_size_bytes > encoding_defaults::effective_max_input_file_bytes()) {
+      return std::unexpected{std::format("raw 图像文件超过当前输入上限: {}",
                                          display_path_for_user(path))};
     }
     if (file_size_bytes < sizeof(raw_image_detail::Header) ||

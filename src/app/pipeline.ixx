@@ -4,8 +4,12 @@ module;
 #define NOMINMAX
 #endif
 
+#ifdef _WIN32
 #include <objbase.h>
 #include <windows.h>
+#else
+#include <sys/sysinfo.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -39,9 +43,11 @@ export module awj.pipeline;
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
+import awj.codec;
 import awj.config;
 import awj.core;
 import awj.decoder_registry;
+import awj.encoding_defaults;
 import awj.large_image_plan;
 import awj.resource_planner;
 import awj.visual_quality;
@@ -95,6 +101,7 @@ struct ClassifiedWork {
   std::vector<BatchLargeImageItem> large_mode{};
 };
 
+#ifdef _WIN32
 class WicFallbackComApartment {
  public:
   explicit WicFallbackComApartment(bool enabled) noexcept
@@ -122,6 +129,14 @@ class WicFallbackComApartment {
   bool enabled_{};
   HRESULT init_{S_FALSE};
 };
+#else
+class WicFallbackComApartment {
+ public:
+  explicit WicFallbackComApartment(bool) noexcept {}
+  [[nodiscard]] bool usable() const noexcept { return true; }
+  [[nodiscard]] int init() const noexcept { return 0; }
+};
+#endif
 
 int count_to_int_saturated(std::size_t value) noexcept {
   return value > static_cast<std::size_t>(std::numeric_limits<int>::max())
@@ -730,36 +745,110 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
   large_cfg.input_path = item.file.path;
   large_cfg.visual_quality.reset();
 
+  // Auto chain after ordinary AOM limits: preferred path first, then fallback.
+  // Priority default zenrav1e; user may prefer grid. studio_large_action still
+  // forces a single path for explicit worker/CLI requests.
+  const bool manual_action = !cfg.studio_large_action.empty();
+  const bool prefer_grid =
+      manual_action ? cfg.studio_large_action == L"grid"
+                    : cfg.large_image_priority == L"grid";
+  const bool prefer_zenrav1e = !prefer_grid;
+
+  auto try_zenrav1e = [&](bool allow_fallback) -> EncodeResult {
+    if (!item.decision.available_zenrav1e) {
+      failed.message =
+          "zenrav1e 对当前输入不可用（未启用/未构建，或边长超过单图上限）。";
+      return failed;
+    }
+    large_cfg.avif_encoder = AvifEncoderMode::zenrav1e;
+    NativeBackend backend{large_cfg, logger, resource_plan};
+    auto result = backend.encode_avif_zenrav1e(item.file, stop_token);
+    if (result.ok || result.canceled || !allow_fallback) {
+      return result;
+    }
+    logger.warn(std::format(
+        "[LARGE] zenrav1e 失败，尝试回退 grid：{}", result.message));
+    return result;  // not ok; caller continues
+  };
+
+  auto try_grid = [&](bool allow_fallback) -> EncodeResult {
+    if (!item.decision.available_grid) {
+      failed.message = "grid 对当前输入不可用（AOM/grid 未启用或构建缺失）。";
+      return failed;
+    }
+    auto planned = plan_grid(
+        GridPlanRequest{.width = item.dimensions.width,
+                        .height = item.dimensions.height,
+                        .mode = GridMode::auto_grid,
+                        .clamped_padding_enabled =
+                            large_cfg.experimental_clamped_grid_padding});
+    if (!planned) {
+      failed.message = std::format("grid 规划失败：{}", planned.error());
+      return failed;
+    }
+    if (planned->uses_padding) {
+      failed.message =
+          "grid 规划需要 padding；当前版本尚未启用安全裁切。请改用可整除尺寸、"
+          "启用 experimental clamped grid padding，或改用 zenrav1e（边长 <= 65536）。";
+      return failed;
+    }
+    large_cfg.avif_encoder = AvifEncoderMode::aom;
+    NativeBackend backend{large_cfg, logger, resource_plan};
+    auto result = backend.encode_avif_grid(item.file, *planned, stop_token);
+    if (result.ok || result.canceled || !allow_fallback) {
+      return result;
+    }
+    logger.warn(std::format(
+        "[LARGE] grid 失败，尝试回退 zenrav1e：{}", result.message));
+    return result;
+  };
+
   try {
-    if (item.decision.available_zenrav1e) {
-      large_cfg.avif_encoder = AvifEncoderMode::zenrav1e;
-      NativeBackend backend{large_cfg, logger, resource_plan};
-      auto result = backend.encode_avif_zenrav1e(item.file, stop_token);
-      if (result.ok || result.canceled) {
-        return result;
+    if (manual_action) {
+      if (cfg.studio_large_action == L"zenrav1e") {
+        return try_zenrav1e(false);
       }
-      logger.warn(std::format(
-          "[LARGE] zenrav1e 自动处理失败，尝试回退 grid：{}", result.message));
+      if (cfg.studio_large_action == L"grid") {
+        return try_grid(false);
+      }
+      failed.message = std::format("手动大图处理方式 {} 不可用。",
+                                   utf8_from_wide(cfg.studio_large_action));
+      return failed;
     }
 
-    if (item.decision.available_grid) {
-      auto planned = plan_grid(
-          GridPlanRequest{.width = item.dimensions.width,
-                          .height = item.dimensions.height,
-                          .mode = GridMode::auto_grid,
-                          .clamped_padding_enabled =
-                              large_cfg.experimental_clamped_grid_padding});
-      if (!planned) {
-        failed.message = std::format("grid 规划失败：{}", planned.error());
+    // Auto: preferred then fallback. Skip unavailable preferred without hard fail.
+    if (prefer_zenrav1e) {
+      if (item.decision.available_zenrav1e) {
+        auto result = try_zenrav1e(item.decision.available_grid);
+        if (result.ok || result.canceled || !item.decision.available_grid) {
+          return result;
+        }
+      } else if (!item.decision.available_grid) {
+        failed.message =
+            "超过 AOM 单图上限，且 zenrav1e/grid 均不可用（未构建或尺寸不受支持）。";
         return failed;
+      } else {
+        logger.warn("[LARGE] zenrav1e 不可用，直接尝试 grid。");
       }
-      if (planned->uses_padding) {
-        failed.message = "grid 规划需要 padding；当前版本尚未启用安全裁切。";
+      if (item.decision.available_grid) {
+        return try_grid(false);
+      }
+    } else {
+      if (item.decision.available_grid) {
+        auto result = try_grid(item.decision.available_zenrav1e);
+        if (result.ok || result.canceled || !item.decision.available_zenrav1e) {
+          return result;
+        }
+      } else if (!item.decision.available_zenrav1e) {
+        failed.message =
+            "超过 AOM 单图上限，且 grid/zenrav1e 均不可用（未构建或尺寸不受支持）。";
         return failed;
+      } else {
+        logger.warn("[LARGE] grid 不可用，直接尝试 zenrav1e。");
       }
-      large_cfg.avif_encoder = AvifEncoderMode::aom;
-      NativeBackend backend{large_cfg, logger, resource_plan};
-      return backend.encode_avif_grid(item.file, *planned, stop_token);
+      if (item.decision.available_zenrav1e) {
+        return try_zenrav1e(false);
+      }
     }
   } catch (const std::exception&) {
     failed.message = "自动大图工作线程异常。";
@@ -996,6 +1085,7 @@ void emit_progress(const ProgressCallback& progress,
 }
 
 MemoryStatus current_memory_status() noexcept {
+#ifdef _WIN32
   MEMORYSTATUSEX status{};
   status.dwLength = sizeof(status);
   if (!GlobalMemoryStatusEx(&status)) {
@@ -1003,13 +1093,31 @@ MemoryStatus current_memory_status() noexcept {
   }
   return MemoryStatus{.total_bytes = status.ullTotalPhys,
                       .available_bytes = status.ullAvailPhys};
+#else
+  struct sysinfo status {};
+  if (sysinfo(&status) != 0) {
+    return {};
+  }
+  const auto unit = static_cast<std::uint64_t>(status.mem_unit == 0 ? 1 : status.mem_unit);
+  return MemoryStatus{.total_bytes = static_cast<std::uint64_t>(status.totalram) * unit,
+                      .available_bytes = static_cast<std::uint64_t>(status.freeram + status.bufferram) * unit};
+#endif
+}
+
+void apply_runtime_input_limit_policy(const AppConfig& cfg) noexcept {
+  encoding_defaults::unlock_max_input_file_bytes.store(
+      cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
 }
 
 std::expected<BatchSummary, std::string> run_batch(
-    const AppConfig& cfg, ProgressCallback progress = {},
+    AppConfig cfg, ProgressCallback progress = {},
     std::stop_token stop_token = {},
     std::span<const std::filesystem::path> input_paths = {}) {
   try {
+    apply_runtime_input_limit_policy(cfg);
+#ifndef _WIN32
+    cfg.allow_wic_fallback = false;
+#endif
     if (!cfg.studio_large_action.empty()) {
       if (auto valid = validate_config(cfg); !valid) {
         return std::unexpected{valid.error()};
@@ -1373,12 +1481,14 @@ std::expected<BatchSummary, std::string> run_batch(
                                     .total = files.size(),
                                     .text = std::format(
                                         "开始自动处理超大图：{} 个文件，并发 "
-                                        "{}，编码器线程/文件 {}，优先 "
-                                        "zenrav1e，不可用时回退 grid。",
+                                        "{}，编码器线程/文件 {}，优先 {}，失败回退另一路径。",
                                         classified->large_mode.size(),
                                         large_jobs,
                                         large_resource_plan
-                                            .encoder_threads_per_file)});
+                                            .encoder_threads_per_file,
+                                        cfg.large_image_priority == L"grid"
+                                            ? "grid"
+                                            : "zenrav1e")});
       });
       const auto large_execution = pipeline_detail::encode_large_work_groups(
           cfg, logger, large_resource_plan, *large_work, files.size(),

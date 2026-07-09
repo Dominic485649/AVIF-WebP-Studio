@@ -85,8 +85,8 @@ int write_webp_bytes(const std::uint8_t* data,
     writer->error = "WebP encoder 输出过大。";
     return 0;
   }
-  if (old_size + data_size > encoding_defaults::max_input_file_bytes) {
-    writer->error = "WebP encoder 输出超过 20 GiB 运行时上限。";
+  if (old_size + data_size > encoding_defaults::effective_max_input_file_bytes()) {
+    writer->error = "WebP encoder 输出超过当前运行时上限。";
     return 0;
   }
   try {
@@ -156,8 +156,8 @@ std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
     return std::unexpected{std::format("{} 输入尺寸过大。", context)};
   }
   const auto byte_count = stride * height;
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} 图像 buffer 超过 20 GiB 运行时上限。", context)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} 图像 buffer 超过当前运行时上限。", context)};
   }
   return byte_count;
 }
@@ -394,8 +394,8 @@ std::expected<std::vector<std::byte>, std::string> mux_metadata(
       assembled.data.bytes == nullptr || assembled.data.size == 0) {
     return std::unexpected{"WebP mux 输出失败。"};
   }
-  if (assembled.data.size > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{"WebP mux 输出超过 20 GiB 运行时上限。"};
+  if (assembled.data.size > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{"WebP mux 输出超过当前运行时上限。"};
   }
   if (stop_token.stop_requested()) {
     return std::unexpected{"任务已取消。"};
@@ -414,7 +414,7 @@ std::expected<std::vector<std::byte>, std::string> mux_metadata(
 
 }  // namespace webp_detail
 
-export class WebPImageDecoder final : public ImageDecoder {
+class WebPImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libwebp"; }
 
@@ -543,7 +543,7 @@ export class WebPImageDecoder final : public ImageDecoder {
   }
 };
 
-export class WebPImageEncoder final : public ImageEncoder {
+class WebPImageEncoder final : public ImageEncoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libwebp"; }
 

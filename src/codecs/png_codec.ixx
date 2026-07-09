@@ -14,6 +14,7 @@ module;
 #include <new>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -28,6 +29,7 @@ module;
 export module awj.png_codec;
 
 import awj.codec;
+import awj.config;
 import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
@@ -235,8 +237,8 @@ std::expected<bool, std::string> file_contains_animation_control_chunk(const fs:
     return std::unexpected{std::format("读取 PNG 文件大小失败: {}；系统错误：{}",
                                        display_path_for_user(path), ec.message())};
   }
-  if (file_size > static_cast<std::uintmax_t>(encoding_defaults::max_input_file_bytes)) {
-    return std::unexpected{std::format("PNG 文件超过 20 GiB 输入上限: {}",
+  if (file_size > static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
+    return std::unexpected{std::format("PNG 文件超过当前输入上限: {}",
                                        display_path_for_user(path))};
   }
 
@@ -336,7 +338,7 @@ void write_callback(png_structp png, png_bytep data, png_size_t count) {
     png_error(png, "PNG output state is missing");
     return;
   }
-  if (count > encoding_defaults::max_input_file_bytes - state->bytes.size()) {
+  if (count > encoding_defaults::effective_max_input_file_bytes() - state->bytes.size()) {
     png_error(png, "PNG output exceeds runtime limit");
     return;
   }
@@ -526,7 +528,7 @@ std::expected<std::vector<std::byte>, std::string> copy_xmp_metadata(png_structp
 
 }  // namespace png_detail
 
-export class PngImageDecoder final : public ImageDecoder {
+class PngImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libpng"; }
 
@@ -681,8 +683,8 @@ export class PngImageDecoder final : public ImageDecoder {
         context->rgba = std::move(*rgba);
       }
       const auto row_pointer_bytes = static_cast<std::uint64_t>(height) * sizeof(png_bytep);
-      if (row_pointer_bytes > encoding_defaults::max_input_file_bytes) {
-        return std::unexpected{"PNG decoder 行指针 buffer 超过 20 GiB 运行时上限。"};
+      if (row_pointer_bytes > encoding_defaults::effective_max_input_file_bytes()) {
+        return std::unexpected{"PNG decoder 行指针 buffer 超过当前运行时上限。"};
       }
       try {
         context->rows.resize(height);
@@ -772,7 +774,7 @@ export class PngImageDecoder final : public ImageDecoder {
   }
 };
 
-export class PngImageEncoder final : public ImageEncoder {
+class PngImageEncoder final : public ImageEncoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libpng"; }
 

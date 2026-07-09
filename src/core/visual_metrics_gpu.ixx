@@ -49,8 +49,8 @@ std::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pix
     return std::unexpected{std::format("{} luma buffer 尺寸超过运行时限制。", context)};
   }
   const auto byte_count = pixel_count * sizeof(float);
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} luma buffer 超过 20 GiB 运行时上限。", context)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} luma buffer 超过当前运行时上限。", context)};
   }
   std::vector<float> buffer;
   try {
@@ -73,8 +73,8 @@ std::expected<void, std::string> resize_uint32_buffer(std::vector<std::uint32_t>
     return std::unexpected{std::format("{} 输入 buffer 尺寸超过运行时限制。", context)};
   }
   const auto byte_count = word_count * sizeof(std::uint32_t);
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} 输入 buffer 超过 20 GiB 运行时上限。", context)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} 输入 buffer 超过当前运行时上限。", context)};
   }
   try {
     buffer.resize(word_count);

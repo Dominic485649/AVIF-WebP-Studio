@@ -162,8 +162,8 @@ std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
     return std::unexpected{std::format("{} 输入尺寸过大。", context)};
   }
   const auto byte_count = stride * height;
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} 图像 buffer 超过 20 GiB 运行时上限。", context)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} 图像 buffer 超过当前运行时上限。", context)};
   }
   return byte_count;
 }
@@ -553,7 +553,7 @@ std::expected<std::vector<std::byte>, std::string> collect_encoder_output(
 
     const auto old_size = output.size();
     if (old_size > std::numeric_limits<std::size_t>::max() / 2 ||
-        static_cast<std::uint64_t>(old_size) > encoding_defaults::max_input_file_bytes / 2) {
+        static_cast<std::uint64_t>(old_size) > encoding_defaults::effective_max_input_file_bytes() / 2) {
       return std::unexpected{"JXL 编码输出过大。"};
     }
     try {
@@ -570,7 +570,7 @@ std::expected<std::vector<std::byte>, std::string> collect_encoder_output(
 
 }  // namespace jxl_detail
 
-export class JXLImageDecoder final : public ImageDecoder {
+class JXLImageDecoder final : public ImageDecoder {
  public:
   explicit JXLImageDecoder(int decode_threads = 1)
       : decode_threads_{jxl_detail::codec_thread_count(decode_threads)} {}
@@ -603,9 +603,9 @@ export class JXLImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("JXL 文件为空: {}", display_path_for_user(path))};
       }
       const auto file_size = static_cast<std::uint64_t>(size);
-      if (file_size > encoding_defaults::max_input_file_bytes) {
+      if (file_size > encoding_defaults::effective_max_input_file_bytes()) {
         return std::unexpected{std::format(
-            "JXL 文件超过 20 GiB 输入上限: {}", display_path_for_user(path))};
+            "JXL 文件超过当前输入上限: {}", display_path_for_user(path))};
       }
       input.seekg(0, std::ios::beg);
       if (!input) {
@@ -971,7 +971,7 @@ export class JXLImageDecoder final : public ImageDecoder {
   int decode_threads_{1};
 };
 
-export class JXLImageEncoder final : public ImageEncoder {
+class JXLImageEncoder final : public ImageEncoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libjxl"; }
 

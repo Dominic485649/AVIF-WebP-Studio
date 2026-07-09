@@ -35,7 +35,7 @@ struct ResourcePlan {
   int memory_file_parallelism{1};
 };
 
-export std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
+std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
   const auto half_total = status.total_bytes / 2;
   const auto available_headroom = static_cast<std::uint64_t>(
       static_cast<long double>(status.available_bytes) * 0.8L);
@@ -48,7 +48,7 @@ export std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
   return std::min(half_total, available_headroom);
 }
 
-export ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
+ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
   const int budget = std::max(1, request.automatic_thread_budget);
   const int files = std::max(1, request.file_count);
   const std::uint64_t memory_limit = request.memory_limit_bytes;
@@ -77,7 +77,7 @@ export ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
                       .memory_file_parallelism = memory_parallelism};
 }
 
-export ResourcePlan plan_large_deferred_resources(ResourcePlan base,
+ResourcePlan plan_large_deferred_resources(ResourcePlan base,
                                                    int file_count) noexcept {
   const int budget = std::max(1, base.global_thread_budget);
   const int threads_per_file =
@@ -93,7 +93,7 @@ export ResourcePlan plan_large_deferred_resources(ResourcePlan base,
                       .memory_file_parallelism = memory_parallelism};
 }
 
-export ResourcePlan plan_grid_encode_resources(ResourcePlan base,
+ResourcePlan plan_grid_encode_resources(ResourcePlan base,
                                                int tile_count) noexcept {
   const int budget = std::max(1, base.encoder_threads_per_file);
   const int tiles = std::max(1, tile_count);
@@ -107,7 +107,7 @@ export ResourcePlan plan_grid_encode_resources(ResourcePlan base,
                       .memory_file_parallelism = tile_parallelism};
 }
 
-export ResourcePlan plan_large_mode_resources(ResourcePlan base,
+ResourcePlan plan_large_mode_resources(ResourcePlan base,
                                                int file_count,
                                                std::uint64_t largest_working_set_bytes) noexcept {
   const int budget = std::max(1, base.global_thread_budget);

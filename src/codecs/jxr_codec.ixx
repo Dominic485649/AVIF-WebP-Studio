@@ -16,7 +16,7 @@ import awj.wic_codec;
 
 export namespace awj {
 
-export class JxrImageDecoder final : public ImageDecoder {
+class JxrImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "windows-jxr"; }
 

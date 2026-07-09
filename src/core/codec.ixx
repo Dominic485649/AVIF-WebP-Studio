@@ -63,6 +63,57 @@ struct SpeedMapping {
   std::string codec_key{};
 };
 
+struct AvifEncoderCapability {
+  AvifEncoderMode mode{AvifEncoderMode::automatic};
+  std::string id{};
+  std::vector<ChromaMode> chroma_modes{};
+  std::vector<int> bit_depths{};
+  bool supports_alpha{};
+  bool supports_avif_grid{};
+  std::optional<std::uint32_t> max_single_image_width{};
+  std::optional<std::uint32_t> max_single_image_height{};
+  bool experimental{};
+  bool enabled{true};
+  bool feature_enabled{true};
+  bool auto_selectable{true};
+  bool auto_alpha_selectable{};
+  std::string unavailable_reason{};
+  std::string license{};
+  int default_speed{};
+};
+
+struct AvifEncoderSelectionRequest {
+  AvifEncoderMode requested_encoder{AvifEncoderMode::automatic};
+  ChromaMode requested_chroma{ChromaMode::auto_keep};
+  std::optional<int> requested_bit_depth{};
+  bool requested_bit_depth_explicit{true};
+  std::string requested_bit_depth_reason{};
+  bool has_alpha{};
+  bool must_preserve_alpha{};
+  bool visual_quality_search{};
+  bool speed_explicit{};
+  bool allow_zenrav1e_alpha{};
+  std::uint64_t pixel_count{};
+  std::uint32_t width{};
+  std::uint32_t height{};
+  int speed{default_speed_for(OutputFormat::avif)};
+};
+
+struct AvifEncoderSelection {
+  AvifEncoderMode requested_encoder{AvifEncoderMode::automatic};
+  AvifEncoderMode applied_encoder{AvifEncoderMode::automatic};
+  ChromaMode requested_chroma{ChromaMode::auto_keep};
+  ChromaMode applied_chroma{ChromaMode::auto_keep};
+  std::optional<int> requested_bit_depth{};
+  std::optional<int> applied_bit_depth{};
+  std::string bit_depth_reason{};
+  std::uint64_t pixel_count{};
+  int speed{};
+  bool experimental{};
+  std::string license{};
+  std::string fallback_reason{};
+};
+
 struct EncodeTimingDiagnostics {
   double decode_seconds{-1.0};
   double prepare_seconds{-1.0};
@@ -325,14 +376,14 @@ class CodecBackend {
       const NativeEncodeSettings& settings) const = 0;
 };
 
-export SpeedMapping map_avif_speed_to_svt_preset(int speed) {
+SpeedMapping map_avif_speed_to_svt_preset(int speed) {
   speed = std::clamp(speed, 0, 10);
   return SpeedMapping{.user_speed = speed,
                       .codec_value = std::clamp(10 - speed, 0, 10),
                       .codec_key = "svt:preset"};
 }
 
-export SpeedMapping map_webp_speed_to_method(int speed) {
+SpeedMapping map_webp_speed_to_method(int speed) {
   speed = std::clamp(speed, 0, 10);
   const int method = std::clamp(6 - (speed * 6 + 5) / 10, 0, 6);
   return SpeedMapping{.user_speed = speed,
@@ -340,7 +391,7 @@ export SpeedMapping map_webp_speed_to_method(int speed) {
                       .codec_key = "webp:method"};
 }
 
-export SpeedMapping map_jxl_speed_to_effort(int speed) {
+SpeedMapping map_jxl_speed_to_effort(int speed) {
   speed = std::clamp(speed, 0, 10);
   const int effort = std::clamp(10 - speed, 1, 10);
   return SpeedMapping{.user_speed = speed,
@@ -348,7 +399,7 @@ export SpeedMapping map_jxl_speed_to_effort(int speed) {
                       .codec_key = "jxl:effort"};
 }
 
-export SpeedMapping map_speed_for_format(OutputFormat format, int speed) {
+SpeedMapping map_speed_for_format(OutputFormat format, int speed) {
   switch (format) {
     case OutputFormat::png:
       return SpeedMapping{.user_speed = -1, .codec_value = -1, .codec_key = ""};

@@ -4,7 +4,17 @@ module;
 #define NOMINMAX
 #endif
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -13,6 +23,7 @@ module;
 #include <chrono>
 #include <cstdint>
 #include <cwctype>
+#include <codecvt>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -28,12 +39,14 @@ module;
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <locale>
 
 export module awj.core;
 
@@ -41,6 +54,7 @@ import awj.config;
 import awj.encoding_defaults;
 import awj.visual_quality;
 
+#ifdef _WIN32
 using BCRYPT_ALG_HANDLE = void*;
 using BCRYPT_HASH_HANDLE = void*;
 using NTSTATUS = LONG;
@@ -69,6 +83,8 @@ extern "C" __declspec(dllimport) NTSTATUS __stdcall BCryptFinishHash(
     BCRYPT_HASH_HANDLE hHash, PUCHAR pbOutput, ULONG cbOutput, ULONG dwFlags);
 extern "C" __declspec(dllimport) NTSTATUS __stdcall BCryptDestroyHash(
     BCRYPT_HASH_HANDLE hHash);
+
+#endif
 
 export namespace awj {
 
@@ -194,20 +210,37 @@ struct EncodeResult {
   std::string command{};
 };
 
+std::uint64_t current_process_id() noexcept {
+#ifdef _WIN32
+  return static_cast<std::uint64_t>(current_process_id());
+#else
+  return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
 void set_process_low_priority() noexcept {
+#ifdef _WIN32
   // 保留给需要整进程后台运行的调用方。UI 启动阶段不调用它，
   // 避免高负载时窗口初始化被普通优先级任务饿住。
   SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+#else
+  ::setpriority(PRIO_PROCESS, 0, 10);
+#endif
 }
 
 void set_current_thread_low_priority() noexcept {
+#ifdef _WIN32
   // 只降低 CPU 调度优先级。THREAD_MODE_BACKGROUND_BEGIN 会连带降低 I/O
   // 和内存优先级，高负载时容易让图片读写表现成“卡住”。
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#else
+  // POSIX 线程优先级需要调度策略配合；Linux 首版保持 no-op。
+#endif
 }
 
 namespace core_detail {
 
+#ifdef _WIN32
 struct LocalFreeDeleter {
   void operator()(void* value) const noexcept {
     if (value != nullptr) {
@@ -215,6 +248,7 @@ struct LocalFreeDeleter {
     }
   }
 };
+#endif
 
 std::string narrow_ascii(std::wstring_view text) {
   std::string out;
@@ -363,6 +397,7 @@ std::string utf8_from_wide(std::wstring_view text) {
   if (text.empty()) {
     return {};
   }
+#ifdef _WIN32
   if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return ascii_fallback(text);
   }
@@ -386,6 +421,14 @@ std::string utf8_from_wide(std::wstring_view text) {
   } catch (const std::length_error&) {
     return "?";
   }
+#else
+  try {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> convert;
+    return convert.to_bytes(text.data(), text.data() + text.size());
+  } catch (...) {
+    return ascii_fallback(text);
+  }
+#endif
 }
 
 std::wstring wide_from_utf8(std::string_view text) {
@@ -401,6 +444,7 @@ std::wstring wide_from_utf8(std::string_view text) {
   if (text.empty()) {
     return {};
   }
+#ifdef _WIN32
   if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     try {
       return byte_fallback(text);
@@ -435,10 +479,28 @@ std::wstring wide_from_utf8(std::string_view text) {
   } catch (const std::length_error&) {
     return L"?";
   }
+#else
+  try {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> convert;
+    return convert.from_bytes(text.data(), text.data() + text.size());
+  } catch (...) {
+    try {
+      return byte_fallback(text);
+    } catch (const std::bad_alloc&) {
+      return L"?";
+    } catch (const std::length_error&) {
+      return L"?";
+    }
+  }
+#endif
 }
 
 std::string path_to_utf8(const fs::path& path) {
+#ifdef _WIN32
   return utf8_from_wide(path.native());
+#else
+  return path.string();
+#endif
 }
 
 std::string display_path_for_user(const fs::path& path) {
@@ -458,6 +520,7 @@ std::string display_path_for_user(const fs::path& path) {
 }
 
 fs::path long_existing_path_or_self(const fs::path& path) {
+#ifdef _WIN32
   try {
     const auto native = path.wstring();
     if (native.empty()) {
@@ -478,6 +541,9 @@ fs::path long_existing_path_or_self(const fs::path& path) {
   } catch (...) {
     return path;
   }
+#else
+  return path;
+#endif
 }
 
 std::string redact_path_for_user(std::string message, const fs::path& path) {
@@ -502,11 +568,14 @@ std::string redact_path_for_user(std::string message, const fs::path& path) {
 
 std::wstring normalized_lower_path_key(const fs::path& path) {
   auto key = path.lexically_normal().wstring();
+#ifdef _WIN32
   std::ranges::transform(key, key.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
+#endif
   return key;
 }
 
+#ifdef _WIN32
 std::string win32_error_message(DWORD error) {
   wchar_t* raw_buffer = nullptr;
   const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER |
@@ -524,8 +593,14 @@ std::string win32_error_message(DWORD error) {
   std::wstring message{buffer.get(), buffer.get() + length};
   return core_detail::trim_copy(utf8_from_wide(message));
 }
+#endif
+
+std::string posix_error_message(int error) {
+  return std::generic_category().message(error);
+}
 
 std::expected<fs::path, std::string> executable_path() {
+#ifdef _WIN32
   std::wstring buffer(MAX_PATH, L'\0');
   while (true) {
     const DWORD length = GetModuleFileNameW(nullptr, buffer.data(),
@@ -544,6 +619,24 @@ std::expected<fs::path, std::string> executable_path() {
     }
     buffer.assign(buffer.size() * 2, L'\0');
   }
+#else
+  std::string buffer(4096, '\0');
+  while (true) {
+    const auto length = ::readlink("/proc/self/exe", buffer.data(), buffer.size());
+    if (length < 0) {
+      return std::unexpected{std::format("获取程序路径失败: {}",
+                                         posix_error_message(errno))};
+    }
+    if (static_cast<std::size_t>(length) < buffer.size()) {
+      buffer.resize(static_cast<std::size_t>(length));
+      return fs::path{buffer};
+    }
+    if (buffer.size() > 1024u * 1024u) {
+      return std::unexpected{"程序路径超过运行时长度限制。"};
+    }
+    buffer.assign(buffer.size() * 2, '\0');
+  }
+#endif
 }
 
 std::expected<fs::path, std::string> executable_directory() {
@@ -763,8 +856,8 @@ ImageFile make_image_file(std::size_t index, const fs::path& path,
 std::expected<void, std::string> check_scanned_input_file_size(
     const fs::path& path, std::uintmax_t bytes) {
   if (bytes >
-      static_cast<std::uintmax_t>(encoding_defaults::max_input_file_bytes)) {
-    return std::unexpected{std::format("输入文件超过 20 GiB 上限: {}。",
+      static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
+    return std::unexpected{std::format("输入文件超过当前输入上限: {}。",
                                        display_path_for_user(path))};
   }
   return {};
@@ -784,9 +877,9 @@ std::expected<void, std::string> file_hash_token(const fs::path& path,
           "读取用于 {{hash}}/{{hash8}} 的文件大小失败: {}；系统错误：{}。",
           display_path_for_user(path), ec.message())};
     }
-    if (file_size > encoding_defaults::max_input_file_bytes) {
+    if (file_size > encoding_defaults::effective_max_input_file_bytes()) {
       return std::unexpected{std::format(
-          "用于 {{hash}}/{{hash8}} 的输入文件超过 20 GiB 上限: {}。",
+          "用于 {{hash}}/{{hash8}} 的输入文件超过当前输入上限: {}。",
           display_path_for_user(path))};
     }
     std::uint64_t hashed_bytes = 0;
@@ -805,9 +898,9 @@ std::expected<void, std::string> file_hash_token(const fs::path& path,
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
       if (hashed_bytes >
-          encoding_defaults::max_input_file_bytes - chunk_bytes) {
+          encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
         return std::unexpected{std::format(
-            "用于 {{hash}}/{{hash8}} 的输入文件超过 20 GiB 上限: {}。",
+            "用于 {{hash}}/{{hash8}} 的输入文件超过当前输入上限: {}。",
             display_path_for_user(path))};
       }
       hashed_bytes += chunk_bytes;
@@ -832,6 +925,125 @@ std::expected<void, std::string> file_hash_token(const fs::path& path,
   }
 }
 
+
+#ifndef _WIN32
+namespace core_detail {
+
+// ponytail: POSIX has no native SHA-256 API; this tiny CPU implementation keeps {sha256} working without a new dependency.
+struct Sha256State {
+  std::array<std::uint32_t, 8> h{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u,
+                                 0xa54ff53au, 0x510e527fu, 0x9b05688cu,
+                                 0x1f83d9abu, 0x5be0cd19u};
+  std::array<unsigned char, 64> block{};
+  std::uint64_t bit_count{};
+  std::size_t used{};
+};
+
+constexpr std::array<std::uint32_t, 64> sha256_k{
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u};
+
+constexpr std::uint32_t rotr(std::uint32_t value, int bits) noexcept {
+  return (value >> bits) | (value << (32 - bits));
+}
+
+void sha256_transform(Sha256State& state, const unsigned char* data) noexcept {
+  std::array<std::uint32_t, 64> w{};
+  for (std::size_t i = 0; i < 16; ++i) {
+    const auto j = i * 4;
+    w[i] = (static_cast<std::uint32_t>(data[j]) << 24) |
+           (static_cast<std::uint32_t>(data[j + 1]) << 16) |
+           (static_cast<std::uint32_t>(data[j + 2]) << 8) |
+           static_cast<std::uint32_t>(data[j + 3]);
+  }
+  for (std::size_t i = 16; i < 64; ++i) {
+    const auto s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+    const auto s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+  }
+
+  auto a = state.h[0];
+  auto b = state.h[1];
+  auto c = state.h[2];
+  auto d = state.h[3];
+  auto e = state.h[4];
+  auto f = state.h[5];
+  auto g = state.h[6];
+  auto h = state.h[7];
+  for (std::size_t i = 0; i < 64; ++i) {
+    const auto s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+    const auto ch = (e & f) ^ ((~e) & g);
+    const auto temp1 = h + s1 + ch + sha256_k[i] + w[i];
+    const auto s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+    const auto maj = (a & b) ^ (a & c) ^ (b & c);
+    const auto temp2 = s0 + maj;
+    h = g;
+    g = f;
+    f = e;
+    e = d + temp1;
+    d = c;
+    c = b;
+    b = a;
+    a = temp1 + temp2;
+  }
+  state.h[0] += a;
+  state.h[1] += b;
+  state.h[2] += c;
+  state.h[3] += d;
+  state.h[4] += e;
+  state.h[5] += f;
+  state.h[6] += g;
+  state.h[7] += h;
+}
+
+void sha256_update(Sha256State& state, const unsigned char* data, std::size_t size) noexcept {
+  state.bit_count += static_cast<std::uint64_t>(size) * 8ull;
+  for (std::size_t i = 0; i < size; ++i) {
+    state.block[state.used++] = data[i];
+    if (state.used == state.block.size()) {
+      sha256_transform(state, state.block.data());
+      state.used = 0;
+    }
+  }
+}
+
+std::array<unsigned char, 32> sha256_final(Sha256State& state) noexcept {
+  const auto bit_count = state.bit_count;
+  state.block[state.used++] = 0x80u;
+  if (state.used > 56) {
+    while (state.used < state.block.size()) {
+      state.block[state.used++] = 0;
+    }
+    sha256_transform(state, state.block.data());
+    state.used = 0;
+  }
+  while (state.used < 56) {
+    state.block[state.used++] = 0;
+  }
+  for (int i = 7; i >= 0; --i) {
+    state.block[state.used++] = static_cast<unsigned char>((bit_count >> (i * 8)) & 0xffu);
+  }
+  sha256_transform(state, state.block.data());
+
+  std::array<unsigned char, 32> digest{};
+  for (std::size_t i = 0; i < state.h.size(); ++i) {
+    digest[i * 4] = static_cast<unsigned char>((state.h[i] >> 24) & 0xffu);
+    digest[i * 4 + 1] = static_cast<unsigned char>((state.h[i] >> 16) & 0xffu);
+    digest[i * 4 + 2] = static_cast<unsigned char>((state.h[i] >> 8) & 0xffu);
+    digest[i * 4 + 3] = static_cast<unsigned char>(state.h[i] & 0xffu);
+  }
+  return digest;
+}
+
+}  // namespace core_detail
+#endif
+
 std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
   try {
     std::error_code ec;
@@ -846,12 +1058,13 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
           std::format("读取 SHA-256 文件大小失败: {}；系统错误：{}。",
                       display_path_for_user(path), ec.message())};
     }
-    if (file_size > encoding_defaults::max_input_file_bytes) {
+    if (file_size > encoding_defaults::effective_max_input_file_bytes()) {
       return std::unexpected{
-          std::format("用于 SHA-256 的文件超过 20 GiB 上限: {}。",
+          std::format("用于 SHA-256 的文件超过当前输入上限: {}。",
                       display_path_for_user(path))};
     }
 
+#ifdef _WIN32
     BCRYPT_ALG_HANDLE algorithm{};
     if (!bcrypt_success(BCryptOpenAlgorithmProvider(
             &algorithm, kBcryptSha256Algorithm, nullptr, 0))) {
@@ -910,9 +1123,9 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
       if (hashed_bytes >
-          encoding_defaults::max_input_file_bytes - chunk_bytes) {
+          encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
         return std::unexpected{
-            std::format("用于 SHA-256 的文件超过 20 GiB 上限: {}。",
+            std::format("用于 SHA-256 的文件超过当前输入上限: {}。",
                         display_path_for_user(path))};
       }
       hashed_bytes += chunk_bytes;
@@ -933,8 +1146,41 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
             BCryptFinishHash(hash, digest.data(), hash_length, 0))) {
       return std::unexpected{"完成 SHA-256 计算失败。"};
     }
+#else
+    std::ifstream stream{path, std::ios::binary};
+    if (!stream) {
+      return std::unexpected{
+          std::format("无法读取用于 SHA-256 的文件内容: {}。",
+                      display_path_for_user(path))};
+    }
+    core_detail::Sha256State state{};
+    std::array<char, 64 * 1024> buffer{};
+    std::uint64_t hashed_bytes = 0;
+    while (stream) {
+      stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+      const auto read = stream.gcount();
+      const auto chunk_bytes = static_cast<std::uint64_t>(read);
+      if (hashed_bytes > encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
+        return std::unexpected{
+            std::format("用于 SHA-256 的文件超过当前输入上限: {}。",
+                        display_path_for_user(path))};
+      }
+      hashed_bytes += chunk_bytes;
+      if (read > 0) {
+        core_detail::sha256_update(
+            state, reinterpret_cast<const unsigned char*>(buffer.data()),
+            static_cast<std::size_t>(read));
+      }
+    }
+    if (!stream.eof()) {
+      return std::unexpected{
+          std::format("读取 SHA-256 文件时发生 I/O 错误: {}。",
+                      display_path_for_user(path))};
+    }
+    const auto digest = core_detail::sha256_final(state);
+#endif
     std::string out;
-    out.reserve(static_cast<std::size_t>(hash_length) * 2);
+    out.reserve(digest.size() * 2);
     for (const auto byte : digest) {
       out += std::format("{:02x}", byte);
     }
@@ -1110,9 +1356,11 @@ std::wstring collision_suffix(CollisionMode mode) {
     case CollisionMode::suffix_random: {
       const auto value =
           output_collision_counter.fetch_add(1, std::memory_order_relaxed);
+      const auto tick = static_cast<std::uint64_t>(
+          std::chrono::steady_clock::now().time_since_epoch().count());
       return std::format(
           L"-{:08x}",
-          static_cast<unsigned int>((value ^ GetTickCount64()) & 0xffffffffu));
+          static_cast<unsigned int>((value ^ tick) & 0xffffffffu));
     }
     case CollisionMode::suffix_number:
     case CollisionMode::overwrite:
@@ -1197,7 +1445,7 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
       }
       const auto fallback =
           parent / (numbered.base +
-                    std::format(L"({}-{})", numbered.next, GetCurrentProcessId()) +
+                    std::format(L"({}-{})", numbered.next, current_process_id()) +
                     extension);
       if (auto available = path_available(fallback); !available) {
         return std::unexpected{available.error()};
@@ -1225,7 +1473,7 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
     }
 
     const auto fallback =
-        parent / (stem + suffix + std::format(L"-{}", GetCurrentProcessId()) +
+        parent / (stem + suffix + std::format(L"-{}", current_process_id()) +
                   extension);
     if (auto available = path_available(fallback); !available) {
       return std::unexpected{available.error()};
@@ -1716,21 +1964,64 @@ class SummaryTempFile {
   bool active_{true};
 };
 
-struct FileHandleDeleter {
-  using pointer = HANDLE;
-  void operator()(HANDLE value) const noexcept {
-    if (value != nullptr && value != INVALID_HANDLE_VALUE) {
-      CloseHandle(value);
-    }
-  }
-};
+class UniqueFileHandle {
+ public:
+#ifdef _WIN32
+  using native_handle = HANDLE;
+  static constexpr native_handle invalid() noexcept { return INVALID_HANDLE_VALUE; }
+#else
+  using native_handle = int;
+  static constexpr native_handle invalid() noexcept { return -1; }
+#endif
 
-using UniqueFileHandle = std::unique_ptr<void, FileHandleDeleter>;
+  UniqueFileHandle() noexcept = default;
+  explicit UniqueFileHandle(native_handle handle) noexcept : handle_{handle} {}
+  ~UniqueFileHandle() { reset(); }
+  UniqueFileHandle(const UniqueFileHandle&) = delete;
+  UniqueFileHandle& operator=(const UniqueFileHandle&) = delete;
+  UniqueFileHandle(UniqueFileHandle&& other) noexcept : handle_{other.release()} {}
+  UniqueFileHandle& operator=(UniqueFileHandle&& other) noexcept {
+    if (this != &other) {
+      reset(other.release());
+    }
+    return *this;
+  }
+
+  [[nodiscard]] native_handle get() const noexcept { return handle_; }
+  explicit operator bool() const noexcept {
+#ifdef _WIN32
+    return handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE;
+#else
+    return handle_ >= 0;
+#endif
+  }
+  native_handle release() noexcept {
+    const auto old = handle_;
+    handle_ = invalid();
+    return old;
+  }
+  void reset(native_handle handle = invalid()) noexcept {
+#ifdef _WIN32
+    if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(handle_);
+    }
+#else
+    if (handle_ >= 0) {
+      ::close(handle_);
+    }
+#endif
+    handle_ = handle;
+  }
+
+ private:
+  native_handle handle_{invalid()};
+};
 
 namespace core_detail {
 
 std::expected<void, std::string> clear_transient_file_attributes(
     const fs::path& path, std::string_view label) {
+#ifdef _WIN32
   const DWORD attributes = GetFileAttributesW(path.c_str());
   if (attributes == INVALID_FILE_ATTRIBUTES) {
     const auto error = GetLastError();
@@ -1752,18 +2043,20 @@ std::expected<void, std::string> clear_transient_file_attributes(
                                        display_path_for_user(path),
                                        win32_error_message(error))};
   }
+#else
+  (void)path;
+  (void)label;
+#endif
   return {};
 }
-
 }  // namespace core_detail
 
 std::expected<UniqueFileHandle, std::string> create_summary_csv_temp_file(
     const fs::path& output_dir, fs::path& path) {
   for (std::uint64_t attempt = 0; attempt < 1000; ++attempt) {
-    const auto id =
-        summary_csv_temp_counter.fetch_add(1, std::memory_order_relaxed);
-    path = output_dir /
-           std::format(L"summary.csv.tmp-{}-{}", GetCurrentProcessId(), id);
+    const auto id = summary_csv_temp_counter.fetch_add(1, std::memory_order_relaxed);
+    path = output_dir / std::format(L"summary.csv.tmp-{}-{}", current_process_id(), id);
+#ifdef _WIN32
     const HANDLE file = CreateFileW(
         path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
@@ -1776,6 +2069,18 @@ std::expected<UniqueFileHandle, std::string> create_summary_csv_temp_file(
                                          display_path_for_user(path),
                                          win32_error_message(error))};
     }
+#else
+    const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    if (file >= 0) {
+      return UniqueFileHandle{file};
+    }
+    const int error = errno;
+    if (error != EEXIST) {
+      return std::unexpected{std::format("无法创建报告临时文件 {}: {}",
+                                         display_path_for_user(path),
+                                         posix_error_message(error))};
+    }
+#endif
   }
   return std::unexpected{std::format("无法创建唯一报告临时文件: {}",
                                      display_path_for_user(output_dir))};
@@ -1831,6 +2136,7 @@ class SummaryCsvWriter {
     if (!error_.empty()) {
       return std::unexpected{error_};
     }
+#ifdef _WIN32
     if (!FlushFileBuffers(file_.get())) {
       return std::unexpected{std::format("刷新报告文件失败: {}；系统错误：{}。",
                                          display_path_for_user(report_path_),
@@ -1842,6 +2148,19 @@ class SummaryCsvWriter {
                                          display_path_for_user(report_path_),
                                          win32_error_message(GetLastError()))};
     }
+#else
+    const int file_handle = file_.get();
+    if (::fsync(file_handle) != 0) {
+      return std::unexpected{std::format("刷新报告文件失败: {}；系统错误：{}。",
+                                         display_path_for_user(report_path_),
+                                         posix_error_message(errno))};
+    }
+    if (::close(file_handle) != 0) {
+      return std::unexpected{std::format("关闭报告文件失败: {}；系统错误：{}。",
+                                         display_path_for_user(report_path_),
+                                         posix_error_message(errno))};
+    }
+#endif
     file_.release();
     return {};
   }
@@ -1854,6 +2173,7 @@ class SummaryCsvWriter {
     auto remaining = value.size();
     const auto* cursor = value.data();
     while (remaining > 0) {
+#ifdef _WIN32
       const auto chunk = static_cast<DWORD>(
           std::min<std::size_t>(remaining, std::numeric_limits<DWORD>::max()));
       DWORD written = 0;
@@ -1868,6 +2188,23 @@ class SummaryCsvWriter {
                              display_path_for_user(report_path_));
         return;
       }
+#else
+      const auto written = ::write(file_.get(), cursor, remaining);
+      if (written < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        error_ = std::format("写入报告文件失败: {}；系统错误：{}。",
+                             display_path_for_user(report_path_),
+                             posix_error_message(errno));
+        return;
+      }
+      if (written == 0) {
+        error_ = std::format("写入报告文件失败: {}",
+                             display_path_for_user(report_path_));
+        return;
+      }
+#endif
       cursor += written;
       remaining -= written;
     }
@@ -2098,12 +2435,28 @@ std::expected<void, std::string> write_csv(
       !attributes) {
     return std::unexpected{attributes.error()};
   }
+#ifdef _WIN32
   if (!MoveFileExW(temp_path.c_str(), report_path.c_str(),
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
     return std::unexpected{std::format("替换报告文件失败: {}；系统错误：{}。",
                                        display_path_for_user(report_path),
                                        win32_error_message(GetLastError()))};
   }
+#else
+  if (::rename(temp_path.c_str(), report_path.c_str()) != 0) {
+    return std::unexpected{std::format("替换报告文件失败: {}；系统错误：{}。",
+                                       display_path_for_user(report_path),
+                                       posix_error_message(errno))};
+  }
+  const auto parent = report_path.parent_path();
+  if (!parent.empty()) {
+    const int dir = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir >= 0) {
+      (void)::fsync(dir);
+      (void)::close(dir);
+    }
+  }
+#endif
   temp_file.release();
   return {};
 } catch (const std::bad_alloc&) {

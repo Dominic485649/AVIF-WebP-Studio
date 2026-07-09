@@ -48,9 +48,9 @@ std::expected<std::vector<std::byte>, std::string> read_file_prefix(
     if (byte_count == 0) {
       return std::unexpected{std::format("{} 前缀读取大小无效: {}", codec_name, display_path_for_user(path))};
     }
-    if (byte_count > encoding_defaults::max_input_file_bytes) {
+    if (byte_count > encoding_defaults::effective_max_input_file_bytes()) {
       return std::unexpected{std::format(
-          "{} 前缀读取大小超过 20 GiB 运行时上限: {}", codec_name, display_path_for_user(path))};
+          "{} 前缀读取大小超过当前运行时上限: {}", codec_name, display_path_for_user(path))};
     }
     if (byte_count > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
       return std::unexpected{std::format(
@@ -107,9 +107,9 @@ std::expected<std::vector<std::byte>, std::string> read_file_bytes(
       return std::unexpected{std::format("{} 文件为空: {}", codec_name, display_path_for_user(path))};
     }
     const auto file_size = static_cast<std::uint64_t>(size);
-    if (file_size > encoding_defaults::max_input_file_bytes) {
+    if (file_size > encoding_defaults::effective_max_input_file_bytes()) {
       return std::unexpected{std::format(
-          "{} 文件超过 20 GiB 输入上限: {}", codec_name, display_path_for_user(path))};
+          "{} 文件超过当前输入上限: {}", codec_name, display_path_for_user(path))};
     }
     if (file_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
       return std::unexpected{std::format(
@@ -159,8 +159,8 @@ std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
     return std::unexpected{std::format("{} 输入尺寸过大。", context)};
   }
   const auto byte_count = stride * height;
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} 图像 buffer 超过 20 GiB 运行时上限。", context)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} 图像 buffer 超过当前运行时上限。", context)};
   }
   return byte_count;
 }
@@ -168,8 +168,8 @@ std::expected<std::size_t, std::string> checked_image_bytes(std::size_t stride,
 std::expected<void, std::string> resize_buffer(std::vector<std::byte>& buffer,
                                                std::size_t byte_count,
                                                std::string_view context) {
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} 输出缓冲区超过 20 GiB 运行时上限。", context)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} 输出缓冲区超过当前运行时上限。", context)};
   }
   try {
     buffer.resize(byte_count);

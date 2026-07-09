@@ -52,20 +52,26 @@ foreach(config Debug Release RelWithDebInfo MinSizeRel)
         "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/${config}")
 endforeach()
 
-if(AVIF_STATIC_MSVC_RUNTIME)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-else()
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+if(MSVC)
+    if(AVIF_STATIC_MSVC_RUNTIME)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    endif()
 endif()
 
 set(VCPKG_ROOT "$ENV{VCPKG_ROOT}" CACHE PATH "vcpkg root directory")
-if(NOT VCPKG_ROOT AND EXISTS "D:/Scoop/apps/vcpkg/current")
+if(WIN32 AND NOT VCPKG_ROOT AND EXISTS "D:/Scoop/apps/vcpkg/current")
     set(VCPKG_ROOT "D:/Scoop/apps/vcpkg/current" CACHE PATH "vcpkg root directory" FORCE)
 endif()
-if(AVIF_STATIC_MSVC_RUNTIME)
-    set(AVIF_DEFAULT_VCPKG_TRIPLET "x64-windows-static")
+if(WIN32)
+    if(AVIF_STATIC_MSVC_RUNTIME)
+        set(AVIF_DEFAULT_VCPKG_TRIPLET "x64-windows-static")
+    else()
+        set(AVIF_DEFAULT_VCPKG_TRIPLET "x64-windows")
+    endif()
 else()
-    set(AVIF_DEFAULT_VCPKG_TRIPLET "x64-windows")
+    set(AVIF_DEFAULT_VCPKG_TRIPLET "x64-linux")
 endif()
 if(DEFINED VCPKG_TARGET_TRIPLET AND NOT VCPKG_TRIPLET)
     set(VCPKG_TRIPLET "${VCPKG_TARGET_TRIPLET}" CACHE STRING "vcpkg target triplet")
@@ -115,7 +121,12 @@ find_package(GIF REQUIRED)
 find_package(TIFF REQUIRED)
 find_package(libraw CONFIG REQUIRED)
 find_package(AOM CONFIG REQUIRED)
-find_package(libyuv CONFIG REQUIRED)
+if(WIN32)
+    find_package(libyuv CONFIG REQUIRED)
+endif()
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+endif()
 
 set(AWJ_SVTAV1HDR_AVAILABLE OFF)
 set(AWJ_SVTAV1HDR_STATIC_DEFINE 0)
@@ -170,13 +181,15 @@ avif_find_vcpkg_library(JXL_BROTLI_DEC_LIBRARY brotlidec)
 avif_find_vcpkg_library(JXL_BROTLI_COMMON_LIBRARY brotlicommon)
 avif_find_vcpkg_library(JXL_LCMS_LIBRARY lcms2)
 avif_find_vcpkg_library(AWJ_AOM_LIBRARY aom)
-avif_find_vcpkg_library(AWJ_LIBYUV_LIBRARY yuv)
 awj_force_single_config_vcpkg_library(AOM_LIBRARY
     AWJ_AOM_LIBRARY_RELEASE
     AWJ_AOM_LIBRARY_DEBUG)
+if(WIN32)
+avif_find_vcpkg_library(AWJ_LIBYUV_LIBRARY yuv)
 awj_force_single_config_vcpkg_library(LIBYUV_LIBRARY
     AWJ_LIBYUV_LIBRARY_RELEASE
     AWJ_LIBYUV_LIBRARY_DEBUG)
+endif()
 set(HWY_INCLUDE_DIR "${JXL_INCLUDE_DIR}" CACHE PATH
     "AWJ-selected Highway include directory"
     FORCE)
@@ -229,6 +242,20 @@ function(avif_enable_common_options target)
                 $<$<CONFIG:Release>:/OPT:REF>
                 $<$<CONFIG:Release>:/OPT:ICF>
                 $<$<CONFIG:Release>:/INCREMENTAL:NO>)
+        endif()
+    else()
+        target_compile_options(${target} PUBLIC
+            $<$<CONFIG:Release>:-O3>
+            $<$<CONFIG:Release>:-ffunction-sections>
+            $<$<CONFIG:Release>:-fdata-sections>
+            $<$<AND:$<CONFIG:Release>,$<BOOL:${AWJ_ENABLE_X64_V3}>>:-march=x86-64-v3>)
+        get_target_property(target_type ${target} TYPE)
+        if(NOT target_type STREQUAL "STATIC_LIBRARY")
+            target_link_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-static-libstdc++>
+                $<$<CONFIG:Release>:-static-libgcc>
+                $<$<CONFIG:Release>:LINKER:--gc-sections>
+                $<$<CONFIG:Release>:LINKER:--strip-all>)
         endif()
     endif()
     if(AVIF_RELEASE_IPO_SUPPORTED)
@@ -301,44 +328,68 @@ set(AWJ_VISUAL_SHADER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/visua
 set(AWJ_VISUAL_SHADER_HEADER "${AWJ_VISUAL_SHADER_GENERATED_DIR}/awj_visual_metric_shaders.hpp")
 file(MAKE_DIRECTORY "${AWJ_VISUAL_SHADER_GENERATED_DIR}")
 
-set(AWJ_SHADER_COMPILER_DIRS)
-if(DEFINED ENV{WindowsSdkDir} AND DEFINED ENV{WindowsSDKVersion})
-    list(APPEND AWJ_SHADER_COMPILER_DIRS "$ENV{WindowsSdkDir}/bin/$ENV{WindowsSDKVersion}/x64")
-endif()
-set(AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
-if(DEFINED ENV{ProgramFiles})
-    list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES "$ENV{ProgramFiles}/Windows Kits/10")
-endif()
-list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES
-    "C:/Program Files (x86)/Windows Kits/10"
-    "C:/Program Files/Windows Kits/10")
-foreach(AWJ_WINDOWS_KIT_ROOT IN LISTS AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
-    file(GLOB AWJ_WINDOWS_KIT_SHADER_DIRS "${AWJ_WINDOWS_KIT_ROOT}/bin/*/x64")
-    list(SORT AWJ_WINDOWS_KIT_SHADER_DIRS)
-    list(REVERSE AWJ_WINDOWS_KIT_SHADER_DIRS)
-    list(APPEND AWJ_SHADER_COMPILER_DIRS ${AWJ_WINDOWS_KIT_SHADER_DIRS})
-endforeach()
-find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc PATHS ${AWJ_SHADER_COMPILER_DIRS} NO_DEFAULT_PATH)
-if(NOT AWJ_FXC_EXECUTABLE)
-    find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc)
-endif()
-if(NOT AWJ_FXC_EXECUTABLE)
-    message(FATAL_ERROR "找不到 fxc.exe，无法预编译 visual_quality Direct3D 11 shader。请安装 Windows SDK；最终用户运行时不需要该工具。")
-endif()
-message(STATUS "AWJimage visual metric shader compiler: ${AWJ_FXC_EXECUTABLE}")
+if(WIN32)
+    set(AWJ_SHADER_COMPILER_DIRS)
+    if(DEFINED ENV{WindowsSdkDir} AND DEFINED ENV{WindowsSDKVersion})
+        list(APPEND AWJ_SHADER_COMPILER_DIRS "$ENV{WindowsSdkDir}/bin/$ENV{WindowsSDKVersion}/x64")
+    endif()
+    set(AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
+    if(DEFINED ENV{ProgramFiles})
+        list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES "$ENV{ProgramFiles}/Windows Kits/10")
+    endif()
+    list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES
+        "C:/Program Files (x86)/Windows Kits/10"
+        "C:/Program Files/Windows Kits/10")
+    foreach(AWJ_WINDOWS_KIT_ROOT IN LISTS AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
+        file(GLOB AWJ_WINDOWS_KIT_SHADER_DIRS "${AWJ_WINDOWS_KIT_ROOT}/bin/*/x64")
+        list(SORT AWJ_WINDOWS_KIT_SHADER_DIRS)
+        list(REVERSE AWJ_WINDOWS_KIT_SHADER_DIRS)
+        list(APPEND AWJ_SHADER_COMPILER_DIRS ${AWJ_WINDOWS_KIT_SHADER_DIRS})
+    endforeach()
+    find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc PATHS ${AWJ_SHADER_COMPILER_DIRS} NO_DEFAULT_PATH)
+    if(NOT AWJ_FXC_EXECUTABLE)
+        find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc)
+    endif()
+    if(NOT AWJ_FXC_EXECUTABLE)
+        message(FATAL_ERROR "找不到 fxc.exe，无法预编译 visual_quality Direct3D 11 shader。请安装 Windows SDK；最终用户运行时不需要该工具。")
+    endif()
+    message(STATUS "AWJimage visual metric shader compiler: ${AWJ_FXC_EXECUTABLE}")
 
-function(awj_compile_visual_shader out_var shader_name hlsl_name)
-    set(output_path "${AWJ_VISUAL_SHADER_GENERATED_DIR}/${shader_name}.cso")
-    add_custom_command(
-        OUTPUT "${output_path}"
-        COMMAND "${AWJ_FXC_EXECUTABLE}" /nologo /T cs_5_0 /E main /Ges /O3
-                /Fo "${output_path}"
-                "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
-        DEPENDS "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
-        COMMENT "Precompiling visual metric shader ${hlsl_name}"
-        VERBATIM)
-    set(${out_var} "${output_path}" PARENT_SCOPE)
-endfunction()
+    function(awj_compile_visual_shader out_var shader_name hlsl_name)
+        set(output_path "${AWJ_VISUAL_SHADER_GENERATED_DIR}/${shader_name}.cso")
+        add_custom_command(
+            OUTPUT "${output_path}"
+            COMMAND "${AWJ_FXC_EXECUTABLE}" /nologo /T cs_5_0 /E main /Ges /O3
+                    /Fo "${output_path}"
+                    "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
+            DEPENDS "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
+            COMMENT "Precompiling visual metric shader ${hlsl_name}"
+            VERBATIM)
+        set(${out_var} "${output_path}" PARENT_SCOPE)
+    endfunction()
+else()
+    find_package(Vulkan REQUIRED)
+    find_program(AWJ_DXC_EXECUTABLE NAMES dxc
+        PATHS "${AVIF_VCPKG_INSTALLED_DIR}/tools/directx-dxc" NO_DEFAULT_PATH)
+    if(NOT AWJ_DXC_EXECUTABLE)
+        find_program(AWJ_DXC_EXECUTABLE NAMES dxc REQUIRED)
+    endif()
+    message(STATUS "AWJimage visual metric shader compiler: ${AWJ_DXC_EXECUTABLE}")
+
+    function(awj_compile_visual_shader out_var shader_name hlsl_name)
+        set(output_path "${AWJ_VISUAL_SHADER_GENERATED_DIR}/${shader_name}.spv")
+        add_custom_command(
+            OUTPUT "${output_path}"
+            COMMAND "${AWJ_DXC_EXECUTABLE}" -spirv -T cs_6_0 -E main -O3
+                    -fspv-target-env=vulkan1.1 -fvk-use-dx-layout -fvk-t-shift 8 all -fvk-u-shift 16 all
+                    -Fo "${output_path}"
+                    "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
+            DEPENDS "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
+            COMMENT "Precompiling visual metric shader ${hlsl_name} to SPIR-V"
+            VERBATIM)
+        set(${out_var} "${output_path}" PARENT_SCOPE)
+    endfunction()
+endif()
 
 awj_compile_visual_shader(AWJ_LUMA_CSO luma visual_luma.hlsl)
 awj_compile_visual_shader(AWJ_GMSD_CSO gmsd visual_gmsd.hlsl)
@@ -400,7 +451,11 @@ if(AWJ_SVTAV1HDR_AVAILABLE)
 else()
     set(AVIF_CODEC_SVT OFF CACHE STRING "" FORCE)
 endif()
-set(AVIF_LIBYUV SYSTEM CACHE STRING "" FORCE)
+if(WIN32)
+    set(AVIF_LIBYUV SYSTEM CACHE STRING "" FORCE)
+else()
+    set(AVIF_LIBYUV OFF CACHE STRING "" FORCE)
+endif()
 set(AVIF_BUILD_APPS OFF CACHE BOOL "" FORCE)
 set(AVIF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(AVIF_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
@@ -476,6 +531,20 @@ FetchContent_Declare(Slint
     GIT_TAG fdde7a535305d2ab2d4072dee637bad186a49723
     SOURCE_SUBDIR api/cpp)
 FetchContent_MakeAvailable(Slint)
+if(NOT WIN32)
+    foreach(slint_target Slint slint_cpp slint_cpp-static)
+        if(TARGET ${slint_target})
+            foreach(link_property INTERFACE_LINK_LIBRARIES IMPORTED_LINK_INTERFACE_LIBRARIES IMPORTED_LINK_INTERFACE_LIBRARIES_RELEASE)
+                get_target_property(awj_slint_link_libraries ${slint_target} ${link_property})
+                if(awj_slint_link_libraries)
+                    list(REMOVE_ITEM awj_slint_link_libraries gcc_s -lgcc_s)
+                    set_target_properties(${slint_target} PROPERTIES ${link_property} "${awj_slint_link_libraries}")
+                endif()
+            endforeach()
+        endif()
+    endforeach()
+    target_link_libraries(Slint INTERFACE fontconfig freetype)
+endif()
 
 function(avif_add_slint_sources target slint_file)
     get_filename_component(slint_absolute "${slint_file}" REALPATH BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -512,10 +581,14 @@ endfunction()
 add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
 add_dependencies(awj_base awj_visual_metric_shaders)
-target_link_libraries(awj_base PUBLIC
-    scn::scn
-    bcrypt
-    d3d11)
+target_link_libraries(awj_base PUBLIC scn::scn)
+if(WIN32)
+    target_link_libraries(awj_base PUBLIC bcrypt d3d11)
+    target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=1 AWJ_HAS_VULKAN=0)
+else()
+    target_link_libraries(awj_base PUBLIC Vulkan::Vulkan Threads::Threads)
+    target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=0 AWJ_HAS_VULKAN=1)
+endif()
 target_sources(awj_base PRIVATE "${AWJ_VISUAL_SHADER_HEADER}")
 target_include_directories(awj_base PUBLIC "$<BUILD_INTERFACE:${AWJ_VISUAL_SHADER_GENERATED_DIR}>")
 target_sources(awj_base
@@ -526,11 +599,22 @@ target_sources(awj_base
             src/app/config.ixx
             src/core/visual_quality.ixx
             src/core/visual_metrics.ixx
-            src/core/visual_metrics_gpu.ixx
             src/core/image.ixx
             src/core/resource_planner.ixx
             src/core/codec.ixx
             src/core/process.ixx)
+
+if(WIN32)
+    target_sources(awj_base
+        PUBLIC
+            FILE_SET awj_base_modules TYPE CXX_MODULES FILES
+                src/core/visual_metrics_gpu.ixx)
+else()
+    target_sources(awj_base
+        PUBLIC
+            FILE_SET awj_base_modules TYPE CXX_MODULES FILES
+                src/core/visual_metrics_gpu_vulkan.ixx)
+endif()
 
 add_library(awj_raw_image_io STATIC)
 avif_enable_common_options(awj_raw_image_io)
@@ -561,25 +645,39 @@ target_link_libraries(awj_native_codecs PUBLIC
     JPEG::JPEG
     GIF::GIF
     TIFF::TIFF
-    libraw::raw_r
-    ole32
-    windowscodecs)
+    libraw::raw_r)
+if(WIN32)
+    target_link_libraries(awj_native_codecs PUBLIC ole32 windowscodecs)
+    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_WINDOWS_CODECS=1)
+else()
+    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_WINDOWS_CODECS=0)
+endif()
 target_sources(awj_native_codecs
     PUBLIC
         FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
             src/codecs/avif_registry.ixx
             src/codecs/decoder_common.ixx
+            src/codecs/decoder_registry.ixx
             src/codecs/webp_codec.ixx
             src/codecs/jxl_codec.ixx
             src/codecs/png_codec.ixx
             src/codecs/bmp_codec.ixx
             src/codecs/jpeg_codec.ixx
-            src/codecs/jxr_codec.ixx
             src/codecs/gif_codec.ixx
             src/codecs/tiff_codec.ixx
-            src/codecs/libraw_codec.ixx
-            src/codecs/raw_codec.ixx
-            src/codecs/wic_codec.ixx)
+            src/codecs/libraw_codec.ixx)
+if(WIN32)
+    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_AWJ_RAW_CODEC=1)
+    target_sources(awj_native_codecs
+        PUBLIC
+            FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
+                src/codecs/raw_codec.ixx
+                src/codecs/jxr_codec.ixx
+                src/codecs/wic_codec.ixx)
+else()
+    # ponytail: GCC16 ICEs importing awj.raw_image_io from raw_codec; LibRaw camera RAW still builds.
+    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_AWJ_RAW_CODEC=0)
+endif()
 target_compile_definitions(awj_native_codecs PUBLIC
     AWJ_HAS_JPEGLI=$<BOOL:${AWJ_JPEGLI_AVAILABLE}>)
 if(AWJ_JPEGLI_AVAILABLE)
@@ -594,7 +692,7 @@ endif()
 set(ZENRAVIF_BRIDGE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.toml")
 set(ZENRAVIF_BRIDGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/src/lib.rs")
 set(AWJ_ZENRAVIF_AVAILABLE OFF)
-if(AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EXISTS "${ZENRAVIF_BRIDGE_SOURCE}")
+if(WIN32 AND AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EXISTS "${ZENRAVIF_BRIDGE_SOURCE}")
     set(AWJ_ZENRAVIF_AVAILABLE ON)
     set(ZENRAVIF_BRIDGE_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/target")
     set(ZENRAVIF_BRIDGE_LIB "${ZENRAVIF_BRIDGE_TARGET_DIR}/release/zenravif_bridge.lib")
@@ -619,24 +717,25 @@ else()
     message(STATUS "Experimental zenrav1e AVIF encoder disabled by AWJ_ENABLE_ZENRAVIF=OFF.")
 endif()
 
-add_library(awj_avif_base_codec STATIC)
-avif_enable_common_options(awj_avif_base_codec)
-target_link_libraries(awj_avif_base_codec PUBLIC
-    awj_native_codecs
-    avif)
-if(AWJ_ZENRAVIF_AVAILABLE)
-    target_link_libraries(awj_avif_base_codec PUBLIC zenravif_bridge)
-    target_compile_definitions(awj_avif_base_codec PUBLIC AWJ_HAS_ZENRAVIF=1)
-    add_dependencies(awj_avif_base_codec zenravif_bridge_static)
-else()
-    target_compile_definitions(awj_avif_base_codec PUBLIC AWJ_HAS_ZENRAVIF=0)
-endif()
-target_compile_definitions(awj_avif_base_codec PUBLIC
+# ponytail: keep avif module+impl on awj_native_codecs so decoder_registry can import it without a cycle.
+target_link_libraries(awj_native_codecs PUBLIC avif)
+target_compile_definitions(awj_native_codecs PUBLIC
     AWJ_HAS_SVTAV1HDR_STATIC=${AWJ_SVTAV1HDR_STATIC_DEFINE})
-target_sources(awj_avif_base_codec
+if(AWJ_ZENRAVIF_AVAILABLE)
+    target_link_libraries(awj_native_codecs PUBLIC zenravif_bridge)
+    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_ZENRAVIF=1)
+    add_dependencies(awj_native_codecs zenravif_bridge_static)
+else()
+    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_ZENRAVIF=0)
+endif()
+target_sources(awj_native_codecs
+    PRIVATE
+        src/codecs/avif_aom_codec.cpp
     PUBLIC
-        FILE_SET avif_base_codec_modules TYPE CXX_MODULES FILES
+        FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
             src/codecs/avif_aom_codec.ixx)
+add_library(awj_avif_base_codec INTERFACE)
+target_link_libraries(awj_avif_base_codec INTERFACE awj_native_codecs)
 
 add_library(awj_svtav1hdr_codec STATIC)
 avif_enable_common_options(awj_svtav1hdr_codec)
@@ -671,7 +770,6 @@ add_dependencies(awj_native_backend
 target_sources(awj_native_backend
     PUBLIC
         FILE_SET awj_native_backend_modules TYPE CXX_MODULES FILES
-            src/codecs/decoder_registry.ixx
             src/backends/native_backend.ixx)
 
 add_library(awj_pipeline STATIC)
@@ -728,9 +826,11 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_bmp_codec_tests)
     target_link_libraries(awj_bmp_codec_tests PRIVATE awj_native_codecs)
 
-    add_executable(awj_jxr_codec_tests tests/jxr_codec_tests.cpp)
-    avif_enable_common_options(awj_jxr_codec_tests)
-    target_link_libraries(awj_jxr_codec_tests PRIVATE awj_native_codecs)
+    if(WIN32)
+        add_executable(awj_jxr_codec_tests tests/jxr_codec_tests.cpp)
+        avif_enable_common_options(awj_jxr_codec_tests)
+        target_link_libraries(awj_jxr_codec_tests PRIVATE awj_native_codecs)
+    endif()
 
     if(AWJ_JPEGLI_AVAILABLE)
         add_executable(awj_jpegli_codec_tests tests/jpegli_codec_tests.cpp)
@@ -746,25 +846,29 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_decoder_registry_tests)
     target_link_libraries(awj_decoder_registry_tests PRIVATE awj_native_backend)
 
-    add_executable(awj_native_pipeline_tests tests/native_pipeline_tests.cpp)
-    avif_enable_common_options(awj_native_pipeline_tests)
-    target_link_libraries(awj_native_pipeline_tests PRIVATE awj_native_backend)
+    if(WIN32)
+        add_executable(awj_native_pipeline_tests tests/native_pipeline_tests.cpp)
+        avif_enable_common_options(awj_native_pipeline_tests)
+        target_link_libraries(awj_native_pipeline_tests PRIVATE awj_native_backend)
 
-    add_executable(awj_pipeline_security_tests tests/pipeline_security_tests.cpp)
-    avif_enable_common_options(awj_pipeline_security_tests)
-    target_link_libraries(awj_pipeline_security_tests PRIVATE awj_pipeline awj_native_codecs)
+        add_executable(awj_pipeline_security_tests tests/pipeline_security_tests.cpp)
+        avif_enable_common_options(awj_pipeline_security_tests)
+        target_link_libraries(awj_pipeline_security_tests PRIVATE awj_pipeline awj_native_codecs)
+    endif()
 
     add_executable(awj_memory_cancel_tests tests/memory_cancel_tests.cpp)
     avif_enable_common_options(awj_memory_cancel_tests)
     target_link_libraries(awj_memory_cancel_tests PRIVATE awj_native_visual_search awj_native_codecs awj_raw_image_io)
 
-    add_executable(awj_cli_config_entry tests/cli_config_entry.cpp)
-    avif_enable_common_options(awj_cli_config_entry)
-    target_link_libraries(awj_cli_config_entry PRIVATE awj_base)
+    if(WIN32)
+        add_executable(awj_cli_config_entry tests/cli_config_entry.cpp)
+        avif_enable_common_options(awj_cli_config_entry)
+        target_link_libraries(awj_cli_config_entry PRIVATE awj_base)
 
-    add_executable(awj_cli_native_avif_aom_tests tests/cli_native_avif_aom_tests.cpp)
-    avif_enable_common_options(awj_cli_native_avif_aom_tests)
-    target_link_libraries(awj_cli_native_avif_aom_tests PRIVATE awj_native_backend)
+        add_executable(awj_cli_native_avif_aom_tests tests/cli_native_avif_aom_tests.cpp)
+        avif_enable_common_options(awj_cli_native_avif_aom_tests)
+        target_link_libraries(awj_cli_native_avif_aom_tests PRIVATE awj_native_backend)
+    endif()
 
     set(AWJ_TEST_TARGETS
         awj_visual_quality_tests
@@ -777,14 +881,17 @@ if(BUILD_TESTING)
         awj_avif_registry_tests
         awj_jxl_codec_tests
         awj_bmp_codec_tests
-        awj_jxr_codec_tests
         awj_native_visual_search_tests
         awj_decoder_registry_tests
-        awj_native_pipeline_tests
-        awj_pipeline_security_tests
-        awj_memory_cancel_tests
-        awj_cli_config_entry
-        awj_cli_native_avif_aom_tests)
+        awj_memory_cancel_tests)
+    if(WIN32)
+        list(APPEND AWJ_TEST_TARGETS
+            awj_jxr_codec_tests
+            awj_native_pipeline_tests
+            awj_pipeline_security_tests
+            awj_cli_config_entry
+            awj_cli_native_avif_aom_tests)
+    endif()
     if(AWJ_JPEGLI_AVAILABLE)
         list(APPEND AWJ_TEST_TARGETS awj_jpegli_codec_tests)
     endif()
@@ -802,17 +909,22 @@ if(BUILD_TESTING)
     add_test(NAME avif_registry_core COMMAND awj_avif_registry_tests)
     add_test(NAME jxl_codec_core COMMAND awj_jxl_codec_tests)
     add_test(NAME bmp_codec_core COMMAND awj_bmp_codec_tests)
-    add_test(NAME jxr_codec_core COMMAND awj_jxr_codec_tests)
+    if(WIN32)
+        add_test(NAME jxr_codec_core COMMAND awj_jxr_codec_tests)
+    endif()
     if(AWJ_JPEGLI_AVAILABLE)
         add_test(NAME jpegli_codec_core COMMAND awj_jpegli_codec_tests)
     endif()
     add_test(NAME native_visual_search_core COMMAND awj_native_visual_search_tests)
     add_test(NAME decoder_registry_core COMMAND awj_decoder_registry_tests)
-    add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
-    add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
+    if(WIN32)
+        add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
+        add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
+    endif()
     add_test(NAME memory_cancel_core COMMAND awj_memory_cancel_tests)
 
-    add_test(NAME cli_help COMMAND awj_cli_config_entry --help)
+    if(WIN32)
+        add_test(NAME cli_help COMMAND awj_cli_config_entry --help)
     set_tests_properties(cli_help PROPERTIES
         PASS_REGULAR_EXPRESSION "AWJimage C[+][+]23")
 
@@ -856,14 +968,22 @@ if(BUILD_TESTING)
     add_test(NAME cli_rejects_empty_option_key
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--option' '=x' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('--option 的 key 不能为空')) { exit 1 }")
+    endif()
 endif()
 
-add_executable(AWJ WIN32
-    src/app/main.cpp
-    src/cli/main.cpp
-    src/ui/main.cpp
-    src/ui/AWJ.manifest
-    src/ui/AWJ.rc)
+if(WIN32)
+    add_executable(AWJ WIN32
+        src/app/main.cpp
+        src/cli/main.cpp
+        src/ui/main.cpp
+        src/ui/AWJ.manifest
+        src/ui/AWJ.rc)
+else()
+    add_executable(AWJ
+        src/app/main.cpp
+        src/cli/main.cpp
+        src/ui/main.cpp)
+endif()
 target_sources(AWJ
     PRIVATE
         FILE_SET awj_studio_modules TYPE CXX_MODULES FILES
@@ -879,14 +999,17 @@ if(MSVC)
 endif()
 target_link_libraries(AWJ PRIVATE
     awj_core
-    Slint::Slint
-    dwmapi
-    gdi32
-    ole32
-    shell32
-    uxtheme
-    imm32
-    opengl32)
+    Slint::Slint)
+if(WIN32)
+    target_link_libraries(AWJ PRIVATE
+        dwmapi
+        gdi32
+        ole32
+        shell32
+        uxtheme
+        imm32
+        opengl32)
+endif()
 if(MSVC AND AVIF_STATIC_SLINT AND AWJ_ZENRAVIF_AVAILABLE)
     # Both Slint's static C++ runtime and zenravif_bridge are Rust static libraries.
     # MSVC otherwise reports duplicate Rust std runtime symbols even when built by
@@ -897,10 +1020,12 @@ avif_add_slint_sources(AWJ ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
 
-add_executable(AWJ-com src/cli/shim_main.cpp)
-avif_enable_common_options(AWJ-com)
-set_target_properties(AWJ-com PROPERTIES
-    OUTPUT_NAME "AWJ"
-    SUFFIX ".com"
-    PDB_NAME "AWJ-com")
-awj_add_sha256_post_build(AWJ-com)
+if(WIN32)
+    add_executable(AWJ-com src/cli/shim_main.cpp)
+    avif_enable_common_options(AWJ-com)
+    set_target_properties(AWJ-com PROPERTIES
+        OUTPUT_NAME "AWJ"
+        SUFFIX ".com"
+        PDB_NAME "AWJ-com")
+    awj_add_sha256_post_build(AWJ-com)
+endif()

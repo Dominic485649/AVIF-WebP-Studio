@@ -53,7 +53,7 @@ struct GridPlan {
   bool clamped_to_original_size{};
 };
 
-export ImageDimensions make_image_dimensions(std::uint32_t width,
+ImageDimensions make_image_dimensions(std::uint32_t width,
                                              std::uint32_t height) noexcept {
   return ImageDimensions{.width = width,
                          .height = height,
@@ -61,7 +61,7 @@ export ImageDimensions make_image_dimensions(std::uint32_t width,
                                         static_cast<std::uint64_t>(height)};
 }
 
-export std::uint64_t decoded_rgba_bytes_for_dimensions(ImageDimensions dimensions) noexcept {
+std::uint64_t decoded_rgba_bytes_for_dimensions(ImageDimensions dimensions) noexcept {
   constexpr std::uint64_t channels = 4;
   constexpr auto max_value = std::numeric_limits<std::uint64_t>::max();
   const auto width = static_cast<std::uint64_t>(dimensions.width);
@@ -79,7 +79,7 @@ export std::uint64_t decoded_rgba_bytes_for_dimensions(ImageDimensions dimension
   return std::max<std::uint64_t>(1, pixels * channels);
 }
 
-export std::uint64_t visual_quality_working_set_bytes_for_dimensions(
+std::uint64_t visual_quality_working_set_bytes_for_dimensions(
     ImageDimensions dimensions) noexcept {
   constexpr std::uint64_t multiplier = 7;
   const auto decoded_rgba_bytes = decoded_rgba_bytes_for_dimensions(dimensions);
@@ -90,7 +90,7 @@ export std::uint64_t visual_quality_working_set_bytes_for_dimensions(
   return std::max<std::uint64_t>(1, decoded_rgba_bytes * multiplier);
 }
 
-export std::uint64_t avif_encode_working_set_bytes_for_dimensions(
+std::uint64_t avif_encode_working_set_bytes_for_dimensions(
     ImageDimensions dimensions) noexcept {
   constexpr std::uint64_t multiplier = 3;
   const auto decoded_rgba_bytes = decoded_rgba_bytes_for_dimensions(dimensions);
@@ -101,14 +101,14 @@ export std::uint64_t avif_encode_working_set_bytes_for_dimensions(
   return std::max<std::uint64_t>(1, decoded_rgba_bytes * multiplier);
 }
 
-export LargeImageDecision classify_large_image(ImageDimensions dimensions,
+LargeImageDecision classify_large_image(ImageDimensions dimensions,
                                                bool grid_available,
                                                bool zenrav1e_available) {
   const bool dimension_exceeded =
       dimensions.width > encoding_defaults::avif_single_image_max_dimension ||
       dimensions.height > encoding_defaults::avif_single_image_max_dimension;
   const bool pixel_limit_exceeded =
-      dimensions.pixel_count >= encoding_defaults::ordinary_large_safe_max_pixels;
+      dimensions.pixel_count > encoding_defaults::ordinary_large_safe_max_pixels;
 
   LargeImageDecision decision{.available_grid = grid_available,
                               .available_zenrav1e = zenrav1e_available &&
@@ -126,7 +126,7 @@ export LargeImageDecision classify_large_image(ImageDimensions dimensions,
     decision.klass = LargeImageClass::large_mode_required;
     decision.reason = LargeImageReason::pixel_limit_exceeded;
     decision.reason_text = std::format(
-        "输入像素数 {} 超过普通 AVIF 队列上限 {}，已移入大图模式。",
+        "输入像素数 {} 超过 AVIF 单图像素上限 {}，已移入大图模式。",
         dimensions.pixel_count, encoding_defaults::ordinary_large_safe_max_pixels);
     return decision;
   }
@@ -134,7 +134,7 @@ export LargeImageDecision classify_large_image(ImageDimensions dimensions,
     decision.klass = LargeImageClass::ordinary_deferred_tail;
     decision.reason = LargeImageReason::medium_pixels;
     decision.reason_text = std::format(
-        "输入像素数 {} 介于 {} 和 {} 之间，将延后到普通队列末尾编码。",
+        "输入像素数 {} 大于 {} 且未超过 AVIF 单图上限 {}，将延后到普通队列末尾编码。",
         dimensions.pixel_count, encoding_defaults::ordinary_large_defer_min_pixels,
         encoding_defaults::ordinary_large_safe_max_pixels);
     return decision;
@@ -143,7 +143,7 @@ export LargeImageDecision classify_large_image(ImageDimensions dimensions,
   return decision;
 }
 
-export std::string large_image_reason_name(LargeImageReason reason) {
+std::string large_image_reason_name(LargeImageReason reason) {
   switch (reason) {
     case LargeImageReason::medium_pixels:
       return "medium_pixels";
@@ -249,7 +249,7 @@ std::expected<GridPlan, std::string> make_plan(std::uint32_t width,
 
 }  // namespace large_image_plan_detail
 
-export std::expected<GridPlan, std::string> plan_grid(GridPlanRequest request) {
+std::expected<GridPlan, std::string> plan_grid(GridPlanRequest request) {
   if (request.width == 0 || request.height == 0) {
     return std::unexpected{"grid 输入尺寸不能为 0。"};
   }

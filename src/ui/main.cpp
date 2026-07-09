@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 
+#ifdef _WIN32
 #include <dwmapi.h>
 #include <scn/scan.h>
 #include <shellapi.h>
@@ -12,6 +13,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <any>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -62,6 +64,15 @@ import awj.resource_planner;
 import awj.studio_defaults;
 
 namespace {
+
+std::wstring large_image_priority_from_ui(int index) {
+  return index == 1 ? L"grid" : L"zenrav1e";
+}
+
+int large_image_priority_index(std::wstring_view priority) {
+  return priority == L"grid" ? 1 : 0;
+}
+
 awj::LargeImageDecision manual_large_image_decision(
     awj::ImageDimensions dimensions, bool grid_available,
     bool zenrav1e_available) {
@@ -199,9 +210,7 @@ struct UiState {
   std::vector<awj::BatchProgress> pending_events{};
   std::shared_ptr<StudioChildProcess> active_child{};
   bool worker_active{};
-  std::uint64_t drag_candidate_id{};
   std::uint64_t last_click_id{};
-  std::chrono::steady_clock::time_point drag_started{};
   std::chrono::steady_clock::time_point last_click_time{};
   bool drag_reordered{};
   std::array<std::string, 5> format_quality_text{};
@@ -1335,9 +1344,6 @@ bool move_queue_item(UiState& state, std::size_t from, std::size_t to) {
   auto item = std::move(state.queue_items[from]);
   state.queue_items.erase(state.queue_items.begin() +
                           static_cast<std::ptrdiff_t>(from));
-  if (from < to) {
-    --to;
-  }
   state.queue_items.insert(
       state.queue_items.begin() + static_cast<std::ptrdiff_t>(to),
       std::move(item));
@@ -1513,8 +1519,8 @@ std::expected<bool, std::string> append_queue_image_path(
                                          ec.message())};
     }
     if (bytes > static_cast<std::uintmax_t>(
-                    awj::encoding_defaults::max_input_file_bytes)) {
-      return std::unexpected{std::format("输入文件超过 20 GiB 上限: {}。",
+                    awj::encoding_defaults::effective_max_input_file_bytes())) {
+      return std::unexpected{std::format("输入文件超过当前输入上限: {}。",
                                          awj::display_path_for_user(path))};
     }
     state.queue_items.push_back(QueueImageItem{
@@ -1632,10 +1638,6 @@ void add_manual_large_images_from_picker(AwjStudio& app, UiState& state,
   }
   if (was_empty && added > 0) {
     app.set_selected_large_image_index(0);
-    if (!state.large_image_items.empty()) {
-      app.set_selected_large_image_action_index(
-          preferred_large_image_action_index(state.large_image_items.front()));
-    }
   }
   if (added == 0) {
     app.set_status_text(
@@ -2108,8 +2110,6 @@ void select_first_large_image_from_state(AwjStudio& app,
       return;
     }
     app.set_selected_large_image_index(0);
-    app.set_selected_large_image_action_index(
-        preferred_large_image_action_index(state.large_image_items.front()));
     app.set_selected_page(0);
   } catch (...) {
   }
@@ -2343,6 +2343,10 @@ std::vector<std::wstring> cli_arguments_from_config(
                   std::wstring{cancel_event_name});
   if (!cfg.studio_large_action.empty()) {
     push_cli_option(args, L"--studio-large-action", cfg.studio_large_action);
+  }
+  push_cli_option(args, L"--large-image-priority", cfg.large_image_priority);
+  if (cfg.unlock_max_input_file_bytes) {
+    args.push_back(L"--unlock-max-input-file-bytes");
   }
 
   if (cfg.visual_quality) {
@@ -3380,6 +3384,8 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_webp_bit_depth_default(
       to_shared(text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
   app.set_memory_limit_text({});
+  app.set_unlock_max_input_file_bytes(false);
+  app.set_selected_large_image_action_index(0);
   app.set_size_limit_index(0);
   app.set_max_width_text({});
   app.set_max_height_text({});
@@ -3507,6 +3513,9 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
     return std::unexpected{memory_limit.error()};
   }
   cfg.memory_limit_bytes = *memory_limit;
+  cfg.unlock_max_input_file_bytes = app.get_unlock_max_input_file_bytes();
+  awj::encoding_defaults::unlock_max_input_file_bytes.store(cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
+  cfg.large_image_priority = large_image_priority_from_ui(app.get_selected_large_image_action_index());
 
   const auto size_limit = image_size_limit_from_fields(
       app.get_size_limit_index(), shared_to_string(app.get_max_width_text()),
@@ -4323,15 +4332,101 @@ void handle_queue_menu_action(AwjStudio& app,
   }
 }
 
+
+struct QueueDragPayload {
+  std::uint64_t id{};
+};
+
+slint::DataTransfer make_queue_drag_data(
+    const std::shared_ptr<UiState>& state, int index) {
+  slint::DataTransfer transfer;
+  std::scoped_lock lock{state->mutex};
+  if (index < 0 ||
+      static_cast<std::size_t>(index) >= state->queue_items.size()) {
+    return transfer;
+  }
+  const auto& item = state->queue_items[static_cast<std::size_t>(index)];
+  if (queue_item_editable(item)) {
+    transfer.set_user_data(QueueDragPayload{.id = item.id});
+  }
+  return transfer;
+}
+
+std::optional<std::size_t> queue_drop_target_index(
+    const UiState& state, std::size_t current, int target_slot) noexcept {
+  if (target_slot < 0) {
+    return std::nullopt;
+  }
+  auto target = static_cast<std::size_t>(target_slot);
+  if (target > state.queue_items.size()) {
+    return std::nullopt;
+  }
+  if (target > current) {
+    --target;
+  }
+  if (target >= state.queue_items.size() || target == current ||
+      !queue_item_editable(state.queue_items[target])) {
+    return std::nullopt;
+  }
+  return target;
+}
+
+slint::language::DragAction handle_queue_drag_can_drop(
+    const std::shared_ptr<UiState>& state, slint::language::DropEvent event,
+    int target_slot) {
+  const auto user_data = event.data.user_data();
+  const auto* payload = std::any_cast<QueueDragPayload>(&user_data);
+  if (payload == nullptr) {
+    return slint::language::DragAction::None;
+  }
+  std::scoped_lock lock{state->mutex};
+  const auto current = queue_index_for_id(*state, payload->id);
+  if (!current || !queue_item_editable(state->queue_items[*current]) ||
+      !queue_drop_target_index(*state, *current, target_slot)) {
+    return slint::language::DragAction::None;
+  }
+  return slint::language::DragAction::Move;
+}
+
+slint::language::DragAction handle_queue_drag_dropped(
+    AwjStudio& app, const std::shared_ptr<UiState>& state,
+    slint::language::DropEvent event, int target_slot) {
+  bool refresh = false;
+  {
+    const auto user_data = event.data.user_data();
+    const auto* payload = std::any_cast<QueueDragPayload>(&user_data);
+    if (payload == nullptr) {
+      return slint::language::DragAction::None;
+    }
+    std::scoped_lock lock{state->mutex};
+    const auto current = queue_index_for_id(*state, payload->id);
+    if (!current || !queue_item_editable(state->queue_items[*current])) {
+      return slint::language::DragAction::None;
+    }
+    const auto target = queue_drop_target_index(*state, *current, target_slot);
+    if (!target) {
+      return slint::language::DragAction::None;
+    }
+    refresh = move_queue_item(*state, *current, *target);
+    state->drag_reordered = true;
+    if (refresh) {
+      refresh_queue_rows(app, *state);
+    }
+  }
+  if (refresh) {
+    app.set_status_text(to_shared("已调整未编码队列顺序。"));
+  }
+  return slint::language::DragAction::Move;
+}
+
 void handle_queue_pointer_event(AwjStudio& app,
                                 const std::shared_ptr<UiState>& state,
                                 int index, int button, int kind,
-                                float local_y) {
+                                float /*local_y*/) {
   if (button != 0) {
     return;
   }
   std::optional<std::filesystem::path> double_click_folder;
-  bool refresh = false;
   {
     std::scoped_lock lock{state->mutex};
     if (index < 0 ||
@@ -4341,29 +4436,11 @@ void handle_queue_pointer_event(AwjStudio& app,
     auto& item = state->queue_items[static_cast<std::size_t>(index)];
     const auto now = std::chrono::steady_clock::now();
     if (kind == 0) {
-      state->drag_candidate_id = queue_item_editable(item) ? item.id : 0;
-      state->drag_started = now;
       state->drag_reordered = false;
       return;
     }
-    if (kind == 2 && state->drag_candidate_id != 0 &&
-        now - state->drag_started >=
-            awj::studio_defaults::queue_long_press_delay) {
-      const auto current = queue_index_for_id(*state, state->drag_candidate_id);
-      if (!current) {
-        return;
-      }
-      if (local_y < -8.0f && *current > 0) {
-        refresh = move_queue_item(*state, *current, *current - 1);
-      } else if (local_y > awj::studio_defaults::queue_row_height + 8.0f &&
-                 *current + 1 < state->queue_items.size()) {
-        refresh = move_queue_item(*state, *current, *current + 1);
-      }
-      state->drag_reordered = state->drag_reordered || refresh;
-    }
     if (kind == 1) {
       const bool was_drag = state->drag_reordered;
-      state->drag_candidate_id = 0;
       state->drag_reordered = false;
       if (!was_drag) {
         if (state->last_click_id == item.id &&
@@ -4376,10 +4453,6 @@ void handle_queue_pointer_event(AwjStudio& app,
           state->last_click_time = now;
         }
       }
-    }
-    if (refresh) {
-      refresh_queue_rows(app, *state);
-      app.set_status_text(to_shared("已调整未编码队列顺序。"));
     }
   }
   if (double_click_folder) {
@@ -4702,7 +4775,6 @@ int run_studio_ui() {
         state->large_image_rows->set_vector({});
         state->large_image_items.clear();
         (*app)->set_selected_large_image_index(-1);
-        (*app)->set_selected_large_image_action_index(0);
         (*app)->set_progress(0.0f);
         (*app)->set_status_text(to_shared("已清空全部队列文件。"));
       });
@@ -4945,6 +5017,45 @@ int run_studio_ui() {
           });
         });
 
+    app->on_queue_drag_data([state](int index) {
+      try {
+        return make_queue_drag_data(state, index);
+      } catch (...) {
+        return slint::DataTransfer{};
+      }
+    });
+
+    app->on_queue_drag_can_drop(
+        [state](slint::language::DropEvent event, int target_slot) {
+          try {
+            return handle_queue_drag_can_drop(state, std::move(event),
+                                             target_slot);
+          } catch (...) {
+            return slint::language::DragAction::None;
+          }
+        });
+
+    app->on_queue_drag_dropped(
+        [weak, state](slint::language::DropEvent event, int target_slot) {
+          try {
+            if (auto app = weak.lock()) {
+              return handle_queue_drag_dropped(**app, state, std::move(event),
+                                               target_slot);
+            }
+          } catch (const std::bad_alloc&) {
+            report_ui_callback_failure(weak, "队列拖动失败", "内存不足。");
+          } catch (const std::length_error&) {
+            report_ui_callback_failure(weak, "队列拖动失败",
+                                       "数据超过运行时限制。");
+          } catch (const std::exception&) {
+            report_ui_callback_failure(weak, "队列拖动失败",
+                                       "发生未预期异常。");
+          } catch (...) {
+            report_ui_callback_failure(weak, "队列拖动失败", "发生未知异常。");
+          }
+          return slint::language::DragAction::None;
+        });
+
     app->on_queue_row_pointer_event(
         [weak, state](int index, int button, int kind, float local_y) {
           run_ui_callback(weak, "队列交互失败", [&] {
@@ -5049,14 +5160,32 @@ int run_studio_ui() {
               }
               item = state->large_image_items[static_cast<std::size_t>(index)];
             }
+            if (action != "grid" && action != "zenrav1e") {
+              (*app)->set_status_text(to_shared("未知的大图处理方式"));
+              return;
+            }
+            if (!large_image_action_available(item, action)) {
+              (*app)->set_status_text(to_shared(
+                  large_image_action_status(item, action)));
+              return;
+            }
+            const auto previous_input =
+                shared_to_string((*app)->get_input_path());
+            (*app)->set_input_path(
+                to_shared(awj::path_to_utf8(item.file.path)));
             auto cfg = config_from_ui(**app);
+            (*app)->set_input_path(to_shared(previous_input));
             if (!cfg) {
               (*app)->set_status_text(
                   to_shared(std::format("配置错误：{}", cfg.error())));
               return;
             }
+            (*cfg).input_path = item.file.path;
+            (*cfg).output_format = awj::OutputFormat::avif;
             (*cfg).studio_large_action = awj::wide_from_utf8(action);
             (*cfg).visual_quality.reset();
+            set_large_image_status(*state, index,
+                                   large_image_action_status(item, action));
             begin_child_conversion_run(weak, state, std::move(*cfg), index);
           });
         });
@@ -5277,3 +5406,886 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
     return 1;
   }
 }
+
+#else
+
+#include <slint.h>
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <exception>
+#include <expected>
+#include <format>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <stop_token>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "awj_studio.h"
+
+import awj.config;
+import awj.core;
+import awj.encoding_defaults;
+import awj.large_image_plan;
+import awj.pipeline;
+
+namespace {
+
+namespace fs = std::filesystem;
+
+struct LinuxUiState {
+  std::jthread worker{};
+  std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
+  std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
+  std::vector<awj::BatchLargeImageItem> large_image_items{};
+};
+
+std::string trim_copy(std::string value) {
+  const auto first = std::ranges::find_if_not(value, [](unsigned char ch) {
+    return std::isspace(ch) != 0;
+  });
+  const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+    return std::isspace(ch) != 0;
+  }).base();
+  if (first >= last) return {};
+  return std::string(first, last);
+}
+
+std::wstring trim_copy(std::wstring value) {
+  const auto is_space = [](wchar_t ch) {
+    return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n';
+  };
+  const auto first = std::ranges::find_if_not(value, is_space);
+  const auto last = std::find_if_not(value.rbegin(), value.rend(), is_space).base();
+  if (first >= last) return {};
+  return std::wstring(first, last);
+}
+
+std::wstring memory_arg_from_ui(std::wstring value) {
+  value = trim_copy(std::move(value));
+  if (value.empty()) return value;
+  const bool has_unit = std::ranges::any_of(value, [](wchar_t ch) {
+    return (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z');
+  });
+  return has_unit ? value : value + L"GiB";
+}
+
+std::string shell_quote(std::string_view value) {
+  std::string out{"'"};
+  for (const char ch : value) {
+    if (ch == '\'') out += "'\\''";
+    else out += ch;
+  }
+  out += "'";
+  return out;
+}
+
+bool command_exists(std::string_view command) {
+  return std::system(std::format("command -v {} >/dev/null 2>&1", command).c_str()) == 0;
+}
+
+struct PcloseDeleter {
+  void operator()(FILE* file) const noexcept {
+    if (file != nullptr) pclose(file);
+  }
+};
+
+std::optional<std::string> run_capture(const std::string& command) {
+  std::unique_ptr<FILE, PcloseDeleter> pipe{popen(command.c_str(), "r")};
+  if (!pipe) return std::nullopt;
+  std::string output;
+  std::array<char, 512> buffer{};
+  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
+    output += buffer.data();
+  }
+  output = trim_copy(std::move(output));
+  if (output.empty()) return std::nullopt;
+  return output;
+}
+
+std::expected<fs::path, std::string> choose_path(bool directory) {
+  std::vector<std::string> commands;
+  if (command_exists("zenity")) commands.push_back(directory ? "zenity --file-selection --directory" : "zenity --file-selection");
+  if (command_exists("yad")) commands.push_back(directory ? "yad --file-selection --directory" : "yad --file-selection");
+  if (command_exists("kdialog")) commands.push_back(directory ? "kdialog --getexistingdirectory" : "kdialog --getopenfilename");
+  if (commands.empty()) {
+    return std::unexpected{"未找到 Linux 文件选择器；请安装 zenity/yad/kdialog，或手动输入路径。"};
+  }
+  for (const auto& command : commands) {
+    if (auto selected = run_capture(command)) return fs::path{*selected};
+  }
+  return std::unexpected{"未选择路径。"};
+}
+
+std::expected<void, std::string> open_path(fs::path path) {
+  if (path.empty()) return std::unexpected{"没有可打开的路径。"};
+  std::error_code ec;
+  if (fs::is_regular_file(path, ec) && !ec) path = path.parent_path();
+  if (!fs::exists(path, ec) || ec) path = path.parent_path();
+  if (path.empty()) return std::unexpected{"路径不存在，无法打开。"};
+  const auto quoted = shell_quote(awj::path_to_utf8(path));
+  if (command_exists("gio") && std::system(std::format("gio open {} >/dev/null 2>&1 &", quoted).c_str()) == 0) return {};
+  if (command_exists("xdg-open") && std::system(std::format("xdg-open {} >/dev/null 2>&1 &", quoted).c_str()) == 0) return {};
+  if (command_exists("thunar") && std::system(std::format("thunar {} >/dev/null 2>&1 &", quoted).c_str()) == 0) return {};
+  return std::unexpected{"未找到可用的目录打开工具（gio/xdg-open/thunar）。"};
+}
+
+slint::SharedString to_shared(std::string_view text) {
+  return slint::SharedString{std::string{text}.c_str()};
+}
+
+std::string shared_to_string(const slint::SharedString& value) {
+  return std::string{value.data(), value.size()};
+}
+
+std::wstring wide_from_shared(const slint::SharedString& value) {
+  return awj::wide_from_utf8(shared_to_string(value));
+}
+
+
+TaskRow task_row_from_result(const awj::EncodeResult& result) {
+  return TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
+                 .filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
+                 .folder = to_shared(awj::path_to_utf8(result.input_path.parent_path())),
+                 .size = to_shared(awj::format_size(result.original_bytes)),
+                 .status = to_shared(result.message),
+                 .output = to_shared(awj::path_to_utf8(result.output_path.filename())),
+                 .log = {},
+                 .warning = !result.ok,
+                 .locked = true};
+}
+
+void push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+                   TaskRow row) noexcept {
+  if (!rows) return;
+  try {
+    rows->push_back(std::move(row));
+  } catch (...) {
+  }
+}
+
+void add_large_image_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+                              const awj::BatchLargeImageItem& item) noexcept {
+  push_task_row(rows, TaskRow{.order = to_shared(std::format("{}", item.file.index + 1)),
+                              .filename = to_shared(awj::path_to_utf8(item.file.path.filename())),
+                              .folder = to_shared(awj::path_to_utf8(item.file.path.parent_path())),
+                              .size = to_shared(awj::format_size(item.file.bytes)),
+                              .status = to_shared("大图模式"),
+                              .output = {},
+                              .log = to_shared(std::format("{}；{}", awj::large_image_reason_name(item.decision.reason), item.decision.reason_text)),
+                              .warning = false,
+                              .locked = true});
+}
+
+
+bool linux_large_image_grid_available(const awj::BatchLargeImageItem& item) noexcept {
+  if (!item.decision.available_grid) return false;
+  const auto plan = awj::plan_grid(awj::GridPlanRequest{
+      .width = item.dimensions.width,
+      .height = item.dimensions.height,
+      .mode = awj::GridMode::auto_grid});
+  return plan && !plan->uses_padding;
+}
+
+bool linux_large_image_zenrav1e_available(const awj::BatchLargeImageItem& item) noexcept {
+  return item.decision.available_zenrav1e &&
+         item.dimensions.width <= awj::encoding_defaults::avif_single_image_max_dimension &&
+         item.dimensions.height <= awj::encoding_defaults::avif_single_image_max_dimension;
+}
+
+LargeImageRow make_linux_large_image_row(const awj::BatchLargeImageItem& item,
+                                         std::string_view status) {
+  const auto grid = linux_large_image_grid_available(item) ? "grid 可用" : "grid 不可用";
+  const auto zen = linux_large_image_zenrav1e_available(item)
+                       ? "zenrav1e 可用"
+                       : (item.decision.available_zenrav1e ? "zenrav1e 超出边长" : "zenrav1e 不可用");
+  return LargeImageRow{
+      .filename = to_shared(awj::path_to_utf8(item.file.path.filename())),
+      .dimensions = to_shared(std::format("{} x {}", item.dimensions.width, item.dimensions.height)),
+      .reason = to_shared(std::format("{} · {}", awj::large_image_reason_name(item.decision.reason),
+                                      item.decision.reason_text)),
+      .actions = to_shared(std::format("{} / {}", grid, zen)),
+      .status = to_shared(status),
+      .grid_available = linux_large_image_grid_available(item),
+      .zenrav1e_available = linux_large_image_zenrav1e_available(item)};
+}
+
+void set_linux_large_image_status(LinuxUiState& state, int index, std::string_view status) {
+  if (!state.large_image_rows || index < 0 ||
+      static_cast<std::size_t>(index) >= state.large_image_items.size()) {
+    return;
+  }
+  try {
+    state.large_image_rows->set_row_data(
+        static_cast<std::size_t>(index),
+        make_linux_large_image_row(state.large_image_items[static_cast<std::size_t>(index)], status));
+  } catch (...) {
+  }
+}
+
+void push_linux_large_image(LinuxUiState& state, awj::BatchLargeImageItem item) {
+  if (!state.large_image_rows) return;
+  try {
+    auto row = make_linux_large_image_row(item, "等待选择");
+    state.large_image_items.push_back(std::move(item));
+    state.large_image_rows->push_back(std::move(row));
+  } catch (...) {
+  }
+}
+void set_input_path_preserving_output(AwjStudio& app, const fs::path& path) {
+  app.set_input_path(to_shared(awj::path_to_utf8(path)));
+  if (shared_to_string(app.get_output_dir()).empty()) {
+    app.set_output_dir(to_shared(awj::path_to_utf8(awj::default_output_dir_for(path))));
+  }
+}
+std::wstring format_arg(int index) {
+  switch (index) {
+    case 1:
+      return L"webp";
+    case 2:
+      return L"jxl";
+    case 3:
+      return L"jpgli";
+    case 4:
+      return L"png";
+    case 0:
+    default:
+      return L"avif";
+  }
+}
+
+std::wstring collision_arg(int index) {
+  switch (index) {
+    case 1:
+      return L"skip";
+    case 2:
+      return L"time";
+    case 3:
+      return L"random";
+    case 0:
+    default:
+      return L"overwrite";
+  }
+}
+std::wstring preset_arg(int index) {
+  switch (index) {
+    case 1: return L"lossless";
+    case 2: return L"best";
+    case 3: return L"balanced";
+    case 4: return L"fast";
+    case 5: return L"extreme";
+    default: return {};
+  }
+}
+
+std::wstring avif_encoder_arg(int index) {
+  switch (index) {
+    case 1: return L"svt";
+    case 2: return L"aom";
+    case 3: return L"zenrav1e";
+    default: return L"auto";
+  }
+}
+
+std::wstring chroma_arg(int index) {
+  switch (index) {
+    case 1: return L"444";
+    case 2: return L"422";
+    case 3: return L"420";
+    default: return L"auto";
+  }
+}
+
+std::wstring alpha_arg(int index) {
+  switch (index) {
+    case 0: return L"force";
+    case 2: return L"off";
+    default: return L"auto";
+  }
+}
+
+std::wstring size_limit_arg(int index) {
+  switch (index) {
+    case 1: return L"none";
+    case 2: return L"manual";
+    default: return L"auto";
+  }
+}
+
+void push_flag(std::vector<std::wstring>& args, bool enabled,
+               std::wstring enabled_arg, std::wstring disabled_arg) {
+  args.push_back(enabled ? std::move(enabled_arg) : std::move(disabled_arg));
+}
+
+void push_option(std::vector<std::wstring>& args, std::wstring option,
+                 std::wstring value) {
+  if (!value.empty()) {
+    args.push_back(std::move(option));
+    args.push_back(std::move(value));
+  }
+}
+
+std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) {
+  std::vector<std::wstring> args;
+  push_option(args, L"--input", wide_from_shared(app.get_input_path()));
+  push_option(args, L"--output", wide_from_shared(app.get_output_dir()));
+  push_option(args, L"--template", wide_from_shared(app.get_template_text()));
+  push_option(args, L"--format", format_arg(app.get_format_index()));
+  push_option(args, L"--collision", collision_arg(app.get_collision_index()));
+  push_option(args, L"--preset", preset_arg(app.get_preset_index()));
+  args.push_back(L"--no-wic-fallback");
+  push_flag(args, app.get_experimental_encoders(), L"--experimental-encoders",
+            L"--no-experimental-encoders");
+
+  const auto quality = wide_from_shared(app.get_quality_text());
+  const auto visual_quality = wide_from_shared(app.get_visual_quality_text());
+  if (!trim_copy(visual_quality).empty()) {
+    push_option(args, L"--visual-quality", visual_quality);
+    push_flag(args, app.get_visual_quality_gpu(), L"--visual-quality-gpu",
+              L"--no-visual-quality-gpu");
+    push_flag(args, app.get_visual_quality_fallback(), L"--visual-quality-fallback",
+              L"--no-visual-quality-fallback");
+  } else {
+    push_option(args, L"--quality", quality);
+  }
+
+  push_option(args, L"--threads", wide_from_shared(app.get_threads_text()));
+  push_option(args, L"--memory-limit", memory_arg_from_ui(wide_from_shared(app.get_memory_limit_text())));
+  push_option(args, L"--large-image-priority", large_image_priority_from_ui(app.get_selected_large_image_action_index()));
+  if (app.get_unlock_max_input_file_bytes()) {
+    args.push_back(L"--unlock-max-input-file-bytes");
+  }
+  push_option(args, L"--bit-depth", wide_from_shared(app.get_bit_depth_text()));
+  push_option(args, L"--speed", wide_from_shared(app.get_speed_text()));
+  push_option(args, L"--image-size-limit", size_limit_arg(app.get_size_limit_index()));
+  if (app.get_size_limit_index() == 2) {
+    push_option(args, L"--max-width", wide_from_shared(app.get_max_width_text()));
+    push_option(args, L"--max-height", wide_from_shared(app.get_max_height_text()));
+    push_option(args, L"--max-long-edge", wide_from_shared(app.get_max_long_edge_text()));
+    push_option(args, L"--max-short-edge", wide_from_shared(app.get_max_short_edge_text()));
+  }
+
+  const int format_index = app.get_format_index();
+  if (format_index == 0) {
+    push_option(args, L"--avif-encoder", avif_encoder_arg(app.get_avif_encoder_index()));
+    push_option(args, L"--chroma", chroma_arg(app.get_chroma_index()));
+    push_option(args, L"--alpha", alpha_arg(app.get_alpha_policy_index()));
+  } else if (format_index == 3) {
+    push_option(args, L"--chroma", chroma_arg(app.get_chroma_index()));
+    push_option(args, L"--jpegli-progressive-level",
+                std::to_wstring(app.get_jpegli_progressive_index()));
+    push_flag(args, app.get_jpegli_optimize_huffman(),
+              L"--jpegli-optimize-huffman", L"--no-jpegli-optimize-huffman");
+    if (app.get_jpegli_xyb()) {
+      args.push_back(L"--jpegli-xyb");
+    }
+  }
+
+  push_flag(args, app.get_strip_metadata(), L"--strip", L"--keep-metadata");
+  push_flag(args, app.get_write_summary(), L"--summary", L"--no-summary");
+  push_flag(args, app.get_write_log(), L"--log", L"--no-log");
+
+  auto parsed = awj::parse_arguments(args);
+  if (!parsed) {
+    return std::unexpected{parsed.error()};
+  }
+  return parsed->config;
+}
+std::string xml_escape(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (const char ch : text) {
+    switch (ch) {
+      case '&':
+        out += "&amp;";
+        break;
+      case '<':
+        out += "&lt;";
+        break;
+      case '>':
+        out += "&gt;";
+        break;
+      default:
+        out += ch;
+        break;
+    }
+  }
+  return out;
+}
+
+std::string remove_awj_thunar_actions(std::string xml) {
+  if (xml.empty()) return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<actions>\n</actions>\n";
+  std::string out;
+  std::size_t pos = 0;
+  while (true) {
+    const auto start = xml.find("<action", pos);
+    if (start == std::string::npos) {
+      out += xml.substr(pos);
+      break;
+    }
+    const auto end = xml.find("</action>", start);
+    if (end == std::string::npos) {
+      out += xml.substr(pos);
+      break;
+    }
+    const auto block_end = end + std::string_view{"</action>"}.size();
+    const auto block = xml.substr(start, block_end - start);
+    out += xml.substr(pos, start - pos);
+    if (block.find("<unique-id>awjimage-") == std::string::npos) out += block;
+    pos = block_end;
+  }
+  return out;
+}
+
+std::string awj_cli_command(const fs::path& exe, int format_index) {
+  auto command = shell_quote(awj::path_to_utf8(exe));
+  command += " --output-policy shell --format ";
+  command += awj::utf8_from_wide(format_arg(format_index));
+  command += " --collision number --no-wic-fallback";
+  return command;
+}
+
+std::string nautilus_awj_script(const fs::path& exe) {
+  std::string script = "#!/bin/sh\nset -eu\nfiles=${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}\n[ -n \"$files\" ] || exit 0\n";
+  script += "printf '%s\n' \"$files\" | while IFS= read -r file; do\n";
+  script += "  [ -n \"$file\" ] || continue\n";
+  script += "  ";
+  script += awj_cli_command(exe, 0);
+  script += " \"$file\"\n";
+  script += "done\n";
+  return script;
+}
+
+std::expected<void, std::string> write_nautilus_script(const fs::path& exe) {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || std::string_view{home}.empty()) return std::unexpected{"无法定位 HOME，不能写入 Nautilus 脚本。"};
+  const auto scripts_dir = fs::path{home} / ".local" / "share" / "nautilus" / "scripts";
+  std::error_code ec;
+  fs::create_directories(scripts_dir, ec);
+  if (ec) return std::unexpected{std::format("创建 Nautilus 脚本目录失败: {}", ec.message())};
+  const auto script_path = scripts_dir / "AWJ 转换为 AVIF";
+  std::ofstream out{script_path, std::ios::binary | std::ios::trunc};
+  if (!out) return std::unexpected{"写入 Nautilus 脚本失败。"};
+  out << nautilus_awj_script(exe);
+  out.close();
+  fs::permissions(script_path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                  fs::perm_options::add, ec);
+  if (ec) return std::unexpected{std::format("设置 Nautilus 脚本权限失败: {}", ec.message())};
+  return {};
+}
+
+std::expected<void, std::string> remove_nautilus_script() {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || std::string_view{home}.empty()) return {};
+  std::error_code ec;
+  fs::remove(fs::path{home} / ".local" / "share" / "nautilus" / "scripts" / "AWJ 转换为 AVIF", ec);
+  return {};
+}
+std::string thunar_action_xml(const fs::path& exe, int format_index) {
+  const auto format = awj::utf8_from_wide(format_arg(format_index));
+  auto command = awj_cli_command(exe, format_index);
+  command += " %F";
+  return std::format(
+      "  <action>\n"
+      "    <icon>image-x-generic</icon>\n"
+      "    <name>{}</name>\n"
+      "    <submenu>AWJimage 转换</submenu>\n"
+      "    <unique-id>awjimage-{}</unique-id>\n"
+      "    <command>{}</command>\n"
+      "    <description>使用 AWJimage 转换选中的图片</description>\n"
+      "    <patterns>*</patterns>\n"
+      "    <startup-notify/>\n"
+      "    <image-files/>\n"
+      "    <directories/>\n"
+      "  </action>\n",
+      xml_escape(std::format("AWJ 转换为 {}", format)), xml_escape(format),
+      xml_escape(command));
+}
+
+std::expected<void, std::string> write_thunar_actions() {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || std::string_view{home}.empty()) {
+    return std::unexpected{"无法定位 HOME，不能写入 Thunar 右键菜单。"};
+  }
+  auto exe = awj::executable_path();
+  if (!exe) return std::unexpected{exe.error()};
+  const auto config_dir = fs::path{home} / ".config" / "Thunar";
+  std::error_code ec;
+  fs::create_directories(config_dir, ec);
+  if (ec) return std::unexpected{std::format("创建 Thunar 配置目录失败: {}", ec.message())};
+  const auto uca = config_dir / "uca.xml";
+  std::string xml;
+  if (std::ifstream in{uca}; in) {
+    xml.assign(std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{});
+  }
+  xml = remove_awj_thunar_actions(std::move(xml));
+  if (xml.find("</actions>") == std::string::npos) {
+    xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<actions>\n</actions>\n";
+  }
+  std::string actions;
+  for (int i = 0; i < 5; ++i) actions += thunar_action_xml(*exe, i);
+  xml.insert(xml.rfind("</actions>"), actions);
+  std::ofstream out{uca, std::ios::binary | std::ios::trunc};
+  if (!out) return std::unexpected{"写入 Thunar 右键菜单失败。"};
+  out << xml;
+  return {};
+}
+
+std::expected<void, std::string> remove_thunar_actions() {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || std::string_view{home}.empty()) return {};
+  const auto uca = fs::path{home} / ".config" / "Thunar" / "uca.xml";
+  std::ifstream in{uca};
+  if (!in) return {};
+  std::string xml{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+  xml = remove_awj_thunar_actions(std::move(xml));
+  std::ofstream out{uca, std::ios::binary | std::ios::trunc};
+  if (!out) return std::unexpected{"写入 Thunar 右键菜单失败。"};
+  out << xml;
+  return {};
+}
+std::expected<void, std::string> write_linux_file_manager_actions() {
+  auto exe = awj::executable_path();
+  if (!exe) return std::unexpected{exe.error()};
+  auto nautilus = write_nautilus_script(*exe);
+  auto thunar = write_thunar_actions();
+  if (!nautilus && !thunar) {
+    return std::unexpected{std::format("Nautilus: {}; Thunar: {}", nautilus.error(), thunar.error())};
+  }
+  return {};
+}
+
+std::expected<void, std::string> remove_linux_file_manager_actions() {
+  auto nautilus = remove_nautilus_script();
+  auto thunar = remove_thunar_actions();
+  if (!nautilus && !thunar) {
+    return std::unexpected{std::format("Nautilus: {}; Thunar: {}", nautilus.error(), thunar.error())};
+  }
+  return {};
+}
+void set_format_quality(AwjStudio& app, int index) {
+  const auto quality = [index] {
+    switch (index) {
+      case 1:
+        return awj::default_quality_for(awj::OutputFormat::webp);
+      case 2:
+        return awj::default_quality_for(awj::OutputFormat::jxl);
+      case 3:
+        return awj::default_quality_for(awj::OutputFormat::jpgli);
+      case 4:
+        return awj::default_quality_for(awj::OutputFormat::png);
+      case 0:
+      default:
+        return awj::default_quality_for(awj::OutputFormat::avif);
+    }
+  }();
+  app.set_quality_text(to_shared(std::format("{}", quality)));
+}
+
+void initialize_ui(AwjStudio& app) {
+  app.set_task_rows(std::make_shared<slint::VectorModel<TaskRow>>());
+  app.set_large_image_rows(std::make_shared<slint::VectorModel<LargeImageRow>>());
+  app.set_wic_ui_visible(false);
+  app.set_allow_wic_fallback(false);
+  app.set_menu_allow_wic_fallback(false);
+  app.set_visual_quality_gpu_help_text(to_shared("默认启用 Vulkan 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"));
+  app.set_avif_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
+  app.set_webp_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::webp))));
+  app.set_jxl_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::jxl))));
+  app.set_jpegli_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::jpgli))));
+  app.set_webp_bit_depth_default(to_shared(std::format("{}", awj::encoding_defaults::default_webp_bit_depth)));
+  app.set_quality_text(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
+  app.set_template_text(to_shared(std::string{awj::encoding_defaults::default_output_template_text}));
+  app.set_memory_limit_text(to_shared(std::string{awj::encoding_defaults::default_memory_limit_text}));
+  app.set_unlock_max_input_file_bytes(false);
+  app.set_selected_large_image_action_index(0);
+  app.set_status_text(to_shared("Linux：Vulkan/CPU fallback 可用；可手动输入或使用系统文件选择器。"));
+}
+
+}  // namespace
+
+int run_studio_ui() {
+  try {
+    auto app = AwjStudio::create();
+    auto state = std::make_shared<LinuxUiState>();
+    state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+    state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
+    auto weak = slint::ComponentWeakHandle(app);
+    initialize_ui(*app);
+    app->set_task_rows(state->task_rows);
+    app->set_large_image_rows(state->large_image_rows);
+    app->set_selected_large_image_index(-1);
+
+    app->on_format_defaults_requested([weak](int index) {
+      if (auto app = weak.lock()) {
+        set_format_quality(**app, index);
+      }
+    });
+    app->on_preset_defaults_requested([weak](int index) {
+      if (auto app = weak.lock()) {
+        switch (index) {
+          case 1:
+            (*app)->set_quality_text(to_shared("100"));
+            (*app)->set_visual_quality_text({});
+            break;
+          case 2:
+            (*app)->set_quality_text({});
+            (*app)->set_visual_quality_text(to_shared("75"));
+            break;
+          case 3:
+            (*app)->set_quality_text({});
+            (*app)->set_visual_quality_text(to_shared("50"));
+            break;
+          case 4:
+            (*app)->set_quality_text({});
+            (*app)->set_visual_quality_text(to_shared("25"));
+            break;
+          case 5:
+            (*app)->set_quality_text({});
+            (*app)->set_visual_quality_text(to_shared("17"));
+            break;
+          default:
+            break;
+        }
+      }
+    });
+    app->on_clear_tasks([weak] {
+      if (auto app = weak.lock()) {
+        (*app)->set_progress(0.0f);
+        (*app)->set_status_text(to_shared("已清空状态。"));
+      }
+    });
+    app->on_browse_input([weak] {
+      if (auto app = weak.lock()) {
+        auto selected = choose_path((*app)->get_input_mode_index() == 1);
+        if (!selected) {
+          (*app)->set_status_text(to_shared(selected.error()));
+          return;
+        }
+        set_input_path_preserving_output(**app, *selected);
+        (*app)->set_status_text(to_shared("已选择输入路径。"));
+      }
+    });
+    app->on_browse_output([weak] {
+      if (auto app = weak.lock()) {
+        auto selected = choose_path(true);
+        if (!selected) {
+          (*app)->set_status_text(to_shared(selected.error()));
+          return;
+        }
+        (*app)->set_output_dir(to_shared(awj::path_to_utf8(*selected)));
+        (*app)->set_status_text(to_shared("已选择输出目录。"));
+      }
+    });
+    app->on_open_output([weak] {
+      if (auto app = weak.lock()) {
+        fs::path path{shared_to_string((*app)->get_output_dir())};
+        if (path.empty()) {
+          path = awj::default_output_dir_for(fs::path{shared_to_string((*app)->get_input_path())});
+        }
+        if (auto opened = open_path(path); !opened) {
+          (*app)->set_status_text(to_shared(opened.error()));
+        }
+      }
+    });
+    app->on_install_context_menu_requested([weak] {
+      if (auto app = weak.lock()) {
+        auto result = write_linux_file_manager_actions();
+        (*app)->set_context_menu_status(to_shared(
+            result ? "已写入 Nautilus 脚本和 Thunar 右键菜单；重开文件管理器后生效。"
+                   : result.error()));
+      }
+    });
+    app->on_remove_context_menu_requested([weak] {
+      if (auto app = weak.lock()) {
+        auto result = remove_linux_file_manager_actions();
+        (*app)->set_context_menu_status(to_shared(
+            result ? "已移除 Nautilus 脚本和 Thunar AWJ 右键菜单。" : result.error()));
+      }
+    });
+    app->on_cancel_conversion([weak, state] {
+      if (auto app = weak.lock()) {
+        state->worker.request_stop();
+        (*app)->set_status_text(to_shared("正在取消当前任务…"));
+      }
+    });
+    app->on_toggle_template_token([weak](slint::SharedString token) {
+      if (auto app = weak.lock()) {
+        auto text = shared_to_string((*app)->get_template_text());
+        const auto value = shared_to_string(token);
+        if (const auto pos = text.find(value); pos != std::string::npos) {
+          text.erase(pos, value.size());
+        } else {
+          if (!text.empty() && text.back() != '_') text += '_';
+          text += value;
+        }
+        (*app)->set_template_text(to_shared(text));
+      }
+    });
+    app->on_title_bar_theme_requested([](bool) {});
+    app->on_combo_popup_requested([] {});
+    app->on_combo_popup_finished([] {});
+    app->on_large_image_action_requested([weak, state](int index, slint::SharedString action_text) {
+      auto app = weak.lock();
+      if (!app) return;
+      if ((*app)->get_running()) {
+        (*app)->set_status_text(to_shared("当前任务正在运行，请先取消"));
+        return;
+      }
+      const auto action = shared_to_string(action_text);
+      if (index < 0 || static_cast<std::size_t>(index) >= state->large_image_items.size()) {
+        (*app)->set_status_text(to_shared("未选择大图任务"));
+        return;
+      }
+      const auto item = state->large_image_items[static_cast<std::size_t>(index)];
+      const bool available = (action == "grid" && linux_large_image_grid_available(item)) ||
+                             (action == "zenrav1e" && linux_large_image_zenrav1e_available(item));
+      if (!available) {
+        (*app)->set_status_text(to_shared(std::format("{} 不可用", action)));
+        return;
+      }
+      auto cfg = config_from_ui(**app);
+      if (!cfg) {
+        (*app)->set_status_text(to_shared(std::format("配置错误：{}", cfg.error())));
+        return;
+      }
+      (*cfg).input_path = item.file.path;
+      (*cfg).output_format = awj::OutputFormat::avif;
+      (*cfg).studio_large_action = awj::wide_from_utf8(action);
+      (*cfg).visual_quality.reset();
+      set_linux_large_image_status(*state, index, std::format("已选择 {} · 正在编码…", action));
+      (*app)->set_running(true);
+      (*app)->set_progress(0.0f);
+      (*app)->set_status_text(to_shared(std::format("大图处理：{}", action)));
+      state->worker = std::jthread([weak, state, cfg = std::move(*cfg), index, action](std::stop_token token) mutable {
+        auto progress = [weak](const awj::BatchProgress& event) {
+          slint::invoke_from_event_loop([weak, event] {
+            if (auto app = weak.lock()) {
+              if (event.total > 0) {
+                (*app)->set_progress(static_cast<float>(event.completed) / static_cast<float>(event.total));
+              }
+              if (!event.text.empty()) {
+                (*app)->set_status_text(to_shared(event.text));
+              } else if (event.kind == awj::BatchEventKind::item_finished) {
+                (*app)->set_status_text(to_shared(event.result.message));
+              }
+            }
+          });
+        };
+        auto summary = awj::run_batch(cfg, progress, token);
+        slint::invoke_from_event_loop([weak, state, summary = std::move(summary), index, action] {
+          if (auto app = weak.lock()) {
+            (*app)->set_running(false);
+            if (!summary) {
+              set_linux_large_image_status(*state, index, "失败");
+              (*app)->set_status_text(to_shared(std::format("大图失败：{}", summary.error())));
+              return;
+            }
+            const bool ok = summary->ok_count > 0 && summary->failed_count == 0;
+            set_linux_large_image_status(*state, index, ok ? std::format("{} 完成", action) : std::format("{} 失败", action));
+            (*app)->set_progress(1.0f);
+            (*app)->set_status_text(to_shared(std::format("大图完成：成功 {}，失败 {}，取消 {}。",
+                                                         summary->ok_count, summary->failed_count, summary->canceled_count)));
+          }
+        });
+      });
+    });
+
+    app->on_start_conversion([weak, state] {
+      auto app = weak.lock();
+      if (!app) {
+        return;
+      }
+      if ((*app)->get_running()) {
+        state->worker.request_stop();
+        (*app)->set_status_text(to_shared("正在取消当前任务…"));
+        return;
+      }
+      auto cfg = config_from_ui(**app);
+      if (!cfg) {
+        (*app)->set_status_text(to_shared(std::format("配置错误：{}", cfg.error())));
+        return;
+      }
+      state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+      state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
+      state->large_image_items.clear();
+      (*app)->set_task_rows(state->task_rows);
+      (*app)->set_large_image_rows(state->large_image_rows);
+      (*app)->set_selected_large_image_index(-1);
+      (*app)->set_running(true);
+      (*app)->set_progress(0.0f);
+      (*app)->set_status_text(to_shared("正在转换…"));
+      auto rows = state->task_rows;
+      state->worker = std::jthread([weak, state, rows, cfg = std::move(*cfg)](std::stop_token token) mutable {
+        auto progress = [weak, state, rows](const awj::BatchProgress& event) {
+          slint::invoke_from_event_loop([weak, state, rows, event] {
+            if (auto app = weak.lock()) {
+              if (event.kind == awj::BatchEventKind::item_finished) {
+                auto row = task_row_from_result(event.result);
+                if (event.result.index < rows->row_count()) {
+                  rows->set_row_data(event.result.index, row);
+                } else {
+                  push_task_row(rows, std::move(row));
+                }
+              } else if (event.kind == awj::BatchEventKind::large_image_queued) {
+                add_large_image_task_row(rows, event.large_image);
+                push_linux_large_image(*state, event.large_image);
+                if ((*app)->get_selected_large_image_index() < 0 && !state->large_image_items.empty()) {
+                  (*app)->set_selected_large_image_index(0);
+                }
+              }
+              if (event.total > 0) {
+                (*app)->set_progress(static_cast<float>(event.completed) / static_cast<float>(event.total));
+              }
+              if (!event.text.empty()) {
+                (*app)->set_status_text(to_shared(event.text));
+              } else if (event.kind == awj::BatchEventKind::item_finished) {
+                (*app)->set_status_text(to_shared(event.result.message));
+              }
+            }
+          });
+        };
+        auto summary = awj::run_batch(cfg, progress, token);
+        slint::invoke_from_event_loop([weak, summary = std::move(summary)] {
+          if (auto app = weak.lock()) {
+            (*app)->set_running(false);
+            if (!summary) {
+              (*app)->set_status_text(to_shared(std::format("转换失败：{}", summary.error())));
+              return;
+            }
+            (*app)->set_progress(1.0f);
+            (*app)->set_status_text(to_shared(std::format("完成：成功 {}，失败 {}，取消 {}。",
+                                                         summary->ok_count,
+                                                         summary->failed_count,
+                                                         summary->canceled_count)));
+          }
+        });
+      });
+    });
+
+    app->run();
+    state->worker.request_stop();
+    return 0;
+  } catch (const std::exception& ex) {
+    std::fprintf(stderr, "[FAIL] 启动 Slint UI 失败: %s\n", ex.what());
+    return 1;
+  } catch (...) {
+    std::fprintf(stderr, "[FAIL] 启动 Slint UI 失败。\n");
+    return 1;
+  }
+}
+
+#endif

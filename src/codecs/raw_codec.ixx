@@ -17,7 +17,7 @@ import awj.raw_image_io;
 
 export namespace awj {
 
-export class RawImageDecoder final : public ImageDecoder {
+class RawImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "awj-raw"; }
 

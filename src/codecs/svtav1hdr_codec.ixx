@@ -128,8 +128,8 @@ std::expected<RgbaPlaneView, std::string> rgba_plane(const ImageBuffer& image) {
     return std::unexpected{"svt-av1-hdr 输入 buffer 过大。"};
   }
   const std::size_t required = (image.height - 1) * plane.stride + min_stride;
-  if (static_cast<std::uint64_t>(required) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{"svt-av1-hdr 输入 RGBA buffer 超过 20 GiB 运行时上限。"};
+  if (static_cast<std::uint64_t>(required) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{"svt-av1-hdr 输入 RGBA buffer 超过当前运行时上限。"};
   }
   if (plane.bytes.size() < required) {
     return std::unexpected{"svt-av1-hdr 输入 RGBA buffer 不完整。"};
@@ -179,8 +179,8 @@ std::expected<std::vector<T>, std::string> make_typed_buffer(std::size_t count,
     return std::unexpected{std::format("{} {} 尺寸超过运行时限制。", context, label)};
   }
   const auto byte_count = count * sizeof(T);
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{std::format("{} {} 超过 20 GiB 运行时上限。", context, label)};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{std::format("{} {} 超过当前运行时上限。", context, label)};
   }
   std::vector<T> buffer;
   try {
@@ -196,8 +196,8 @@ std::expected<std::vector<T>, std::string> make_typed_buffer(std::size_t count,
 std::expected<std::vector<std::byte>, std::string> copy_avif_output(
     const avifRWData& output,
     std::stop_token stop_token = {}) {
-  if (output.size > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{"svt-av1-hdr 输出 AVIF 超过 20 GiB 运行时上限。"};
+  if (output.size > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{"svt-av1-hdr 输出 AVIF 超过当前运行时上限。"};
   }
   auto bytes = decoder_common::make_byte_buffer(output.size, "svt-av1-hdr");
   if (!bytes) {
@@ -472,11 +472,21 @@ std::expected<AvifImage, std::string> avif_image_from_rgba(
       plane->stride > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
     return std::unexpected{"svt-av1-hdr 输入尺寸超过 libavif API 限制。"};
   }
-  if (image.width > static_cast<std::size_t>(encoding_defaults::avif_single_image_max_dimension) ||
-      image.height > static_cast<std::size_t>(encoding_defaults::avif_single_image_max_dimension)) {
+  if (image.width > static_cast<std::size_t>(encoding_defaults::svtav1hdr_single_image_max_width) ||
+      image.height > static_cast<std::size_t>(encoding_defaults::svtav1hdr_single_image_max_height)) {
     return std::unexpected{std::format(
-        "svt-av1-hdr 单图 AVIF 输入尺寸 {}x{} 超过边长上限 {}。",
-        image.width, image.height, encoding_defaults::avif_single_image_max_dimension)};
+        "svt-av1-hdr 单图 AVIF 输入尺寸 {}x{} 超过上限 {}x{}。",
+        image.width, image.height, encoding_defaults::svtav1hdr_single_image_max_width,
+        encoding_defaults::svtav1hdr_single_image_max_height)};
+  }
+  if (static_cast<std::uint64_t>(image.width) *
+          static_cast<std::uint64_t>(image.height) >
+      encoding_defaults::svt_safe_max_pixels) {
+    return std::unexpected{std::format(
+        "svt-av1-hdr 单图 AVIF 输入像素数 {} 超过上限 {}。",
+        static_cast<std::uint64_t>(image.width) *
+            static_cast<std::uint64_t>(image.height),
+        encoding_defaults::svt_safe_max_pixels)};
   }
 
   AvifImage avif_image{avifImageCreate(static_cast<uint32_t>(image.width),
@@ -737,7 +747,7 @@ std::string hdr_metadata_summary(const SvtAv1HdrSettings& settings) {
 
 }  // namespace svtav1hdr_detail
 
-export bool svtav1hdr_encoder_build_available() noexcept {
+bool svtav1hdr_encoder_build_available() noexcept {
 #if AWJ_HAS_SVTAV1HDR_STATIC
   return avifCodecName(AVIF_CODEC_CHOICE_SVT, AVIF_CODEC_FLAG_CAN_ENCODE) != nullptr;
 #else
@@ -745,7 +755,7 @@ export bool svtav1hdr_encoder_build_available() noexcept {
 #endif
 }
 
-export bool svtav1hdr_static_library_available() noexcept {
+bool svtav1hdr_static_library_available() noexcept {
 #if AWJ_HAS_SVTAV1HDR_STATIC
   return true;
 #else
@@ -753,7 +763,7 @@ export bool svtav1hdr_static_library_available() noexcept {
 #endif
 }
 
-export std::expected<NativeEncodeResult, std::string> encode_svtav1hdr_in_process(
+std::expected<NativeEncodeResult, std::string> encode_svtav1hdr_in_process(
     const ImageBuffer& image,
     const NativeEncodeSettings& settings,
     std::stop_token stop_token = {}) {
@@ -779,7 +789,7 @@ export std::expected<NativeEncodeResult, std::string> encode_svtav1hdr_in_proces
     if (settings.visual_quality ? *settings.visual_quality >= 100 : final_quality >= 100) {
       return std::unexpected{"svt-av1-hdr 不支持 AVIF 无损/q100；请改用 AOM。"};
     }
-    if (settings.applied_alpha == "kept" || settings.has_non_opaque_alpha) {
+    if (settings.applied_alpha == "kept" || settings.has_non_opaque_alpha.value_or(false)) {
       return std::unexpected{"svt-av1-hdr 不支持保留 alpha；请改用 AOM。"};
     }
     const int bit_depth = settings.bit_depth.value_or(8);

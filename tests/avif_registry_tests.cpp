@@ -7,6 +7,7 @@
 import awj.avif_registry;
 import awj.config;
 import awj.encoding_defaults;
+import awj.large_image_plan;
 
 namespace {
 
@@ -28,6 +29,41 @@ bool contains_any(std::string_view text,
 }  // namespace
 
 int main() {
+  if (awj::encoding_defaults::ordinary_large_safe_max_pixels != (1ull << 30)) {
+    return fail("AVIF large-mode threshold must match AOM 2^30 single-image pixel limit.");
+  }
+  if (awj::encoding_defaults::svt_safe_max_pixels != 16'384ull * 8'704ull) {
+    return fail("SVT-AV1-HDR safe pixel limit must match 16384x8704.");
+  }
+  auto large_decision = awj::classify_large_image(
+      awj::ImageDimensions{.width = 5000, .height = 2001, .pixel_count = 10'005'000},
+      true, true);
+  if (large_decision.klass != awj::LargeImageClass::ordinary_deferred_tail) {
+    return fail("10MP+ AVIF input should be deferred to the ordinary queue tail, not forced into large mode.");
+  }
+  large_decision = awj::classify_large_image(
+      awj::ImageDimensions{.width = 32'768, .height = 32'768,
+                           .pixel_count = awj::encoding_defaults::ordinary_large_safe_max_pixels},
+      true, true);
+  if (large_decision.klass == awj::LargeImageClass::large_mode_required) {
+    return fail("AOM 2^30 pixel boundary should still be accepted as ordinary AVIF work.");
+  }
+  large_decision = awj::classify_large_image(
+      awj::ImageDimensions{.width = 32'768, .height = 32'769,
+                           .pixel_count = awj::encoding_defaults::ordinary_large_safe_max_pixels + 32'768},
+      true, true);
+  if (large_decision.klass != awj::LargeImageClass::large_mode_required) {
+    return fail("AVIF input over AOM 2^30 pixels should enter large mode.");
+  }
+  large_decision = awj::classify_large_image(
+      awj::ImageDimensions{.width = awj::encoding_defaults::avif_single_image_max_dimension + 1,
+                           .height = 1,
+                           .pixel_count = awj::encoding_defaults::avif_single_image_max_dimension + 1},
+      true, true);
+  if (large_decision.klass != awj::LargeImageClass::large_mode_required) {
+    return fail("AVIF input over AOM 65536 edge limit should enter large mode.");
+  }
+
   auto selected = awj::select_avif_encoder_from_capabilities(
       awj::AvifEncoderSelectionRequest{
           .requested_encoder = awj::AvifEncoderMode::automatic,
@@ -174,11 +210,27 @@ int main() {
           .requested_encoder = awj::AvifEncoderMode::automatic,
           .requested_chroma = awj::ChromaMode::auto_keep,
           .requested_bit_depth = 10,
-          .pixel_count = awj::encoding_defaults::ordinary_large_safe_max_pixels + 1,
+          .pixel_count = awj::encoding_defaults::svt_safe_max_pixels + 1,
+          .width = awj::encoding_defaults::svtav1hdr_single_image_max_width,
+          .height = awj::encoding_defaults::svtav1hdr_single_image_max_height + 1,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       awj::avif_encoder_capabilities_for_build(true, true, true, true));
   if (!selected || selected->applied_encoder != awj::AvifEncoderMode::aom) {
     return fail("auto over-SVT-limit opaque 420-compatible request did not stay on AOM.");
+  }
+
+  rejected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::aom,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 10,
+          .pixel_count = awj::encoding_defaults::avif_single_image_max_pixels + 1,
+          .width = 32'768,
+          .height = 32'769,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      awj::avif_encoder_capabilities_for_build(true, true, true, true));
+  if (rejected || !contains_any(rejected.error(), {"AOM", "2^30", "像素"})) {
+    return fail("AOM over-2^30-pixel rejection was not explicit.");
   }
 
   rejected = awj::select_avif_encoder_from_capabilities(
@@ -352,16 +404,31 @@ int main() {
       capability.enabled = false;
     }
   }
+  selected = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::svt,
+          .requested_chroma = awj::ChromaMode::yuv420,
+          .requested_bit_depth = 10,
+          .pixel_count = awj::encoding_defaults::svt_safe_max_pixels,
+          .width = awj::encoding_defaults::svtav1hdr_single_image_max_width,
+          .height = awj::encoding_defaults::svtav1hdr_single_image_max_height,
+          .speed = awj::default_speed_for(awj::OutputFormat::avif)},
+      svt_capabilities);
+  if (!selected || selected->applied_encoder != awj::AvifEncoderMode::svt) {
+    return fail("SVT max 16384x8704 boundary should still be accepted.");
+  }
   rejected = awj::select_avif_encoder_from_capabilities(
       awj::AvifEncoderSelectionRequest{
           .requested_encoder = awj::AvifEncoderMode::svt,
           .requested_chroma = awj::ChromaMode::yuv420,
           .requested_bit_depth = 10,
           .pixel_count = awj::encoding_defaults::svt_safe_max_pixels + 1,
+          .width = awj::encoding_defaults::svtav1hdr_single_image_max_width,
+          .height = awj::encoding_defaults::svtav1hdr_single_image_max_height + 1,
           .speed = awj::default_speed_for(awj::OutputFormat::avif)},
       svt_capabilities);
-  if (rejected || !contains_any(rejected.error(), {"over", "超过"})) {
-    return fail("SVT over-pixel-limit rejection was not explicit.");
+  if (rejected || !contains_any(rejected.error(), {"8704", "高度", "超过"})) {
+    return fail("SVT over-dimension rejection was not explicit.");
   }
 
   auto aom_8bit_capabilities = awj::avif_encoder_capabilities_for_build(true, false, false, false);
@@ -387,5 +454,23 @@ int main() {
   if (unsupported) {
     return fail("rav1e should not be accepted as an AVIF encoder mode.");
   }
+  
+  // manual large action exclusivity: only the selected capability should be marked available
+  {
+    const auto dims = awj::ImageDimensions{.width = 20000, .height = 20000, .pixel_count = 400'000'000};
+    auto zen_only = awj::classify_large_image(dims, false, true);
+    if (!zen_only.available_zenrav1e || zen_only.available_grid) {
+      return fail("manual large action exclusivity: zenrav1e selection should not enable grid.");
+    }
+    auto grid_only = awj::classify_large_image(dims, true, false);
+    if (!grid_only.available_grid || grid_only.available_zenrav1e) {
+      return fail("manual large action exclusivity: grid selection should not enable zenrav1e.");
+    }
+    auto both = awj::classify_large_image(dims, true, true);
+    if (!both.available_grid || !both.available_zenrav1e) {
+      return fail("auto large path should keep both capabilities when available.");
+    }
+  }
   return 0;
 }
+

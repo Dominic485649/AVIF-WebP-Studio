@@ -102,6 +102,14 @@ constexpr int default_speed_for(OutputFormat format) noexcept {
   }
 }
 
+constexpr bool default_allow_wic_fallback_for_platform() noexcept {
+#ifdef _WIN32
+  return encoding_defaults::default_allow_wic_fallback;
+#else
+  return false;
+#endif
+}
+
 // 命令行只负责生成这个配置对象；后面的流水线不会再回头解析 argv。
 struct AppConfig {
   std::filesystem::path input_path{
@@ -131,7 +139,7 @@ struct AppConfig {
       encoding_defaults::default_memory_limit_bytes};
   int encode_timeout_minutes{
       encoding_defaults::preset_balanced_timeout_minutes};
-  bool allow_wic_fallback{encoding_defaults::default_allow_wic_fallback};
+  bool allow_wic_fallback{default_allow_wic_fallback_for_platform()};
   std::optional<int> svtav1hdr_crf{};
   std::optional<int> svtav1hdr_preset{};
   std::string svtav1hdr_tune{
@@ -152,7 +160,12 @@ struct AppConfig {
   bool shell_close_on_finish{true};
   ImageSizeLimit image_size_limit{};
   std::wstring studio_cancel_event_name{};
+  // ponytail: empty = auto chain; kept for worker/CLI compatibility, not a Studio page action.
   std::wstring studio_large_action{};
+  // auto large-image path preference: zenrav1e (default) or grid first.
+  std::wstring large_image_priority{L"zenrav1e"};
+  // session-only unlock of 20 GiB input/runtime caps; never persist.
+  bool unlock_max_input_file_bytes{false};
 };
 
 AppConfig default_app_config() { return AppConfig{}; }
@@ -167,6 +180,7 @@ struct ParseResult {
   int exit_code{0};
   AppConfig config{};
   std::vector<std::filesystem::path> shell_inputs{};
+  std::vector<std::string> warnings{};
 };
 
 namespace config_detail {
@@ -203,8 +217,10 @@ std::wstring shell_input_key(const std::filesystem::path& path) {
   std::error_code ec;
   const auto absolute = std::filesystem::absolute(path, ec);
   auto key = (ec ? path : absolute).lexically_normal().wstring();
+#ifdef _WIN32
   std::ranges::transform(key, key.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
+#endif
   return key;
 }
 
@@ -816,6 +832,9 @@ std::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
   if (cfg.output_template.empty()) {
     cfg.output_template = encoding_defaults::default_output_template;
   }
+#ifndef _WIN32
+  cfg.allow_wic_fallback = false;
+#endif
   return validate_config(cfg);
 }
 
@@ -837,7 +856,7 @@ std::string help_text() {
   -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样；显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
   --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时直通、其他输入走 AOM 无损；显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
-  --visual-quality-gpu       启用 Direct3D 11 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
+  --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
   --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选
   --no-visual-quality-fallback visual_quality 搜索未达标时失败（默认）
@@ -846,7 +865,7 @@ std::string help_text() {
   --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
   --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
-  --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 默认 AOM，显式 svt 仅用于 420/8-10bit/无 alpha/非无损输入；超限大图移入 Studio 大图模式
+  --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 默认 AOM，显式 svt 仅用于 420/8-10bit/无 alpha/非无损输入；AOM 单图上限 65536 边/2^30 像素，SVT 上限 16384x8704；超限后自动走大图链路（默认 zenrav1e，可优先 grid），再失败则报错
   --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha 通道，auto 删除无效 alpha，off 总是删除 alpha
   --svtav1hdr-crf <0-63>     svt-av1-hdr 专家 CRF；未指定时使用通用 quality，避免默认 quality 与默认 CRF 同时生效
   --svtav1hdr-preset <0-13>  svt-av1-hdr preset；默认 @SVTAV1HDR_PRESET@
@@ -866,10 +885,13 @@ std::string help_text() {
   -p, --preset <名称>         fast / balanced / best / extreme；未指定时为自定义默认值；设置默认质量和编码超时，显式 --quality 可覆盖质量
   -t, --threads <auto|数量>   并发数量；auto/jthread/自动 使用 CPU 线程数
   --memory-limit <auto|大小>  内存限制；auto 为总内存一半与可用内存 80% 的较小值，可用 4GiB/4096MiB
+  --large-image-priority <zenrav1e|grid> 超过 AOM 单图上限后的自动大图优先路径；默认 zenrav1e，失败回退另一路径
+  --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/运行时上限（默认关闭，不写入配置）
+  --no-unlock-max-input-file-bytes / --no-unlock-20gib-limit 保持默认 20 GiB 上限
   --image-size-limit <auto|none|manual> 图片边长限制；manual 可配合 --max-width/--max-height/--max-long-edge/--max-short-edge
   -m, --template <模板>       输出命名，最多 512 个字符，默认 @OUTPUT_TEMPLATE@
   --speed <0-10>             统一速度参数；支持 AVIF/WebP/JXL；JPGLI/PNG 不支持
-  --allow-wic-fallback       允许 native 解码器失败后使用 WIC 兜底，默认开启
+  --allow-wic-fallback       Windows: 允许 native 解码器失败后使用 WIC 兜底；Linux: 接受但忽略
   --no-wic-fallback          禁用 WIC 解码兜底
   --close-on-finish / --no-close-on-finish 右键转换窗口完成后是否自动关闭
   --option <key=value>       预留 native 高级选项，可重复；当前版本只记录与校验
@@ -959,6 +981,7 @@ std::expected<ParseResult, std::string> parse_arguments(
   bool quality_was_set = false;
   std::vector<std::filesystem::path> shell_inputs;
   std::vector<std::wstring> positional_args;
+  std::vector<std::string> warnings;
 
   auto require_value = [&](std::size_t& index, std::wstring_view option)
       -> std::expected<std::wstring, std::string> {
@@ -1107,6 +1130,32 @@ std::expected<ParseResult, std::string> parse_arguments(
         return std::unexpected{"studio-large-action 只支持 grid 或 zenrav1e。"};
       }
       cfg.studio_large_action = lower_value;
+      continue;
+    }
+
+
+    if (lower == L"--large-image-priority") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto lower_value = config_detail::lower_copy(*value);
+      if (lower_value != L"zenrav1e" && lower_value != L"grid") {
+        return std::unexpected{"large-image-priority 只支持 zenrav1e 或 grid。"};
+      }
+      cfg.large_image_priority = lower_value;
+      continue;
+    }
+
+    if (lower == L"--unlock-max-input-file-bytes" ||
+        lower == L"--unlock-20gib-limit") {
+      cfg.unlock_max_input_file_bytes = true;
+      continue;
+    }
+
+    if (lower == L"--no-unlock-max-input-file-bytes" ||
+        lower == L"--no-unlock-20gib-limit") {
+      cfg.unlock_max_input_file_bytes = false;
       continue;
     }
 
@@ -1401,7 +1450,12 @@ std::expected<ParseResult, std::string> parse_arguments(
     }
 
     if (lower == L"--allow-wic-fallback") {
+#ifdef _WIN32
       cfg.allow_wic_fallback = true;
+#else
+      cfg.allow_wic_fallback = false;
+      warnings.emplace_back("Linux 不支持 WIC fallback；--allow-wic-fallback 已忽略。");
+#endif
       continue;
     }
 
@@ -1726,7 +1780,8 @@ std::expected<ParseResult, std::string> parse_arguments(
   return ParseResult{.should_exit = false,
                      .exit_code = 0,
                      .config = cfg,
-                     .shell_inputs = std::move(unique_shell_inputs)};
+                     .shell_inputs = std::move(unique_shell_inputs),
+                     .warnings = std::move(warnings)};
 }
 
 }  // namespace awj

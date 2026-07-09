@@ -27,14 +27,20 @@ import awj.jpeg_codec;
 #if AWJ_HAS_JPEGLI
 import awj.jpegli_codec;
 #endif
+#if AWJ_HAS_WINDOWS_CODECS
 import awj.jxr_codec;
+#endif
 import awj.jxl_codec;
 import awj.libraw_codec;
 import awj.png_codec;
+#if AWJ_HAS_AWJ_RAW_CODEC
 import awj.raw_codec;
+#endif
 import awj.tiff_codec;
 import awj.webp_codec;
+#if AWJ_HAS_WINDOWS_CODECS
 import awj.wic_codec;
+#endif
 
 export namespace awj {
 
@@ -66,9 +72,19 @@ bool try_select(const fs::path& path, DecoderSelection& selection, int decode_th
   return true;
 }
 
+bool try_select_avif(const fs::path& path, DecoderSelection& selection, int decode_threads) {
+  auto decoder = make_avif_image_decoder(decode_threads);
+  if (!decoder || !decoder->can_decode(path)) {
+    return false;
+  }
+  selection.decoder = std::move(decoder);
+  return true;
+}
+
 bool try_select_wic_fallback(const fs::path& path,
                              DecoderSelection& selection,
                              int decode_threads) {
+#if AWJ_HAS_WINDOWS_CODECS
   DecoderSelection fallback{};
   if (!try_select<WicImageDecoder>(path, fallback, decode_threads)) {
     return false;
@@ -76,6 +92,12 @@ bool try_select_wic_fallback(const fs::path& path,
   fallback.fallback = true;
   selection = std::move(fallback);
   return true;
+#else
+  (void)path;
+  (void)selection;
+  (void)decode_threads;
+  return false;
+#endif
 }
 
 std::string fallback_error(std::string_view primary_context,
@@ -107,7 +129,7 @@ std::string with_jpeg_turbo_fallback_error(std::string primary_error,
 
 }  // namespace decoder_registry_detail
 
-export std::expected<DecoderSelection, std::string> select_decoder_for_path(
+std::expected<DecoderSelection, std::string> select_decoder_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
@@ -115,24 +137,27 @@ export std::expected<DecoderSelection, std::string> select_decoder_for_path(
     const auto decode_threads = std::max(1, options.decode_threads);
     if (decoder_registry_detail::try_select<WebPImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<JXLImageDecoder>(path, selection, decode_threads) ||
-        decoder_registry_detail::try_select<AvifImageDecoder>(path, selection, decode_threads) ||
+        decoder_registry_detail::try_select_avif(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<PngImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<BmpImageDecoder>(path, selection, decode_threads) ||
 #if AWJ_HAS_JPEGLI
         decoder_registry_detail::try_select<JpegliImageDecoder>(path, selection, decode_threads) ||
 #endif
         decoder_registry_detail::try_select<JpegImageDecoder>(path, selection, decode_threads) ||
+#if AWJ_HAS_WINDOWS_CODECS
         decoder_registry_detail::try_select<JxrImageDecoder>(path, selection, decode_threads) ||
+#endif
         decoder_registry_detail::try_select<GifImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<TiffImageDecoder>(path, selection, decode_threads) ||
+#if AWJ_HAS_AWJ_RAW_CODEC
         decoder_registry_detail::try_select<RawImageDecoder>(path, selection, decode_threads) ||
+#endif
         decoder_registry_detail::try_select<LibRawImageDecoder>(path, selection, decode_threads)) {
       return selection;
     }
 
     if (options.allow_wic_fallback &&
-        decoder_registry_detail::try_select<WicImageDecoder>(path, selection, decode_threads)) {
-      selection.fallback = true;
+        decoder_registry_detail::try_select_wic_fallback(path, selection, decode_threads)) {
       return selection;
     }
 
@@ -149,7 +174,7 @@ export std::expected<DecoderSelection, std::string> select_decoder_for_path(
   }
 }
 
-export std::expected<ImageDecodeResult, std::string> decode_image_for_path(
+std::expected<ImageDecodeResult, std::string> decode_image_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
@@ -211,7 +236,7 @@ export std::expected<ImageDecodeResult, std::string> decode_image_for_path(
   }
 }
 
-export std::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
+std::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {

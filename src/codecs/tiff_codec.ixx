@@ -55,16 +55,16 @@ std::expected<void, std::string> check_input_file_size(const fs::path& path) {
     return std::unexpected{std::format("读取 TIFF 文件大小失败: {}；系统错误：{}",
                                        display_path_for_user(path), ec.message())};
   }
-  if (file_size > static_cast<std::uintmax_t>(encoding_defaults::max_input_file_bytes)) {
-    return std::unexpected{std::format("TIFF 文件超过 20 GiB 输入上限: {}",
+  if (file_size > static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
+    return std::unexpected{std::format("TIFF 文件超过当前输入上限: {}",
                                        display_path_for_user(path))};
   }
   return {};
 }
 
 std::expected<void, std::string> check_decoded_rgba_size(std::size_t byte_count) {
-  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::max_input_file_bytes) {
-    return std::unexpected{"TIFF 解码 RGBA buffer 超过 20 GiB 运行时上限。"};
+  if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
+    return std::unexpected{"TIFF 解码 RGBA buffer 超过当前运行时上限。"};
   }
   return {};
 }
@@ -162,7 +162,7 @@ std::expected<void, std::string> reject_multiple_directories(TIFF* tiff,
 
 }  // namespace tiff_detail
 
-export class TiffImageDecoder final : public ImageDecoder {
+class TiffImageDecoder final : public ImageDecoder {
  public:
   [[nodiscard]] std::string_view id() const noexcept override { return "libtiff"; }
 

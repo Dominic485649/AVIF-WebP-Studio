@@ -1,13 +1,17 @@
 # AWJimage
 
-AWJimage 是一个 Windows C++23 / Slint 批量图片转换工具。当前内置转换路径只保留 native codec：
+English: [README.en.md](README.en.md)
 
-- AVIF：libavif/AOM；实验 `zenrav1e` 静态链接进主程序但仍需显式启用；`svt-av1-hdr` 通过 libavif SVT backend 静态链接进主程序
+AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
+
+- AVIF：libavif/AOM；Windows 构建可静态链接实验 `zenrav1e` 与 `svt-av1-hdr`，Linux GCC 首版启用 AOM 与 `svt-av1-hdr`，暂不启用 `zenrav1e`
 - WebP：libwebp
 - JXL：libjxl
-- JPGLI：google/jpegli；使用 Jpegli 生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
+- JPGLI：google/jpegli；Windows 与 Linux GCC Release 均可用，生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
 
 内置 ImageMagick/MagickWand 后端已经移除，Release 输出不再携带 ImageMagick XML、许可文件或模块目录。Magick 与 ffmpeg 以后只能作为外部集成重新引入；当前版本不处理该环节。
+
+Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
 如需使用ffmpeg作为后端可用参考下面两个仓库
 
@@ -17,20 +21,30 @@ AWJimage 是一个 Windows C++23 / Slint 批量图片转换工具。当前内置
 
 ## 构建
 
-推荐使用预设：
+Windows 推荐使用 MSVC 预设：
 
 ```powershell
 cmake --preset windows-msvc-x64-release
 cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 ```
 
-或使用脚本：
+Linux 在 WSL 本地路径（推荐 `/home/dominic/Code/Cpp/AWJimage`，不要直接编译 `/mnt/d`）使用 vcpkg `x64-linux` 与 GCC 预设：
+
+```bash
+cd /home/dominic/Code/Cpp/AWJimage
+cmake --preset linux-gcc-x64-release
+cmake --build --preset linux-gcc-x64-release --target AWJ
+```
+
+`linux-gcc-x64-debug` 用于 Debug；`linux-gcc-x64-release` 使用 `-O3`、IPO/LTO、`-march=x86-64-v3`、section GC/strip，并静态链接 `libstdc++` / `libgcc`；只生成单个 `AWJ` ELF，没有 `AWJ.com`。当前实测 Release 约 47 MiB，主要来自静态 Slint、SVT-AV1-HDR、JPGLI/libjxl/libavif 等 native codec 依赖；`readelf -d bin/x64/Release/AWJ` 不应出现 `libstdc++.so.6` 或 `libgcc_s.so.1`。
+
+Windows 也可使用脚本：
 
 ```powershell
 .\release.ps1
 ```
 
-脚本会配置 native 依赖并清理 Release 输出目录，只保留面向用户的：
+Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留面向用户的：
 
 - `bin\x64\Release\AWJ.exe`
 - `bin\x64\Release\AWJ.com`
@@ -44,33 +58,33 @@ cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 
 ```powershell
 # 1. 更新版本号
-Set-Content VERSION "0.8.5"
+Set-Content VERSION "0.9.1"
 .\scripts\Update-VcpkgVersion.ps1
 
 # 2. 提交并打 tag
 git add VERSION vcpkg.json
-git commit -m "release: 0.8.5"
-git tag 0.8.5
+git commit -m "release: 0.9.1"
+git tag 0.9.1
 
 # 3. 构建
 .\release.ps1
 ```
 
-`svt-av1-hdr` 已作为源码依赖构建并静态链接进主程序，Release 不需要 `SvtAv1EncApp.exe`、DLL 或其他 SVT sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
+`svt-av1-hdr` 作为源码依赖构建并静态链接进主程序，Release 不需要 `SvtAv1EncApp.exe`、DLL 或其他 SVT sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出；Linux GCC 首版启用 SVT，但暂不启用 `zenrav1e`。
 
 `AWJ_ENABLE_JPEGLI` 默认开启，CMake 会拉取 google/jpegli 并静态链接 `jpegli-static`。JPGLI 没有独立容器格式，AWJ 的 UI、CLI、summary 和日志统一显示 `JPGLI` / `jpegli`，但输出文件扩展名默认保持 `.jpg`，以兼容系统缩略图和常见图片查看器。
 
-构建 visual_quality GPU 指标路径时，CMake 会调用 Windows SDK 的 `fxc.exe` 预编译 Direct3D 11 compute shader，并把 bytecode 内嵌进程序。构建机需要安装 Windows SDK；最终用户运行 Release 不需要 `fxc.exe`、`d3dcompiler` 或 `.cso` sidecar。
+构建 visual_quality GPU 指标路径时，Windows 使用 Windows SDK `fxc.exe` 预编译 Direct3D 11 shader；Linux 使用 vcpkg `directx-dxc` 生成 Vulkan SPIR-V。shader 会内嵌进程序，最终用户运行 Release 不需要 shader sidecar。
 
 ## visual_quality GPU 指标路径
 
-`--visual-quality` 的 1..99 自动搜索会重复编码候选、从内存解码候选并计算视觉指标。默认启用的 `--visual-quality-gpu` 加速的是指标分析路径：Direct3D 11 compute shader 负责 luma、GMSD、MS-SSIM 和 MS-SSIM downsample。候选 codec 编码/解码、候选选择和最终 encoded bytes 返回仍是 native CPU memory pipeline；这不是端到端 GPU 转码。
+`--visual-quality` 的 1..99 自动搜索会重复编码候选、从内存解码候选并计算视觉指标。默认启用的 `--visual-quality-gpu` 加速的是指标分析路径：Windows 走 Direct3D 11 compute shader，Linux 走 Vulkan compute shader，负责 luma、GMSD、MS-SSIM 和 MS-SSIM downsample。候选 codec 编码/解码、候选选择和最终 encoded bytes 返回仍是 native CPU memory pipeline；这不是端到端 GPU 转码。
 
 GPU 不可用、小图低于收益阈值、资源超限或 GPU readback/shader 创建失败时会自动回退 CPU。启用 `--summary` 或 `--log` 后，可通过 `visual_quality_gpu_requested`、`visual_quality_gpu_used`、`visual_quality_gpu_path`、`visual_quality_gpu_fallback_reason`、`visual_quality_gpu_fallback_count` 以及各阶段耗时判断实际路径。
 
 ## CLI 示例
 
-命令行建议直接输入 `AWJ ...`；在 Windows 终端中会优先使用同目录的 `AWJ.com` shim，并转发到 `AWJ.exe`，从而保留等待、stdout/stderr 和退出码。双击 `AWJ.exe` 会直接打开 Studio，不弹出命令行窗口。
+Windows 命令行建议直接输入 `AWJ ...`；终端中会优先使用同目录的 `AWJ.com` shim，并转发到 `AWJ.exe`，从而保留等待、stdout/stderr 和退出码。Linux 直接运行单个 ELF `AWJ`，没有 `AWJ.com`。无参数启动 Slint Studio，带 CLI 参数进入命令行转换。
 
 ```powershell
 AWJ -i "D:\图片" -o Avifoutput --format avif -q q90
@@ -81,11 +95,27 @@ AWJ -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
 AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 ```
 
-`zenrav1e` 是实验编码器：必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`。默认 `auto` 不会选择实验编码器。
+`zenrav1e` 是实验编码器：必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`。默认 `auto` 不会选择实验编码器。Linux GCC 首版暂不启用 `zenrav1e`；SVT 可用。
+
+### AVIF 大图与队列策略
+
+AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）；`svt-av1-hdr` 上限为 16384×8704。超过 1000 万像素但仍在单图上限内的图片只会排到普通队列末尾，仍使用普通编码器和现有单任务多线程编码。
+
+超过 AOM 单图上限后自动进入大图链路：
+1. 默认优先 `zenrav1e`，失败或不支持再回退 `grid`；
+2. 参数页“大图优先”可改为 `grid` 优先再回退 `zenrav1e`；
+3. 两条路径都不可用/都失败，或触达输入/运行时内存上限时明确报错。
+
+Studio 大图页可继续对单项强制指定 `zenrav1e` / `grid`（手动强制不会静默改路）。CLI：
+- `--large-image-priority zenrav1e|grid`
+- `--unlock-max-input-file-bytes` / `--unlock-20gib-limit`：仅当前会话解除默认 20 GiB 输入/运行时上限，不写入 `AWJ.jsonc`；过大图片可能 OOM。
+参数设置页其余编码参数同样只在本次运行内保持，不写入 `AWJ.jsonc`。
 
 `--format jpgli` 和 `--format jpegli` 是 JPGLI 入口；`--format jpg` 不作为新增入口。启用 `--summary` 后，`summary.csv` 会记录 `format=JPGLI`、`encoder_id=jpegli`，输出路径仍通常是 `.jpg`。
 
-Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片。
+`--allow-wic-fallback` 仅 Windows 有效；Linux 会接受但忽略该参数，并保持 native codec / CPU/Vulkan 路径。Linux UI 的“选择”按钮会调用已安装的 `zenity`/`yad`/`kdialog`；未安装时仍可手动输入路径。右键菜单写入 Nautilus 用户脚本 `~/.local/share/nautilus/scripts/AWJ 转换为 AVIF` 和 Thunar 用户级 `~/.config/Thunar/uca.xml`，必要时重启文件管理器（Thunar 可执行 `thunar -q`）。
+
+Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。
 
 ## 基准测试
 
@@ -113,12 +143,21 @@ Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用
 
 AWJ 的 `--visual-quality` 选项通过 IQA 算法自动搜索最优编码参数：**GMSD**（对模糊与结构失真敏感）与 **MS-SSIM**（多尺度结构相似性）混合评分。
 
-该混合算法兼顾稳定性与速度，在以 3–4 倍于普通编码的时间消耗下，能为指定批次找到同视觉质量下的最小体积。`--visual-quality-gpu` 利用 Direct3D 11 compute shader 加速 luma、GMSD、MS-SSIM 及 MS-SSIM downsample 计算路径；GPU 不可用或小图低于收益阈值时自动回退 CPU。
+该混合算法兼顾稳定性与速度，在以 3–4 倍于普通编码的时间消耗下，能为指定批次找到同视觉质量下的最小体积。`--visual-quality-gpu` 在 Windows 使用 Direct3D 11、在 Linux 使用 Vulkan 加速 luma、GMSD、MS-SSIM 及 MS-SSIM downsample 计算路径；GPU 不可用或小图低于收益阈值时自动回退 CPU。
 
 ## 测试
 
-普通构建/验证只构建 AWJ 和 AWJ-com 目标，不构建测试可执行文件。只有明确需要测试验证时，才单独构建测试目标并运行：
+普通构建/验证只构建面向平台的发布目标：Windows 为 AWJ 和 AWJ-com，Linux 为 AWJ，不构建测试可执行文件。只有明确需要测试验证时，才单独构建测试目标并运行：
 
 ```powershell
 ctest --test-dir build/x64/Release -C Release --output-on-failure
 ```
+
+Linux smoke test：
+
+```bash
+./bin/x64/Release/AWJ --help
+./bin/x64/Release/AWJ -i ui/logo.png -o /tmp/awj-vq --format webp --visual-quality 50 --visual-quality-gpu --visual-quality-fallback --summary
+```
+
+

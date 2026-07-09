@@ -1,5 +1,6 @@
 module;
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -56,18 +57,32 @@ inline constexpr bool default_svtav1hdr_avif = true;
 
 inline constexpr std::uint64_t max_input_file_bytes =
     20ull * 1024ull * 1024ull * 1024ull;
+// ponytail: session unlock for huge inputs; default stays 20 GiB. Not persisted.
+inline std::atomic_bool unlock_max_input_file_bytes{false};
+inline std::uint64_t effective_max_input_file_bytes() noexcept {
+  // Unlocked path still caps absurd values to avoid size_t wrap in buffers.
+  constexpr std::uint64_t unlocked_cap = 512ull * 1024ull * 1024ull * 1024ull; // 512 GiB
+  return unlock_max_input_file_bytes.load(std::memory_order_relaxed)
+             ? unlocked_cap
+             : max_input_file_bytes;
+}
 
 inline constexpr std::uint64_t ordinary_large_defer_min_pixels = 10'000'000ull;
-inline constexpr std::uint64_t ordinary_large_safe_max_pixels = 20'000'000ull;
 inline constexpr std::uint32_t avif_single_image_max_dimension = 65'536u;
-inline constexpr std::uint32_t grid_auto_tile_width = 16'384u;
-inline constexpr std::uint32_t grid_auto_tile_height = 8'704u;
+inline constexpr std::uint64_t avif_single_image_max_pixels = 1ull << 30;
+inline constexpr std::uint64_t ordinary_large_safe_max_pixels =
+    avif_single_image_max_pixels;
+inline constexpr std::uint32_t svtav1hdr_single_image_max_width = 16'384u;
+inline constexpr std::uint32_t svtav1hdr_single_image_max_height = 8'704u;
+inline constexpr std::uint64_t svt_safe_max_pixels =
+    static_cast<std::uint64_t>(svtav1hdr_single_image_max_width) *
+    svtav1hdr_single_image_max_height;
+inline constexpr std::uint32_t grid_auto_tile_width = svtav1hdr_single_image_max_width;
+inline constexpr std::uint32_t grid_auto_tile_height = svtav1hdr_single_image_max_height;
 inline constexpr std::uint32_t grid_max_cols = 256u;
 inline constexpr std::uint32_t grid_max_rows = 256u;
 inline constexpr bool default_experimental_clamped_grid_padding = false;
 inline constexpr std::uint64_t large_image_threshold_pixels =
-    ordinary_large_defer_min_pixels;
-inline constexpr std::uint64_t svt_safe_max_pixels =
     ordinary_large_safe_max_pixels;
 inline constexpr int default_grid_overlap_pixels = 0;
 inline constexpr int default_aom_thread_cap = 8;
