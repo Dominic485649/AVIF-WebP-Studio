@@ -692,10 +692,14 @@ endif()
 set(ZENRAVIF_BRIDGE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.toml")
 set(ZENRAVIF_BRIDGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/src/lib.rs")
 set(AWJ_ZENRAVIF_AVAILABLE OFF)
-if(WIN32 AND AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EXISTS "${ZENRAVIF_BRIDGE_SOURCE}")
+if(AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EXISTS "${ZENRAVIF_BRIDGE_SOURCE}")
     set(AWJ_ZENRAVIF_AVAILABLE ON)
     set(ZENRAVIF_BRIDGE_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/target")
-    set(ZENRAVIF_BRIDGE_LIB "${ZENRAVIF_BRIDGE_TARGET_DIR}/release/zenravif_bridge.lib")
+    if(WIN32)
+        set(ZENRAVIF_BRIDGE_LIB "${ZENRAVIF_BRIDGE_TARGET_DIR}/release/zenravif_bridge.lib")
+    else()
+        set(ZENRAVIF_BRIDGE_LIB "${ZENRAVIF_BRIDGE_TARGET_DIR}/release/libzenravif_bridge.a")
+    endif()
     add_custom_command(
         OUTPUT "${ZENRAVIF_BRIDGE_LIB}"
         COMMAND cargo build --manifest-path "${ZENRAVIF_BRIDGE_MANIFEST}" --release
@@ -707,9 +711,13 @@ if(WIN32 AND AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EX
         VERBATIM)
     add_custom_target(zenravif_bridge_static DEPENDS "${ZENRAVIF_BRIDGE_LIB}")
     add_library(zenravif_bridge STATIC IMPORTED GLOBAL)
-    set_target_properties(zenravif_bridge PROPERTIES
-        IMPORTED_LOCATION "${ZENRAVIF_BRIDGE_LIB}"
-        INTERFACE_LINK_LIBRARIES "ws2_32;userenv;ntdll;bcrypt;advapi32")
+    set_target_properties(zenravif_bridge PROPERTIES IMPORTED_LOCATION "${ZENRAVIF_BRIDGE_LIB}")
+    if(WIN32)
+        set_property(TARGET zenravif_bridge PROPERTY INTERFACE_LINK_LIBRARIES
+            "ws2_32;userenv;ntdll;bcrypt;advapi32")
+    else()
+        set_property(TARGET zenravif_bridge PROPERTY INTERFACE_LINK_LIBRARIES "dl;pthread;m")
+    endif()
     add_dependencies(zenravif_bridge zenravif_bridge_static)
 elseif(AWJ_ENABLE_ZENRAVIF)
     message(STATUS "zenravif bridge sources were not found; experimental zenrav1e AVIF encoder will be unavailable in this build.")

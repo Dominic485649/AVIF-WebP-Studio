@@ -156,7 +156,6 @@ struct StudioChildProcess {
 struct MenuFormatParams {
   int preset_index{};
   std::string quality_text{};
-  std::string visual_quality_text{};
   std::string bit_depth_text{};
   std::string speed_text{};
   int avif_encoder_index{};
@@ -183,6 +182,7 @@ struct StudioConfigSnapshot {
   int input_mode_index{};
   int collision_index{};
   int theme_index{};
+  std::string ui_font_family{};
   bool allow_wic_fallback{};
   bool strip_metadata{};
   bool write_summary{};
@@ -554,7 +554,6 @@ std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
 MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
   return MenuFormatParams{.preset_index = app.get_menu_preset_index(),
                           .quality_text = shared_to_string(app.get_menu_quality_text()),
-                          .visual_quality_text = shared_to_string(app.get_menu_visual_quality_text()),
                           .bit_depth_text = shared_to_string(app.get_menu_bit_depth_text()),
                           .speed_text = shared_to_string(app.get_menu_speed_text()),
                           .avif_encoder_index = app.get_menu_avif_encoder_index(),
@@ -576,7 +575,6 @@ MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
 void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_preset_index(params.preset_index);
   app.set_menu_quality_text(to_shared(params.quality_text));
-  app.set_menu_visual_quality_text(to_shared(params.visual_quality_text));
   app.set_menu_bit_depth_text(to_shared(params.bit_depth_text));
   app.set_menu_speed_text(to_shared(params.speed_text));
   app.set_menu_avif_encoder_index(params.avif_encoder_index);
@@ -628,6 +626,7 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .input_mode_index = app.get_input_mode_index(),
       .collision_index = app.get_collision_index(),
       .theme_index = app.get_theme_index(),
+      .ui_font_family = shared_to_string(app.get_ui_font_family()),
       .allow_wic_fallback = app.get_allow_wic_fallback(),
       .strip_metadata = app.get_strip_metadata(),
       .write_summary = app.get_write_summary(),
@@ -1008,7 +1007,6 @@ std::expected<void, std::string> apply_menu_config_values(
     };
     if (auto r = one(apply_int(menu_config_key(prefix, "preset_index"), 0, 5, param.preset_index)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "quality_text"), param.quality_text)); !r) return r;
-    if (auto r = one(apply_string(menu_config_key(prefix, "visual_quality_text"), param.visual_quality_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "bit_depth_text"), param.bit_depth_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "speed_text"), param.speed_text)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "avif_encoder_index"), 0, 3, param.avif_encoder_index)); !r) return r;
@@ -1072,6 +1070,11 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   }
   if (auto result = apply(apply_config_int(app, *values, "theme_index", 0, 2,
                                            &AwjStudio::set_theme_index));
+      !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_string(
+          app, *values, "ui_font_family", &AwjStudio::set_ui_font_family));
       !result) {
     return result;
   }
@@ -1176,6 +1179,7 @@ std::expected<void, std::string> write_studio_config_file(
           defaults.input_mode_index);
   add_int("collision_index", current.collision_index, defaults.collision_index);
   add_int("theme_index", current.theme_index, defaults.theme_index);
+  add_string("ui_font_family", current.ui_font_family, defaults.ui_font_family);
 
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
            defaults.allow_wic_fallback);
@@ -1191,7 +1195,6 @@ std::expected<void, std::string> write_studio_config_file(
     const auto& fallback = defaults.menu_params[i];
     add_int(menu_config_key(prefix, "preset_index"), value.preset_index, fallback.preset_index);
     add_string(menu_config_key(prefix, "quality_text"), value.quality_text, fallback.quality_text);
-    add_string(menu_config_key(prefix, "visual_quality_text"), value.visual_quality_text, fallback.visual_quality_text);
     add_string(menu_config_key(prefix, "bit_depth_text"), value.bit_depth_text, fallback.bit_depth_text);
     add_string(menu_config_key(prefix, "speed_text"), value.speed_text, fallback.speed_text);
     add_int(menu_config_key(prefix, "avif_encoder_index"), value.avif_encoder_index, fallback.avif_encoder_index);
@@ -2625,9 +2628,7 @@ std::wstring shell_convert_command_line(const std::filesystem::path& awj_exe,
   const bool is_jxl = format == L"jxl";
   const bool is_jpgli = format == L"jpgli";
   const bool is_png = format == L"png";
-  if (!trim_copy(params.visual_quality_text).empty()) {
-    append_shell_option(command, L"--visual-quality", awj::wide_from_utf8(params.visual_quality_text));
-  } else if (!is_png && !trim_copy(params.quality_text).empty()) {
+  if (!is_png && !trim_copy(params.quality_text).empty()) {
     append_shell_option(command, L"--quality", awj::wide_from_utf8(params.quality_text));
   }
   if ((is_avif || is_webp || is_jpgli || is_png) &&
@@ -3218,19 +3219,13 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
   cfg.output_format = format;
   cfg.output_policy = awj::OutputPolicy::shell;
   cfg.collision_mode = awj::CollisionMode::suffix_number;
-  cfg.preset = preset_from_index(params.preset_index);
-  awj::apply_preset(cfg, cfg.preset);
+  cfg.preset = awj::Preset::custom;
   cfg.strip_metadata = params.strip_metadata;
   cfg.allow_wic_fallback = params.allow_wic_fallback;
 
-  const auto visual_quality = parse_visual_quality_field(params.visual_quality_text);
-  if (!visual_quality) return std::unexpected{visual_quality.error()};
-  cfg.visual_quality = *visual_quality;
-  if (!cfg.visual_quality) {
-    const auto quality = parse_quality_field(params.quality_text);
-    if (!quality) return std::unexpected{quality.error()};
-    cfg.quality = *quality;
-  }
+  const auto quality = parse_quality_field(params.quality_text);
+  if (!quality) return std::unexpected{quality.error()};
+  cfg.quality = *quality;
 
   if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
       format == awj::OutputFormat::jpgli || format == awj::OutputFormat::png) {
@@ -3299,17 +3294,12 @@ MenuFormatParams default_menu_params_for_index(int index) {
 }
 
 void apply_menu_preset_defaults_to_ui(AwjStudio& app, int preset_index) {
-  const auto preset = preset_from_index(preset_index);
-  if (preset == awj::Preset::custom) {
+  if (preset_index <= 0) {
     return;
   }
-  if (preset == awj::Preset::lossless) {
-    app.set_menu_quality_text(to_shared("100"));
-    app.set_menu_visual_quality_text({});
-  } else if (const auto visual_quality = visual_quality_for_preset(preset)) {
-    app.set_menu_quality_text({});
-    app.set_menu_visual_quality_text(to_shared(text_from_int(*visual_quality)));
-  }
+  constexpr std::array qualities{0, 100, 95, 85, 75, 60};
+  app.set_menu_quality_text(
+      to_shared(text_from_int(qualities[std::clamp(preset_index, 1, 5)])));
 }
 
 void apply_preset_defaults_to_ui(AwjStudio& app, int preset_index) {
@@ -5446,11 +5436,36 @@ namespace {
 
 namespace fs = std::filesystem;
 
+std::wstring large_image_priority_from_ui(int index) {
+  return index == 1 ? L"grid" : L"zenrav1e";
+}
+
+struct LinuxMenuParams {
+  int preset_index{};
+  std::string quality_text{};
+  std::string bit_depth_text{};
+  std::string speed_text{};
+  int avif_encoder_index{};
+  int chroma_index{};
+  int alpha_policy_index{1};
+  int jpegli_progressive_index{2};
+  bool jpegli_optimize_huffman{true};
+  bool jpegli_xyb{};
+  bool strip_metadata{};
+  int size_limit_index{};
+  std::string max_width_text{};
+  std::string max_height_text{};
+  std::string max_long_edge_text{};
+  std::string max_short_edge_text{};
+};
+
 struct LinuxUiState {
   std::jthread worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
+  std::array<LinuxMenuParams, 5> menu_params{};
+  int menu_format_index{};
 };
 
 std::string trim_copy(std::string value) {
@@ -5553,6 +5568,78 @@ std::string shared_to_string(const slint::SharedString& value) {
 
 std::wstring wide_from_shared(const slint::SharedString& value) {
   return awj::wide_from_utf8(shared_to_string(value));
+}
+
+LinuxMenuParams capture_linux_menu_params(const AwjStudio& app) {
+  return LinuxMenuParams{
+      .preset_index = app.get_menu_preset_index(),
+      .quality_text = shared_to_string(app.get_menu_quality_text()),
+      .bit_depth_text = shared_to_string(app.get_menu_bit_depth_text()),
+      .speed_text = shared_to_string(app.get_menu_speed_text()),
+      .avif_encoder_index = app.get_menu_avif_encoder_index(),
+      .chroma_index = app.get_menu_chroma_index(),
+      .alpha_policy_index = app.get_menu_alpha_policy_index(),
+      .jpegli_progressive_index = app.get_menu_jpegli_progressive_index(),
+      .jpegli_optimize_huffman = app.get_menu_jpegli_optimize_huffman(),
+      .jpegli_xyb = app.get_menu_jpegli_xyb(),
+      .strip_metadata = app.get_menu_strip_metadata(),
+      .size_limit_index = app.get_menu_size_limit_index(),
+      .max_width_text = shared_to_string(app.get_menu_max_width_text()),
+      .max_height_text = shared_to_string(app.get_menu_max_height_text()),
+      .max_long_edge_text = shared_to_string(app.get_menu_max_long_edge_text()),
+      .max_short_edge_text = shared_to_string(app.get_menu_max_short_edge_text())};
+}
+
+void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
+  app.set_menu_preset_index(params.preset_index);
+  app.set_menu_quality_text(to_shared(params.quality_text));
+  app.set_menu_bit_depth_text(to_shared(params.bit_depth_text));
+  app.set_menu_speed_text(to_shared(params.speed_text));
+  app.set_menu_avif_encoder_index(params.avif_encoder_index);
+  app.set_menu_chroma_index(params.chroma_index);
+  app.set_menu_alpha_policy_index(params.alpha_policy_index);
+  app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
+  app.set_menu_jpegli_optimize_huffman(params.jpegli_optimize_huffman);
+  app.set_menu_jpegli_xyb(params.jpegli_xyb);
+  app.set_menu_strip_metadata(params.strip_metadata);
+  app.set_menu_size_limit_index(params.size_limit_index);
+  app.set_menu_max_width_text(to_shared(params.max_width_text));
+  app.set_menu_max_height_text(to_shared(params.max_height_text));
+  app.set_menu_max_long_edge_text(to_shared(params.max_long_edge_text));
+  app.set_menu_max_short_edge_text(to_shared(params.max_short_edge_text));
+}
+
+void store_linux_menu_params(AwjStudio& app, LinuxUiState& state) {
+  state.menu_params[static_cast<std::size_t>(std::clamp(state.menu_format_index, 0, 4))] =
+      capture_linux_menu_params(app);
+}
+
+LinuxMenuParams default_linux_menu_params(int format_index) {
+  LinuxMenuParams params{};
+  const auto format = [format_index] {
+    switch (format_index) {
+      case 1: return awj::OutputFormat::webp;
+      case 2: return awj::OutputFormat::jxl;
+      case 3: return awj::OutputFormat::jpgli;
+      case 4: return awj::OutputFormat::png;
+      default: return awj::OutputFormat::avif;
+    }
+  }();
+  params.quality_text = std::format("{}", awj::default_quality_for(format));
+  if (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli) {
+    params.bit_depth_text = std::format("{}", awj::encoding_defaults::default_webp_bit_depth);
+  }
+  params.jpegli_progressive_index = awj::encoding_defaults::default_jpegli_progressive_level;
+  params.jpegli_optimize_huffman = awj::encoding_defaults::default_jpegli_optimize_huffman;
+  params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  return params;
+}
+
+void apply_linux_menu_preset(AwjStudio& app, int preset_index) {
+  if (preset_index <= 0) return;
+  constexpr std::array qualities{0, 100, 95, 85, 75, 60};
+  app.set_menu_quality_text(to_shared(std::format(
+      "{}", qualities[static_cast<std::size_t>(std::clamp(preset_index, 1, 5))])));
 }
 
 
@@ -5850,40 +5937,155 @@ std::string remove_awj_thunar_actions(std::string xml) {
   return out;
 }
 
-std::string awj_cli_command(const fs::path& exe, int format_index) {
+void append_linux_shell_arg(std::string& command, std::string_view value) {
+  command.push_back(' ');
+  command += shell_quote(value);
+}
+
+void append_linux_shell_option(std::string& command, std::string_view option,
+                               std::string_view value) {
+  append_linux_shell_arg(command, option);
+  append_linux_shell_arg(command, value);
+}
+
+std::string awj_cli_command(const fs::path& exe, int format_index,
+                            const LinuxMenuParams& params) {
   auto command = shell_quote(awj::path_to_utf8(exe));
-  command += " --output-policy shell --format ";
-  command += awj::utf8_from_wide(format_arg(format_index));
-  command += " --collision number --no-wic-fallback";
+  const auto format = awj::utf8_from_wide(format_arg(format_index));
+  append_linux_shell_option(command, "--output-policy", "shell");
+  append_linux_shell_option(command, "--format", format);
+  append_linux_shell_option(command, "--collision", "number");
+  append_linux_shell_arg(command, "--no-wic-fallback");
+
+  const bool is_avif = format_index == 0;
+  const bool is_webp = format_index == 1;
+  const bool is_jxl = format_index == 2;
+  const bool is_jpgli = format_index == 3;
+  const bool is_png = format_index == 4;
+  if (!is_png && !trim_copy(params.quality_text).empty()) {
+    append_linux_shell_option(command, "--quality", trim_copy(params.quality_text));
+  }
+  if ((is_avif || is_webp || is_jpgli || is_png) &&
+      !trim_copy(params.bit_depth_text).empty()) {
+    append_linux_shell_option(command, "--bit-depth", trim_copy(params.bit_depth_text));
+  }
+  if ((is_avif || is_webp || is_jxl) && !trim_copy(params.speed_text).empty()) {
+    append_linux_shell_option(command, "--speed", trim_copy(params.speed_text));
+  }
+  append_linux_shell_arg(command, params.strip_metadata ? "--strip" : "--keep-metadata");
+  append_linux_shell_option(command, "--image-size-limit",
+                            awj::utf8_from_wide(size_limit_arg(params.size_limit_index)));
+  if (params.size_limit_index == 2) {
+    if (!trim_copy(params.max_width_text).empty()) append_linux_shell_option(command, "--max-width", trim_copy(params.max_width_text));
+    if (!trim_copy(params.max_height_text).empty()) append_linux_shell_option(command, "--max-height", trim_copy(params.max_height_text));
+    if (!trim_copy(params.max_long_edge_text).empty()) append_linux_shell_option(command, "--max-long-edge", trim_copy(params.max_long_edge_text));
+    if (!trim_copy(params.max_short_edge_text).empty()) append_linux_shell_option(command, "--max-short-edge", trim_copy(params.max_short_edge_text));
+  }
+  if (is_avif) {
+    append_linux_shell_option(command, "--avif-encoder",
+                              awj::utf8_from_wide(avif_encoder_arg(params.avif_encoder_index)));
+    append_linux_shell_option(command, "--chroma",
+                              awj::utf8_from_wide(chroma_arg(params.chroma_index)));
+    append_linux_shell_option(command, "--alpha",
+                              awj::utf8_from_wide(alpha_arg(params.alpha_policy_index)));
+  } else if (is_jpgli) {
+    append_linux_shell_option(command, "--chroma",
+                              awj::utf8_from_wide(chroma_arg(params.chroma_index)));
+    append_linux_shell_option(command, "--jpegli-progressive-level",
+                              std::to_string(std::clamp(params.jpegli_progressive_index, 0, 2)));
+    append_linux_shell_arg(command, params.jpegli_optimize_huffman
+                                       ? "--jpegli-optimize-huffman"
+                                       : "--no-jpegli-optimize-huffman");
+    if (params.jpegli_xyb) append_linux_shell_arg(command, "--jpegli-xyb");
+  }
   return command;
 }
 
-std::string nautilus_awj_script(const fs::path& exe) {
+std::expected<void, std::string> validate_linux_menu_params(
+    const std::array<LinuxMenuParams, 5>& menu_params) {
+  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPGLI", "PNG"};
+  for (int format_index = 0; format_index < 5; ++format_index) {
+    const auto& params = menu_params[static_cast<std::size_t>(format_index)];
+    std::vector<std::wstring> args{L"--format", format_arg(format_index),
+                                   L"--no-wic-fallback"};
+    const bool is_avif = format_index == 0;
+    const bool is_webp = format_index == 1;
+    const bool is_jxl = format_index == 2;
+    const bool is_jpgli = format_index == 3;
+    const bool is_png = format_index == 4;
+    if (!is_png) push_option(args, L"--quality", awj::wide_from_utf8(trim_copy(params.quality_text)));
+    if (is_avif || is_webp || is_jpgli || is_png) {
+      push_option(args, L"--bit-depth", awj::wide_from_utf8(trim_copy(params.bit_depth_text)));
+    }
+    if (is_avif || is_webp || is_jxl) {
+      push_option(args, L"--speed", awj::wide_from_utf8(trim_copy(params.speed_text)));
+    }
+    push_flag(args, params.strip_metadata, L"--strip", L"--keep-metadata");
+    push_option(args, L"--image-size-limit", size_limit_arg(params.size_limit_index));
+    if (params.size_limit_index == 2) {
+      push_option(args, L"--max-width", awj::wide_from_utf8(trim_copy(params.max_width_text)));
+      push_option(args, L"--max-height", awj::wide_from_utf8(trim_copy(params.max_height_text)));
+      push_option(args, L"--max-long-edge", awj::wide_from_utf8(trim_copy(params.max_long_edge_text)));
+      push_option(args, L"--max-short-edge", awj::wide_from_utf8(trim_copy(params.max_short_edge_text)));
+    }
+    if (is_avif) {
+      push_option(args, L"--avif-encoder", avif_encoder_arg(params.avif_encoder_index));
+      push_option(args, L"--chroma", chroma_arg(params.chroma_index));
+      push_option(args, L"--alpha", alpha_arg(params.alpha_policy_index));
+    } else if (is_jpgli) {
+      push_option(args, L"--chroma", chroma_arg(params.chroma_index));
+      push_option(args, L"--jpegli-progressive-level",
+                  std::to_wstring(std::clamp(params.jpegli_progressive_index, 0, 2)));
+      push_flag(args, params.jpegli_optimize_huffman, L"--jpegli-optimize-huffman",
+                L"--no-jpegli-optimize-huffman");
+      if (params.jpegli_xyb) args.push_back(L"--jpegli-xyb");
+    }
+    auto parsed = awj::parse_arguments(args);
+    if (!parsed) {
+      return std::unexpected{std::format("{} 菜单参数错误：{}",
+                                         labels[static_cast<std::size_t>(format_index)],
+                                         parsed.error())};
+    }
+    if (auto valid = awj::validate_execution_config(parsed->config); !valid) {
+      return std::unexpected{std::format("{} 菜单参数错误：{}",
+                                         labels[static_cast<std::size_t>(format_index)],
+                                         valid.error())};
+    }
+  }
+  return {};
+}
+
+std::string nautilus_awj_script(const fs::path& exe, int format_index,
+                                const LinuxMenuParams& params) {
   std::string script = "#!/bin/sh\nset -eu\nfiles=${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}\n[ -n \"$files\" ] || exit 0\n";
   script += "printf '%s\n' \"$files\" | while IFS= read -r file; do\n";
   script += "  [ -n \"$file\" ] || continue\n";
   script += "  ";
-  script += awj_cli_command(exe, 0);
+  script += awj_cli_command(exe, format_index, params);
   script += " \"$file\"\n";
   script += "done\n";
   return script;
 }
 
-std::expected<void, std::string> write_nautilus_script(const fs::path& exe) {
+std::expected<void, std::string> write_nautilus_scripts(
+    const fs::path& exe, const std::array<LinuxMenuParams, 5>& menu_params) {
   const char* home = std::getenv("HOME");
   if (home == nullptr || std::string_view{home}.empty()) return std::unexpected{"无法定位 HOME，不能写入 Nautilus 脚本。"};
   const auto scripts_dir = fs::path{home} / ".local" / "share" / "nautilus" / "scripts";
   std::error_code ec;
   fs::create_directories(scripts_dir, ec);
   if (ec) return std::unexpected{std::format("创建 Nautilus 脚本目录失败: {}", ec.message())};
-  const auto script_path = scripts_dir / "AWJ 转换为 AVIF";
-  std::ofstream out{script_path, std::ios::binary | std::ios::trunc};
-  if (!out) return std::unexpected{"写入 Nautilus 脚本失败。"};
-  out << nautilus_awj_script(exe);
-  out.close();
-  fs::permissions(script_path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
-                  fs::perm_options::add, ec);
-  if (ec) return std::unexpected{std::format("设置 Nautilus 脚本权限失败: {}", ec.message())};
+  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPGLI", "PNG"};
+  for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
+    const auto script_path = scripts_dir / std::format("AWJ 转换为 {}", labels[static_cast<std::size_t>(i)]);
+    std::ofstream out{script_path, std::ios::binary | std::ios::trunc};
+    if (!out) return std::unexpected{std::format("写入 Nautilus {} 脚本失败。", labels[static_cast<std::size_t>(i)])};
+    out << nautilus_awj_script(exe, i, menu_params[static_cast<std::size_t>(i)]);
+    out.close();
+    fs::permissions(script_path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                    fs::perm_options::add, ec);
+    if (ec) return std::unexpected{std::format("设置 Nautilus 脚本权限失败: {}", ec.message())};
+  }
   return {};
 }
 
@@ -5891,12 +6093,15 @@ std::expected<void, std::string> remove_nautilus_script() {
   const char* home = std::getenv("HOME");
   if (home == nullptr || std::string_view{home}.empty()) return {};
   std::error_code ec;
-  fs::remove(fs::path{home} / ".local" / "share" / "nautilus" / "scripts" / "AWJ 转换为 AVIF", ec);
+  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPGLI", "PNG"};
+  const auto scripts_dir = fs::path{home} / ".local" / "share" / "nautilus" / "scripts";
+  for (const auto label : labels) fs::remove(scripts_dir / std::format("AWJ 转换为 {}", label), ec);
   return {};
 }
-std::string thunar_action_xml(const fs::path& exe, int format_index) {
+std::string thunar_action_xml(const fs::path& exe, int format_index,
+                              const LinuxMenuParams& params) {
   const auto format = awj::utf8_from_wide(format_arg(format_index));
-  auto command = awj_cli_command(exe, format_index);
+  auto command = awj_cli_command(exe, format_index, params);
   command += " %F";
   return std::format(
       "  <action>\n"
@@ -5915,7 +6120,8 @@ std::string thunar_action_xml(const fs::path& exe, int format_index) {
       xml_escape(command));
 }
 
-std::expected<void, std::string> write_thunar_actions() {
+std::expected<void, std::string> write_thunar_actions(
+    const std::array<LinuxMenuParams, 5>& menu_params) {
   const char* home = std::getenv("HOME");
   if (home == nullptr || std::string_view{home}.empty()) {
     return std::unexpected{"无法定位 HOME，不能写入 Thunar 右键菜单。"};
@@ -5936,7 +6142,9 @@ std::expected<void, std::string> write_thunar_actions() {
     xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<actions>\n</actions>\n";
   }
   std::string actions;
-  for (int i = 0; i < 5; ++i) actions += thunar_action_xml(*exe, i);
+  for (int i = 0; i < 5; ++i) {
+    actions += thunar_action_xml(*exe, i, menu_params[static_cast<std::size_t>(i)]);
+  }
   xml.insert(xml.rfind("</actions>"), actions);
   std::ofstream out{uca, std::ios::binary | std::ios::trunc};
   if (!out) return std::unexpected{"写入 Thunar 右键菜单失败。"};
@@ -5957,11 +6165,12 @@ std::expected<void, std::string> remove_thunar_actions() {
   out << xml;
   return {};
 }
-std::expected<void, std::string> write_linux_file_manager_actions() {
+std::expected<void, std::string> write_linux_file_manager_actions(
+    const std::array<LinuxMenuParams, 5>& menu_params) {
   auto exe = awj::executable_path();
   if (!exe) return std::unexpected{exe.error()};
-  auto nautilus = write_nautilus_script(*exe);
-  auto thunar = write_thunar_actions();
+  auto nautilus = write_nautilus_scripts(*exe, menu_params);
+  auto thunar = write_thunar_actions(menu_params);
   if (!nautilus && !thunar) {
     return std::unexpected{std::format("Nautilus: {}; Thunar: {}", nautilus.error(), thunar.error())};
   }
@@ -6025,6 +6234,11 @@ int run_studio_ui() {
     state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
     auto weak = slint::ComponentWeakHandle(app);
     initialize_ui(*app);
+    for (int i = 0; i < 5; ++i) {
+      state->menu_params[static_cast<std::size_t>(i)] = default_linux_menu_params(i);
+    }
+    state->menu_format_index = 0;
+    apply_linux_menu_params(*app, state->menu_params.front());
     app->set_task_rows(state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
     app->set_selected_large_image_index(-1);
@@ -6079,6 +6293,17 @@ int run_studio_ui() {
         (*app)->set_status_text(to_shared("已选择输入路径。"));
       }
     });
+    app->on_input_path_accepted([weak](slint::SharedString text) {
+      if (auto app = weak.lock()) {
+        const auto value = trim_copy(shared_to_string(text));
+        if (value.empty()) {
+          (*app)->set_status_text(to_shared("请输入图片文件或文件夹路径。"));
+          return;
+        }
+        set_input_path_preserving_output(**app, fs::path{value});
+        (*app)->set_status_text(to_shared("已更新输入路径。"));
+      }
+    });
     app->on_browse_output([weak] {
       if (auto app = weak.lock()) {
         auto selected = choose_path(true);
@@ -6101,12 +6326,39 @@ int run_studio_ui() {
         }
       }
     });
-    app->on_install_context_menu_requested([weak] {
+    app->on_menu_format_selected([weak, state](int index) {
       if (auto app = weak.lock()) {
-        auto result = write_linux_file_manager_actions();
+        store_linux_menu_params(**app, *state);
+        state->menu_format_index = std::clamp(index, 0, 4);
+        apply_linux_menu_params(
+            **app, state->menu_params[static_cast<std::size_t>(state->menu_format_index)]);
+      }
+    });
+    app->on_menu_preset_defaults_requested([weak](int index) {
+      if (auto app = weak.lock()) apply_linux_menu_preset(**app, index);
+    });
+    app->on_save_menu_params_requested([weak, state] {
+      if (auto app = weak.lock()) {
+        store_linux_menu_params(**app, *state);
+        auto valid = validate_linux_menu_params(state->menu_params);
+        (*app)->set_context_menu_status(to_shared(
+            valid ? "菜单参数已保存到当前会话；重新安装菜单后生效。" : valid.error()));
+        (*app)->set_status_text((*app)->get_context_menu_status());
+      }
+    });
+    app->on_install_context_menu_requested([weak, state] {
+      if (auto app = weak.lock()) {
+        store_linux_menu_params(**app, *state);
+        if (auto valid = validate_linux_menu_params(state->menu_params); !valid) {
+          (*app)->set_context_menu_status(to_shared(valid.error()));
+          (*app)->set_status_text(to_shared(valid.error()));
+          return;
+        }
+        auto result = write_linux_file_manager_actions(state->menu_params);
         (*app)->set_context_menu_status(to_shared(
             result ? "已写入 Nautilus 脚本和 Thunar 右键菜单；重开文件管理器后生效。"
                    : result.error()));
+        (*app)->set_status_text((*app)->get_context_menu_status());
       }
     });
     app->on_remove_context_menu_requested([weak] {
@@ -6114,6 +6366,7 @@ int run_studio_ui() {
         auto result = remove_linux_file_manager_actions();
         (*app)->set_context_menu_status(to_shared(
             result ? "已移除 Nautilus 脚本和 Thunar AWJ 右键菜单。" : result.error()));
+        (*app)->set_status_text((*app)->get_context_menu_status());
       }
     });
     app->on_cancel_conversion([weak, state] {

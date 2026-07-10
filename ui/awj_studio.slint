@@ -467,7 +467,6 @@ export component AwjStudio inherits Window {
     in-out property <int> menu-format-index: 0;
     in-out property <int> menu-preset-index: 0;
     in-out property <string> menu-quality-text: "";
-    in-out property <string> menu-visual-quality-text: "";
     in-out property <string> menu-bit-depth-text: "";
     in-out property <string> menu-speed-text: "";
     in-out property <int> menu-avif-encoder-index: 0;
@@ -760,16 +759,6 @@ export component AwjStudio inherits Window {
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 3; }
                     }
-                    NavItem {
-                        label: "大图模式";
-                        selected: root.selected-page == 4;
-                        normal-background: transparent;
-                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
-                        selected-background: root.dark-mode ? #188697 : #0f7c8c;
-                        normal-text: root.text-body;
-                        selected-text: #ffffff;
-                        clicked => { root.selected-page = 4; }
-                    }
                     Rectangle { vertical-stretch: 1; background: transparent; }
 
                     NavItem {
@@ -1003,7 +992,7 @@ export component AwjStudio inherits Window {
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "预设"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "视觉无损", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.menu-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "高质量", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.menu-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                 Text { text: "保存到右键菜单专用参数，不影响左侧普通参数设置。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 0: HorizontalLayout { height: 48px; spacing: 10px;
@@ -1012,13 +1001,8 @@ export component AwjStudio inherits Window {
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { text <=> root.menu-quality-text; placeholder-text: "1-100/q90/0.9"; enabled: !root.running && root.menu-visual-quality-text.is-empty; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                Text { text: "PNG 固定无损；填写视觉质量时质量由搜索控制。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: "视觉质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { text <=> root.menu-visual-quality-text; placeholder-text: "留空或 1-100"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                Text { text: "右键快速转换也可使用 visual_quality 搜索。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                LineEdit { text <=> root.menu-quality-text; placeholder-text: "1-100/q90/0.9"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                Text { text: "右键转换固定使用编码质量；PNG 始终无损。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "位深"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
@@ -1339,150 +1323,6 @@ export component AwjStudio inherits Window {
                     }
                 }
 
-                
-                if root.selected-page == 4: ScrollView {
-                    VerticalLayout {
-                        padding-left: 4px;
-                        padding-right: 4px;
-                        spacing: 14px;
-
-                        Rectangle {
-                            height: 120px;
-                            border-radius: 18px;
-                            background: root.chrome-bg;
-                            border-color: root.panel-border;
-                            border-width: 1px;
-                            animate background, border-color { duration: 180ms; easing: ease-out; }
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: 6px;
-                                Text { text: "大图模式"; color: root.text-strong; font-size: 30px; font-weight: 800; }
-                                Text { text: "超出普通 AVIF 单图限制的图片会进入这里，并按“大图优先”自动处理（默认 zenrav1e→grid）。此页仅展示状态；也可对单项强制指定路径。"; color: root.text-muted; font-size: 14px; wrap: word-wrap; }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 14px;
-
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                min-height: 520px;
-                                border-radius: 18px;
-                                background: root.panel-bg;
-                                border-color: root.panel-border;
-                                border-width: 1px;
-                                animate background, border-color { duration: 180ms; easing: ease-out; }
-                                VerticalLayout {
-                                    padding: 18px;
-                                    spacing: 10px;
-                                    Text { text: "大图队列"; color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                    Text { text: root.large-image-rows.length == 0 ? "暂无大图任务。开始 AVIF 转换后，超过 AOM 65536 边或 2^30 像素的图片会自动移入这里。" : "选择一项后使用右侧操作继续处理。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
-
-                                    Rectangle {
-                                        height: 32px;
-                                        border-radius: 9px;
-                                        background: root.field-bg;
-                                        border-color: root.field-border;
-                                        border-width: 1px;
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 10px;
-                                            spacing: 10px;
-                                            Text { text: "文件名"; width: 240px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: "尺寸"; width: 150px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: "原因"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: "状态"; width: 170px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        vertical-stretch: 1;
-                                        border-radius: 12px;
-                                        background: root.dark-mode ? #151b25 : #ffffff;
-                                        border-color: root.panel-border;
-                                        border-width: 1px;
-                                        clip: true;
-
-                                        if root.large-image-rows.length == 0: Text {
-                                            text: "暂无大图任务";
-                                            color: root.text-muted;
-                                            font-size: 13px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
-
-                                        if root.large-image-rows.length > 0: ListView {
-                                            for row[index] in root.large-image-rows: Rectangle {
-                                                background: index == root.selected-large-image-index ? root.accent-soft : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent);
-                                                border-radius: 6px;
-                                                height: 40px;
-                                                animate background { duration: 120ms; easing: ease-out; }
-                                                HorizontalLayout {
-                                                    padding-left: 10px;
-                                                    padding-right: 10px;
-                                                    spacing: 10px;
-                                                    Text { text: row.filename; width: 240px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                    Text { text: row.dimensions; width: 150px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                                    Text { text: row.reason; horizontal-stretch: 1; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                    Text { text: row.status; width: 170px; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                }
-                                                TouchArea { clicked => { root.selected-large-image-index = index; } }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: 360px;
-                                min-height: 520px;
-                                border-radius: 18px;
-                                background: root.panel-bg;
-                                border-color: root.panel-border;
-                                border-width: 1px;
-                                animate background, border-color { duration: 180ms; easing: ease-out; }
-                                VerticalLayout {
-                                    padding: 22px;
-                                    spacing: 14px;
-                                    Text { text: "处理方式"; color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].filename : "未选择大图任务"; color: root.text-body; font-size: 14px; font-weight: 700; overflow: elide; }
-                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].dimensions : ""; color: root.text-muted; font-size: 13px; }
-                                    Text { text: root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length ? root.large-image-rows[root.selected-large-image-index].actions : "请先在左侧选择一项。"; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
-                                    SoftButton {
-                                        dark-mode: root.dark-mode;
-                                        text: "使用 zenrav1e";
-                                        variant: "action";
-                                        height: 42px;
-                                        enabled: !root.running && root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length && root.large-image-rows[root.selected-large-image-index].zenrav1e-available;
-                                        clicked => { root.large-image-action-requested(root.selected-large-image-index, "zenrav1e"); }
-                                    }
-                                    SoftButton {
-                                        dark-mode: root.dark-mode;
-                                        text: "使用 AVIF grid";
-                                        height: 42px;
-                                        enabled: !root.running && root.selected-large-image-index >= 0 && root.selected-large-image-index < root.large-image-rows.length && root.large-image-rows[root.selected-large-image-index].grid-available;
-                                        clicked => { root.large-image-action-requested(root.selected-large-image-index, "grid"); }
-                                    }
-                                    Rectangle {
-                                        border-radius: 12px;
-                                        background: root.panel-bg-soft;
-                                        border-color: root.field-border;
-                                        border-width: 1px;
-                                        VerticalLayout {
-                                            padding: 14px;
-                                            spacing: 8px;
-                                            Text { text: "规则"; color: root.text-strong; font-size: 15px; font-weight: 800; }
-                                            Text { text: "• 手动选择会严格按所选方式执行，不会静默改走另一条路径。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
-                                            Text { text: "• grid 使用 libavif + AOM 的 AVIF grid，不是 AV1 tile。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
-                                            Text { text: "• zenrav1e 仅生成单图 AVIF，不支持 grid，边长必须 <= 65536。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
-                                            Text { text: "• 自动 grid 默认 16384 x 8704 tile，优先寻找可整除分块；若必须 padding，当前会拒绝编码以避免输出尺寸扩大。"; color: root.text-body; font-size: 13px; wrap: word-wrap; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
 if root.selected-page == 2: ScrollView {
                     VerticalLayout {
                         spacing: root.page-gap;
@@ -1526,23 +1366,13 @@ if root.selected-page == 2: ScrollView {
                                 HorizontalLayout {
                                     spacing: root.page-gap;
                                     Text { text: "字体"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    Rectangle {
+                                    LineEdit {
                                         horizontal-stretch: 1;
+                                        text <=> root.ui-font-family;
+                                        placeholder-text: "系统默认字体";
                                         height: root.control-button-height;
-                                        border-radius: 6px;
-                                        border-width: 1px;
-                                        border-color: root.field-border;
-                                        background: root.field-bg;
-                                        Text {
-                                            x: 12px;
-                                            width: parent.width - 24px;
-                                            text: root.ui-font-label;
-                                            color: root.text-body;
-                                            font-size: 13px;
-                                            vertical-alignment: center;
-                                            overflow: elide;
-                                        }
                                     }
+                                    SoftButton { dark-mode: root.dark-mode; text: "系统默认"; width: 104px; height: root.control-button-height; clicked => { root.ui-font-family = ""; } }
                                 }
                             }
                         }
@@ -1668,10 +1498,10 @@ export component ShellConvertWindow inherits Window {
     title: "AWJimage 右键转换";
     icon: @image-url("logo.png");
     default-font-family: root.ui-font-family;
-    preferred-width: 780px;
-    preferred-height: 520px;
-    min-width: 640px;
-    min-height: 420px;
+    preferred-width: 840px;
+    preferred-height: 560px;
+    min-width: 680px;
+    min-height: 440px;
 
     in property <[TaskRow]> task-rows;
     in-out property <string> status-text: "准备转换";
@@ -1696,40 +1526,39 @@ export component ShellConvertWindow inherits Window {
     background: root.page-bg;
 
     VerticalLayout {
-        padding: 18px;
-        spacing: 12px;
+        padding: 20px;
+        spacing: 14px;
+
+        Text {
+            text: "右键转换队列";
+            color: root.text-strong;
+            font-size: 22px;
+            font-weight: 800;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.status-text;
+            color: root.text-muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
         Rectangle {
-            height: 78px;
-            border-radius: 18px;
-            background: root.panel-bg;
-            border-color: root.panel-border;
-            border-width: 1px;
-            VerticalLayout {
-                padding: 16px;
-                spacing: 8px;
-                HorizontalLayout {
-                    Text { text: "右键转换队列"; color: root.text-strong; font-size: 20px; font-weight: 800; horizontal-stretch: 1; }
-                    Text { text: root.status-text; color: root.text-muted; font-size: 13px; vertical-alignment: center; }
-                }
-                Rectangle {
-                    height: 8px;
-                    border-radius: 4px;
-                    background: root.progress-track;
-                    Rectangle {
-                        x: 0px;
-                        y: 0px;
-                        width: max(0px, parent.width * root.progress);
-                        height: parent.height;
-                        border-radius: 4px;
-                        background: root.accent;
-                    }
-                }
+            height: 6px;
+            border-radius: 3px;
+            background: root.progress-track;
+            Rectangle {
+                width: max(0px, min(parent.width, parent.width * root.progress));
+                height: parent.height;
+                border-radius: 3px;
+                background: root.accent;
+                animate width { duration: 160ms; easing: ease-out; }
             }
         }
 
         Rectangle {
             vertical-stretch: 1;
-            border-radius: 18px;
+            border-radius: 8px;
             background: root.panel-bg;
             border-color: root.panel-border;
             border-width: 1px;
@@ -1740,32 +1569,34 @@ export component ShellConvertWindow inherits Window {
                 width: parent.width - 2px;
                 height: parent.height - 2px;
                 for row[i] in root.task-rows: Rectangle {
-                    height: 66px;
-                    background: transparent;
-                    Rectangle {
-                        x: 10px;
-                        y: 5px;
-                        width: parent.width - 20px;
-                        height: parent.height - 10px;
-                        border-radius: 12px;
-                        background: root.row-bg;
-                        border-color: root.panel-border;
-                        border-width: 1px;
-                        HorizontalLayout {
-                            padding-left: 14px;
-                            padding-right: 14px;
-                            spacing: 10px;
-                            Text { text: row.order; width: 36px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                spacing: 2px;
-                                Text { text: row.filename; color: root.text-body; font-size: 13px; overflow: elide; }
-                                Text { text: row.folder; color: root.text-muted; font-size: 11px; overflow: elide; }
-                            }
-                            Text { text: row.size; width: 78px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                            Text { text: row.status; width: 110px; color: row.warning ? root.warning-color : root.text-body; font-size: 12px; vertical-alignment: center; overflow: elide; }
-                            Text { text: row.output.is-empty ? row.log : row.output; width: 150px; color: root.text-muted; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                    height: 72px;
+                    background: i / 2 * 2 == i ? root.row-bg : root.panel-bg;
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
+                        Text { text: row.order; width: 32px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 3px;
+                            Text { text: row.filename; color: root.text-body; font-size: 13px; font-weight: 700; overflow: elide; horizontal-alignment: center; }
+                            Text { text: row.folder; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: center; }
                         }
+                        Text { text: row.size; width: 82px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                        VerticalLayout {
+                            width: 164px;
+                            alignment: center;
+                            spacing: 3px;
+                            Text { text: row.status; color: row.warning ? root.warning-color : root.text-body; font-size: 12px; overflow: elide; horizontal-alignment: center; }
+                            Text { text: row.output.is-empty ? row.log : row.output; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: center; }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        width: parent.width;
+                        height: 1px;
+                        background: root.panel-border;
                     }
                 }
             }
