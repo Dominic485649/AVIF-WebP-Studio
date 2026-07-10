@@ -485,6 +485,7 @@ struct JpegBitstreamSourceDiagnostics {
   PixelFormat pixel_format{PixelFormat::unknown};
   std::optional<int> bit_depth{};
   bool has_icc{};
+  bool has_mpf{};
 };
 
 JpegBitstreamSourceDiagnostics inspect_jpeg_bitstream_source(
@@ -536,6 +537,13 @@ JpegBitstreamSourceDiagnostics inspect_jpeg_bitstream_source(
         }
       }
       diagnostics.has_icc = diagnostics.has_icc || matches;
+    }
+    if (marker == 0xE2 && payload_size >= 4 &&
+        bytes[payload_offset] == std::byte{'M'} &&
+        bytes[payload_offset + 1] == std::byte{'P'} &&
+        bytes[payload_offset + 2] == std::byte{'F'} &&
+        bytes[payload_offset + 3] == std::byte{0}) {
+      diagnostics.has_mpf = true;
     }
 
     if (is_jpeg_sof_marker(marker) && payload_size >= 6) {
@@ -1944,8 +1952,7 @@ class NativeBackend final {
     auto result = base_result;
     auto container_info = parse_avif_container_info(image.path);
     if (!container_info) {
-      mark_failed(result, redact_path_for_user(container_info.error(), image.path));
-      return result;
+      return std::nullopt;
     }
     if (cancel_if_requested(result, stop_token)) {
       return result;
@@ -2014,6 +2021,9 @@ class NativeBackend final {
     if (!bytes) {
       mark_failed(result, redact_path_for_user(bytes.error(), image.path));
       return result;
+    }
+    if (native_backend_detail::inspect_jpeg_bitstream_source(*bytes).has_mpf) {
+      return std::nullopt;
     }
     if (cancel_if_requested(result, stop_token)) {
       return result;

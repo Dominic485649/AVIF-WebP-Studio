@@ -20,6 +20,7 @@ module;
 #include <vector>
 
 #include <webp/decode.h>
+#include <webp/demux.h>
 #include <webp/encode.h>
 #include <webp/mux.h>
 
@@ -52,6 +53,14 @@ struct WebPFreeDeleter {
   void operator()(void* value) const noexcept {
     if (value != nullptr) {
       WebPFree(value);
+    }
+  }
+};
+
+struct WebPAnimDecoderDeleter {
+  void operator()(WebPAnimDecoder* value) const noexcept {
+    if (value != nullptr) {
+      WebPAnimDecoderDelete(value);
     }
   }
 };
@@ -438,9 +447,6 @@ class WebPImageDecoder final : public ImageDecoder {
           features.width <= 0 || features.height <= 0) {
         return std::unexpected{std::format("WebP 文件信息无效: {}", display_path_for_user(path))};
       }
-      if (features.has_animation) {
-        return std::unexpected{std::format("暂不支持动画 WebP 输入: {}", display_path_for_user(path))};
-      }
       return decoder_common::make_image_dimensions_checked(static_cast<std::uint32_t>(features.width),
                                                            static_cast<std::uint32_t>(features.height),
                                                            "WebP");
@@ -493,9 +499,6 @@ class WebPImageDecoder final : public ImageDecoder {
           features.width <= 0 || features.height <= 0) {
         return std::unexpected{std::format("WebP 文件信息无效: {}", source_name)};
       }
-      if (features.has_animation) {
-        return std::unexpected{std::format("暂不支持动画 WebP 输入: {}", source_name)};
-      }
       const int width = features.width;
       const int height = features.height;
 
@@ -517,8 +520,26 @@ class WebPImageDecoder final : public ImageDecoder {
         return std::unexpected{resized.error()};
       }
       auto* output = reinterpret_cast<std::uint8_t*>(plane.bytes.data());
-      if (WebPDecodeRGBAInto(data, bytes.size(), output, plane.bytes.size(),
-                             static_cast<int>(*stride)) == nullptr) {
+      if (features.has_animation) {
+        WebPAnimDecoderOptions options{};
+        if (!WebPAnimDecoderOptionsInit(&options)) {
+          return std::unexpected{"初始化 WebP 动画首帧 decoder 失败。"};
+        }
+        options.color_mode = MODE_RGBA;
+        options.use_threads = 1;
+        const WebPData encoded{.bytes = data, .size = bytes.size()};
+        std::unique_ptr<WebPAnimDecoder, webp_detail::WebPAnimDecoderDeleter>
+            decoder{WebPAnimDecoderNew(&encoded, &options)};
+        std::uint8_t* frame = nullptr;
+        int timestamp = 0;
+        if (!decoder || !WebPAnimDecoderGetNext(decoder.get(), &frame, &timestamp) ||
+            frame == nullptr) {
+          return std::unexpected{std::format("WebP 动画首帧解码失败: {}", source_name)};
+        }
+        std::ranges::copy_n(reinterpret_cast<const std::byte*>(frame),
+                            plane.bytes.size(), plane.bytes.begin());
+      } else if (WebPDecodeRGBAInto(data, bytes.size(), output, plane.bytes.size(),
+                                    static_cast<int>(*stride)) == nullptr) {
         return std::unexpected{std::format("WebP 解码失败: {}", source_name)};
       }
 

@@ -438,13 +438,6 @@ class GifImageDecoder final : public ImageDecoder {
       if (!valid_signature) {
         return std::unexpected{std::format("GIF 文件头无效: {}", display_path_for_user(path))};
       }
-      auto multiple_frames = gif_detail::has_multiple_image_frames(path);
-      if (!multiple_frames) {
-        return std::unexpected{std::format("{}: {}", multiple_frames.error(), display_path_for_user(path))};
-      }
-      if (*multiple_frames) {
-        return std::unexpected{std::format("暂不支持动画 GIF 输入: {}", display_path_for_user(path))};
-      }
       return decoder_common::make_image_dimensions_checked(gif_detail::read_le_u16(*bytes, 6),
                                                            gif_detail::read_le_u16(*bytes, 8),
                                                            "GIF");
@@ -463,14 +456,6 @@ class GifImageDecoder final : public ImageDecoder {
       if (!bytes) {
         return std::unexpected{bytes.error()};
       }
-      auto multiple_frames = gif_detail::has_multiple_image_frames(*bytes);
-      if (!multiple_frames) {
-        return std::unexpected{std::format("{}: {}", multiple_frames.error(), display_path_for_user(path))};
-      }
-      if (*multiple_frames) {
-        return std::unexpected{std::format("暂不支持动画 GIF 输入: {}", display_path_for_user(path))};
-      }
-
       gif_detail::ReadState state{.data = bytes->data(), .size = bytes->size()};
       int error = 0;
       gif_detail::GifPtr gif{DGifOpen(&state, gif_detail::read_callback, &error)};

@@ -152,14 +152,6 @@ ImageSourceInfo source_info_from_directory(TIFF* tiff, bool source_has_alpha) no
                          .bit_depth = static_cast<int>(bits_per_sample)};
 }
 
-std::expected<void, std::string> reject_multiple_directories(TIFF* tiff,
-                                                             std::string_view source_name) {
-  if (TIFFNumberOfDirectories(tiff) > 1) {
-    return std::unexpected{std::format("暂不支持多页 TIFF 输入: {}", source_name)};
-  }
-  return {};
-}
-
 }  // namespace tiff_detail
 
 class TiffImageDecoder final : public ImageDecoder {
@@ -180,10 +172,6 @@ class TiffImageDecoder final : public ImageDecoder {
       tiff_detail::TiffPtr tiff{tiff_detail::open_read(path)};
       if (!tiff) {
         return std::unexpected{std::format("打开 TIFF 失败: {}", display_path_for_user(path))};
-      }
-      if (auto directories = tiff_detail::reject_multiple_directories(tiff.get(), display_path_for_user(path));
-          !directories) {
-        return std::unexpected{directories.error()};
       }
       std::uint32_t width = 0;
       std::uint32_t height = 0;
@@ -210,11 +198,6 @@ class TiffImageDecoder final : public ImageDecoder {
       if (!tiff) {
         return std::unexpected{std::format("打开 TIFF 失败: {}", display_path_for_user(path))};
       }
-      if (auto directories = tiff_detail::reject_multiple_directories(tiff.get(), display_path_for_user(path));
-          !directories) {
-        return std::unexpected{directories.error()};
-      }
-
       std::uint32_t width = 0;
       std::uint32_t height = 0;
       if (TIFFGetField(tiff.get(), TIFFTAG_IMAGEWIDTH, &width) != 1 ||

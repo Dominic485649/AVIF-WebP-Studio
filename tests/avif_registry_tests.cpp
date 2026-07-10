@@ -63,6 +63,20 @@ int main() {
   if (large_decision.klass != awj::LargeImageClass::large_mode_required) {
     return fail("AVIF input over AOM 65536 edge limit should enter large mode.");
   }
+  large_decision = awj::classify_large_image(
+      awj::ImageDimensions{.width = 20'000, .height = 9'000,
+                           .pixel_count = 180'000'000},
+      true, true, awj::svtav1hdr_large_image_limits);
+  if (large_decision.klass != awj::LargeImageClass::large_mode_required ||
+      !large_decision.available_zenrav1e) {
+    return fail("SVT over-limit input should enter the large chain with zenrav1e available.");
+  }
+  const auto edge_grid = awj::plan_grid(awj::GridPlanRequest{
+      .width = 48'017, .height = 32'003, .mode = awj::GridMode::auto_grid});
+  if (!edge_grid || !edge_grid->uses_padding ||
+      edge_grid->padded_width < 48'017 || edge_grid->padded_height < 32'003) {
+    return fail("Non-divisible grid dimensions should use clamped edge cells.");
+  }
 
   auto selected = awj::select_avif_encoder_from_capabilities(
       awj::AvifEncoderSelectionRequest{

@@ -81,7 +81,7 @@ inline constexpr std::uint32_t grid_auto_tile_width = svtav1hdr_single_image_max
 inline constexpr std::uint32_t grid_auto_tile_height = svtav1hdr_single_image_max_height;
 inline constexpr std::uint32_t grid_max_cols = 256u;
 inline constexpr std::uint32_t grid_max_rows = 256u;
-inline constexpr bool default_experimental_clamped_grid_padding = false;
+inline constexpr bool default_experimental_clamped_grid_padding = true;
 inline constexpr std::uint64_t large_image_threshold_pixels =
     ordinary_large_safe_max_pixels;
 inline constexpr int default_grid_overlap_pixels = 0;

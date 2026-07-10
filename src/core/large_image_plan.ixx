@@ -31,6 +31,20 @@ struct LargeImageDecision {
   std::string reason_text{};
 };
 
+struct LargeImageLimits {
+  std::uint32_t max_width{encoding_defaults::avif_single_image_max_dimension};
+  std::uint32_t max_height{encoding_defaults::avif_single_image_max_dimension};
+  std::uint64_t max_pixels{encoding_defaults::avif_single_image_max_pixels};
+  std::string_view encoder_name{"AOM/libaom"};
+};
+
+inline constexpr LargeImageLimits aom_large_image_limits{};
+inline constexpr LargeImageLimits svtav1hdr_large_image_limits{
+    .max_width = encoding_defaults::svtav1hdr_single_image_max_width,
+    .max_height = encoding_defaults::svtav1hdr_single_image_max_height,
+    .max_pixels = encoding_defaults::svt_safe_max_pixels,
+    .encoder_name = "svt-av1-hdr"};
+
 enum class GridMode { auto_grid, manual_grid };
 
 struct GridPlanRequest {
@@ -102,32 +116,33 @@ std::uint64_t avif_encode_working_set_bytes_for_dimensions(
 }
 
 LargeImageDecision classify_large_image(ImageDimensions dimensions,
-                                               bool grid_available,
-                                               bool zenrav1e_available) {
+                                         bool grid_available,
+                                         bool zenrav1e_available,
+                                         LargeImageLimits limits = aom_large_image_limits) {
   const bool dimension_exceeded =
-      dimensions.width > encoding_defaults::avif_single_image_max_dimension ||
-      dimensions.height > encoding_defaults::avif_single_image_max_dimension;
+      dimensions.width > limits.max_width || dimensions.height > limits.max_height;
   const bool pixel_limit_exceeded =
-      dimensions.pixel_count > encoding_defaults::ordinary_large_safe_max_pixels;
+      dimensions.pixel_count > limits.max_pixels;
 
   LargeImageDecision decision{.available_grid = grid_available,
                               .available_zenrav1e = zenrav1e_available &&
-                                                  !dimension_exceeded};
+                                  dimensions.width <= encoding_defaults::avif_single_image_max_dimension &&
+                                  dimensions.height <= encoding_defaults::avif_single_image_max_dimension};
   if (dimension_exceeded) {
     decision.klass = LargeImageClass::large_mode_required;
     decision.reason = LargeImageReason::dimension_limit_exceeded;
     decision.reason_text = std::format(
-        "输入尺寸 {}x{} 超过单图 AVIF 边长上限 {}，已移入大图模式。",
-        dimensions.width, dimensions.height,
-        encoding_defaults::avif_single_image_max_dimension);
+        "输入尺寸 {}x{} 超过 {} 单图上限 {}x{}，已转入自动大图链路。",
+        dimensions.width, dimensions.height, limits.encoder_name,
+        limits.max_width, limits.max_height);
     return decision;
   }
   if (pixel_limit_exceeded) {
     decision.klass = LargeImageClass::large_mode_required;
     decision.reason = LargeImageReason::pixel_limit_exceeded;
     decision.reason_text = std::format(
-        "输入像素数 {} 超过 AVIF 单图像素上限 {}，已移入大图模式。",
-        dimensions.pixel_count, encoding_defaults::ordinary_large_safe_max_pixels);
+        "输入像素数 {} 超过 {} 单图上限 {}，已转入自动大图链路。",
+        dimensions.pixel_count, limits.encoder_name, limits.max_pixels);
     return decision;
   }
   if (dimensions.pixel_count > encoding_defaults::ordinary_large_defer_min_pixels) {
@@ -136,7 +151,7 @@ LargeImageDecision classify_large_image(ImageDimensions dimensions,
     decision.reason_text = std::format(
         "输入像素数 {} 大于 {} 且未超过 AVIF 单图上限 {}，将延后到普通队列末尾编码。",
         dimensions.pixel_count, encoding_defaults::ordinary_large_defer_min_pixels,
-        encoding_defaults::ordinary_large_safe_max_pixels);
+        limits.max_pixels);
     return decision;
   }
   decision.reason_text = "普通图片按原队列编码。";

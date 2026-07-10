@@ -551,13 +551,6 @@ class PngImageDecoder final : public ImageDecoder {
           (*bytes)[14] != std::byte{'D'} || (*bytes)[15] != std::byte{'R'}) {
         return std::unexpected{std::format("PNG 文件头无效: {}", display_path_for_user(path))};
       }
-      auto is_animated = png_detail::file_contains_animation_control_chunk(path);
-      if (!is_animated) {
-        return std::unexpected{is_animated.error()};
-      }
-      if (*is_animated) {
-        return std::unexpected{std::format("暂不支持动画 PNG 输入: {}", display_path_for_user(path))};
-      }
       return decoder_common::make_image_dimensions_checked(png_detail::read_be_u32(*bytes, 16),
                                                            png_detail::read_be_u32(*bytes, 20),
                                                            "PNG");
@@ -579,14 +572,6 @@ class PngImageDecoder final : public ImageDecoder {
       if (bytes->size() < 8 || png_sig_cmp(reinterpret_cast<png_const_bytep>(bytes->data()), 0, 8) != 0) {
         return std::unexpected{std::format("PNG 签名无效: {}", display_path_for_user(path))};
       }
-      auto is_animated = png_detail::contains_animation_control_chunk(*bytes, display_path_for_user(path));
-      if (!is_animated) {
-        return std::unexpected{is_animated.error()};
-      }
-      if (*is_animated) {
-        return std::unexpected{std::format("暂不支持动画 PNG 输入: {}", display_path_for_user(path))};
-      }
-
       std::unique_ptr<png_detail::DecodeContext> context;
       try {
         context = std::make_unique<png_detail::DecodeContext>();

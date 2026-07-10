@@ -556,9 +556,6 @@ class JpegImageDecoder final : public ImageDecoder {
       if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
         return std::unexpected{std::format("JPEG 文件头无效: {}", display_path_for_user(path))};
       }
-      if (auto mpf = jpeg_detail::reject_multi_picture_mpf(cinfo, display_path_for_user(path)); !mpf) {
-        return std::unexpected{mpf.error()};
-      }
       if (cinfo.image_width > JPEG_MAX_DIMENSION || cinfo.image_height > JPEG_MAX_DIMENSION) {
         return std::unexpected{std::format("JPEG 尺寸超过 libjpeg-turbo 上限: {}", display_path_for_user(path))};
       }
@@ -620,9 +617,6 @@ class JpegImageDecoder final : public ImageDecoder {
       jpeg_save_markers(&cinfo, JPEG_APP0 + 2, 0xFFFFu);
       if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
         return std::unexpected{std::format("JPEG 文件头无效: {}", display_path_for_user(path))};
-      }
-      if (auto mpf = jpeg_detail::reject_multi_picture_mpf(cinfo, display_path_for_user(path)); !mpf) {
-        return std::unexpected{mpf.error()};
       }
       const auto source_info = jpeg_detail::source_info_from_header(cinfo);
       cinfo.out_color_space = JCS_EXT_RGBA;

@@ -660,9 +660,6 @@ class JXLImageDecoder final : public ImageDecoder {
           if (JxlDecoderGetBasicInfo(decoder.get(), &info) != JXL_DEC_SUCCESS) {
             return std::unexpected{std::format("JXL 基础信息无效: {}", display_path_for_user(path))};
           }
-          if (info.have_animation) {
-            return std::unexpected{std::format("暂不支持动画 JXL 输入: {}", display_path_for_user(path))};
-          }
           return decoder_common::make_image_dimensions_checked(info.xsize, info.ysize,
                                                                "JXL");
         }
@@ -780,6 +777,40 @@ class JXLImageDecoder final : public ImageDecoder {
         return {};
       };
 
+      auto finish_image = [&]() -> std::expected<ImageDecodeResult, std::string> {
+        if (auto finished = finish_current_box(); !finished) {
+          return std::unexpected{finished.error()};
+        }
+        if (!full_image_received) {
+          return std::unexpected{std::format("JXL 解码结束但未得到完整图像: {}",
+                                             source_name)};
+        }
+        const auto stride = jxl_detail::checked_rgba_stride(
+            static_cast<std::size_t>(info.xsize), "JXL decoder",
+            info.bits_per_sample > 8 ? 2 : 1);
+        if (!stride) {
+          return std::unexpected{stride.error()};
+        }
+        const auto alpha_mode =
+            info.alpha_bits == 0 ? AlphaMode::none : AlphaMode::straight;
+        ImagePlane plane{.bytes = std::move(rgba), .stride = *stride};
+        ImageBuffer image{.width = info.xsize,
+                          .height = info.ysize,
+                          .pixel_format = PixelFormat::rgba,
+                          .alpha_mode = alpha_mode,
+                          .bit_depth = info.bits_per_sample > 8 ? 16 : 8,
+                          .source_info = jxl_detail::source_info_from_basic_info(info)};
+        if (!icc_profile.empty()) {
+          image.metadata.push_back(MetadataBlock{.kind = MetadataKind::icc,
+                                                 .bytes = std::move(icc_profile)});
+        }
+        for (auto& metadata : metadata_boxes) {
+          image.metadata.push_back(std::move(metadata));
+        }
+        image.planes.push_back(std::move(plane));
+        return ImageDecodeResult{.image = std::move(image), .decoder_id = "libjxl"};
+      };
+
       while (true) {
         const auto status = JxlDecoderProcessInput(decoder.get());
         if (status == JXL_DEC_ERROR) {
@@ -792,9 +823,6 @@ class JXLImageDecoder final : public ImageDecoder {
           if (JxlDecoderGetBasicInfo(decoder.get(), &info) != JXL_DEC_SUCCESS ||
               info.xsize == 0 || info.ysize == 0) {
             return std::unexpected{std::format("JXL 基础信息无效: {}", source_name)};
-          }
-          if (info.have_animation) {
-            return std::unexpected{std::format("暂不支持动画 JXL 输入: {}", source_name)};
           }
           const int output_bit_depth = info.bits_per_sample > 8 ? 16 : 8;
           format.data_type = output_bit_depth > 8 ? JXL_TYPE_UINT16 : JXL_TYPE_UINT8;
@@ -926,38 +954,12 @@ class JXLImageDecoder final : public ImageDecoder {
             return std::unexpected{"JXL 解码未产生 RGBA 输出。"};
           }
           full_image_received = true;
+          if (info.have_animation) {
+            return finish_image();
+          }
         }
         if (status == JXL_DEC_SUCCESS) {
-          if (auto finished = finish_current_box(); !finished) {
-            return std::unexpected{finished.error()};
-          }
-          if (!full_image_received) {
-            return std::unexpected{std::format("JXL 解码结束但未得到完整图像: {}",
-                                               source_name)};
-          }
-          const auto stride = jxl_detail::checked_rgba_stride(
-              static_cast<std::size_t>(info.xsize), "JXL decoder",
-              info.bits_per_sample > 8 ? 2 : 1);
-          if (!stride) {
-            return std::unexpected{stride.error()};
-          }
-          const auto alpha_mode = info.alpha_bits == 0 ? AlphaMode::none : AlphaMode::straight;
-          ImagePlane plane{.bytes = std::move(rgba), .stride = *stride};
-          ImageBuffer image{.width = info.xsize,
-                            .height = info.ysize,
-                            .pixel_format = PixelFormat::rgba,
-                            .alpha_mode = alpha_mode,
-                            .bit_depth = info.bits_per_sample > 8 ? 16 : 8,
-                            .source_info = jxl_detail::source_info_from_basic_info(info)};
-          if (!icc_profile.empty()) {
-            image.metadata.push_back(MetadataBlock{.kind = MetadataKind::icc,
-                                                   .bytes = std::move(icc_profile)});
-          }
-          for (auto& metadata : metadata_boxes) {
-            image.metadata.push_back(std::move(metadata));
-          }
-          image.planes.push_back(std::move(plane));
-          return ImageDecodeResult{.image = std::move(image), .decoder_id = "libjxl"};
+          return finish_image();
         }
       }
     } catch (const std::bad_alloc&) {

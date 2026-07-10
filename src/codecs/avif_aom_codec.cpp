@@ -817,10 +817,11 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
   }
   const std::size_t src_x = col * plan.tile_width;
   const std::size_t src_y = row * plan.tile_height;
-  if (src_x > image.width || plan.tile_width > image.width - src_x ||
-      src_y > image.height || plan.tile_height > image.height - src_y) {
+  if (src_x >= image.width || src_y >= image.height) {
     return std::unexpected{"AVIF grid tile 范围超出输入图片。"};
   }
+  const auto tile_width = std::min<std::size_t>(plan.tile_width, image.width - src_x);
+  const auto tile_height = std::min<std::size_t>(plan.tile_height, image.height - src_y);
   if (src_x > std::numeric_limits<std::size_t>::max() / 4 ||
       src_y > std::numeric_limits<std::size_t>::max() / plane.stride) {
     return std::unexpected{"AVIF grid tile 偏移过大。"};
@@ -838,7 +839,8 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
   const auto tile_pixels = std::span<const std::byte>{
       plane.bytes.data() + tile_offset, plane.bytes.size() - tile_offset};
   auto tile = AvifImage{avifImageCreate(
-      plan.tile_width, plan.tile_height, context.bit_depth, context.pixel_format)};
+      static_cast<std::uint32_t>(tile_width), static_cast<std::uint32_t>(tile_height),
+      context.bit_depth, context.pixel_format)};
   if (!tile) {
     return std::unexpected{"无法创建 AVIF grid tile。"};
   }
@@ -854,7 +856,7 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
     }
   }
   auto rgb = rgb_source_for_encode(
-      plan.tile_width, plan.tile_height, tile_pixels,
+      tile_width, tile_height, tile_pixels,
       plane.stride, tile.get(), settings,
       image.bit_depth);
   if (!rgb) {
@@ -1554,10 +1556,27 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   }
   const bool lossless = avif_aom_detail::lossless_requested(settings);
   const auto actual_mode = AvifEncoderMode::aom;
-  const auto applied_chroma = avif_aom_detail::applied_chroma_from_settings(
+  auto applied_chroma = avif_aom_detail::applied_chroma_from_settings(
       image, settings.chroma_mode, lossless);
-  const auto pixel_format = avif_aom_detail::avif_pixel_format_from_chroma(
-      applied_chroma);
+  if (settings.avif_grid_plan) {
+    const auto& plan = *settings.avif_grid_plan;
+    const bool horizontal_misaligned =
+        (image.width & 1u) != 0 || (plan.tile_width & 1u) != 0;
+    const bool vertical_misaligned =
+        (image.height & 1u) != 0 || (plan.tile_height & 1u) != 0;
+    const bool incompatible =
+        (applied_chroma == ChromaMode::yuv422 && horizontal_misaligned) ||
+        (applied_chroma == ChromaMode::yuv420 &&
+         (horizontal_misaligned || vertical_misaligned));
+    if (incompatible && settings.chroma_mode == ChromaMode::auto_keep) {
+      applied_chroma = ChromaMode::yuv444;
+    } else if (incompatible) {
+      return std::unexpected{
+          "AVIF grid 的显式 420/422 色度与当前奇数输出或 cell 尺寸不兼容；请使用 --chroma auto/444。"};
+    }
+  }
+  const auto pixel_format =
+      avif_aom_detail::avif_pixel_format_from_chroma(applied_chroma);
   if (!pixel_format) {
     return std::unexpected{pixel_format.error()};
   }
@@ -1641,10 +1660,6 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   avifResult result = AVIF_RESULT_OK;
   if (settings.avif_grid_plan) {
     const auto& plan = *settings.avif_grid_plan;
-    if (plan.uses_padding) {
-      return std::unexpected{
-          "AVIF grid padding 尚未接入安全裁切，不能生成会扩大尺寸的 grid 输出。"};
-    }
     if (plan.cols == 0 || plan.rows == 0 || plan.tile_width == 0 || plan.tile_height == 0) {
       return std::unexpected{"AVIF grid 规划无效。"};
     }
@@ -1656,8 +1671,10 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     }
     const auto planned_width = static_cast<std::uint64_t>(plan.cols) * plan.tile_width;
     const auto planned_height = static_cast<std::uint64_t>(plan.rows) * plan.tile_height;
-    if (planned_width != static_cast<std::uint64_t>(image.width) ||
-        planned_height != static_cast<std::uint64_t>(image.height)) {
+    if (planned_width < static_cast<std::uint64_t>(image.width) ||
+        planned_height < static_cast<std::uint64_t>(image.height) ||
+        planned_width - plan.tile_width >= static_cast<std::uint64_t>(image.width) ||
+        planned_height - plan.tile_height >= static_cast<std::uint64_t>(image.height)) {
       return std::unexpected{"AVIF grid 规划尺寸与输入图片不一致。"};
     }
     const auto tile_count = static_cast<std::uint64_t>(plan.cols) * plan.rows;
@@ -2048,9 +2065,6 @@ class AvifImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("AVIF 读取尺寸失败: {}",
                                            avif_aom_detail::avif_decode_error(result, decoder.get()))};
       }
-      if (auto supported = reject_unsupported_sequence(*decoder, display_path_for_user(path)); !supported) {
-        return std::unexpected{supported.error()};
-      }
       if (decoder->image == nullptr) {
         return std::unexpected{std::format("AVIF 图像信息为空: {}", display_path_for_user(path))};
       }
@@ -2113,7 +2127,7 @@ class AvifImageDecoder final : public ImageDecoder {
       const avifDecoder& decoder,
       std::string_view source_name) {
     if (decoder.imageSequenceTrackPresent) {
-      return std::unexpected{std::format("暂不支持多帧 AVIF sequence 输入: {}", source_name)};
+      return std::unexpected{std::format("AVIF sequence 不能无损直通，需解码首帧: {}", source_name)};
     }
     return {};
   }
@@ -2276,9 +2290,6 @@ class AvifImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
                                            avif_aom_detail::avif_decode_error(result, decoder.get()))};
       }
-      if (auto supported = reject_unsupported_sequence(*decoder, source_name); !supported) {
-        return std::unexpected{supported.error()};
-      }
       result = avifDecoderNextImage(decoder.get());
       if (result != AVIF_RESULT_OK) {
         return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
@@ -2325,9 +2336,6 @@ class AvifImageDecoder final : public ImageDecoder {
       if (result != AVIF_RESULT_OK) {
         return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
                                            avif_aom_detail::avif_decode_error(result, decoder.get()))};
-      }
-      if (auto supported = reject_unsupported_sequence(*decoder, source_name); !supported) {
-        return std::unexpected{supported.error()};
       }
       result = avifDecoderNextImage(decoder.get());
       if (result != AVIF_RESULT_OK) {

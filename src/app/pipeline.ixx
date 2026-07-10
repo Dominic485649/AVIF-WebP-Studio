@@ -248,8 +248,11 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
       if (!dimensions) {
         return std::unexpected{dimensions.error()};
       }
-      auto decision =
-          classify_large_image(*dimensions, grid_available, zenrav1e_available);
+      const auto limits = cfg.avif_encoder == AvifEncoderMode::svt
+                              ? svtav1hdr_large_image_limits
+                              : aom_large_image_limits;
+      auto decision = classify_large_image(
+          *dimensions, grid_available, zenrav1e_available, limits);
       switch (decision.klass) {
         case LargeImageClass::ordinary:
           classified.ordinary.push_back(ClassifiedImageFile{
@@ -784,12 +787,6 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
                             large_cfg.experimental_clamped_grid_padding});
     if (!planned) {
       failed.message = std::format("grid 规划失败：{}", planned.error());
-      return failed;
-    }
-    if (planned->uses_padding) {
-      failed.message =
-          "grid 规划需要 padding；当前版本尚未启用安全裁切。请改用可整除尺寸、"
-          "启用 experimental clamped grid padding，或改用 zenrav1e（边长 <= 65536）。";
       return failed;
     }
     large_cfg.avif_encoder = AvifEncoderMode::aom;

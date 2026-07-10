@@ -143,11 +143,9 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
     return std::unexpected{"WIC 不包含图像帧。"};
   }
   UINT frame_index = 0;
-  if (frame_count > 1) {
-    static constexpr std::wstring_view ico_extensions[] = {L".ico"};
-    if (!decoder_common::extension_is_one_of(path, ico_extensions)) {
-      return std::unexpected{std::format("暂不支持多帧 WIC 输入: {}", display_path_for_user(path))};
-    }
+  static constexpr std::wstring_view ico_extensions[] = {L".ico"};
+  if (frame_count > 1 &&
+      decoder_common::extension_is_one_of(path, ico_extensions)) {
     std::uint64_t best_area = 0;
     for (UINT i = 0; i < frame_count; ++i) {
       IWICBitmapFrameDecode* candidate = nullptr;
