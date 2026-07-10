@@ -473,6 +473,15 @@ int CALLBACK enum_font_family_proc(const LOGFONTW*, const TEXTMETRICW*, DWORD,
   return 0;
 }
 
+int CALLBACK collect_font_family_proc(const LOGFONTW* font, const TEXTMETRICW*,
+                                      DWORD, LPARAM param) {
+  const std::wstring_view family{font->lfFaceName};
+  if (!family.empty() && family.front() != L'@') {
+    reinterpret_cast<std::unordered_set<std::wstring>*>(param)->emplace(family);
+  }
+  return 1;
+}
+
 bool system_font_available(std::wstring_view family) noexcept {
   if (family.empty()) {
     return false;
@@ -508,13 +517,37 @@ std::string select_system_ui_font_family() {
 
 void apply_system_ui_font(AwjStudio& app) {
   const auto family = select_system_ui_font_family();
-  if (family.empty()) {
-    app.set_ui_font_family({});
-    app.set_ui_font_label(to_shared("系统默认字体"));
-    return;
-  }
   app.set_ui_font_family(to_shared(family));
-  app.set_ui_font_label(to_shared(std::format("{}（系统）", family)));
+}
+
+void load_system_font_options(AwjStudio& app) {
+  std::unordered_set<std::wstring> families;
+  if (HDC dc = GetDC(nullptr); dc != nullptr) {
+    LOGFONTW query{};
+    query.lfCharSet = DEFAULT_CHARSET;
+    EnumFontFamiliesExW(dc, &query, collect_font_family_proc,
+                        reinterpret_cast<LPARAM>(&families), 0);
+    ReleaseDC(nullptr, dc);
+  }
+  std::vector<std::string> sorted;
+  sorted.reserve(families.size());
+  for (const auto& family : families) sorted.push_back(awj::utf8_from_wide(family));
+  std::ranges::sort(sorted);
+  std::vector<ComboOption> options;
+  options.reserve(sorted.size() + 1);
+  options.push_back(ComboOption{.text = to_shared("系统默认字体"), .enabled = true});
+  for (const auto& family : sorted) {
+    options.push_back(ComboOption{.text = to_shared(family), .enabled = true});
+  }
+  app.set_ui_font_options(std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
+  const auto selected = shared_to_string(app.get_ui_font_family());
+  const auto found = std::ranges::find(sorted, selected);
+  if (found == sorted.end()) {
+    app.set_ui_font_family({});
+    app.set_ui_font_index(0);
+  } else {
+    app.set_ui_font_index(static_cast<int>(std::distance(sorted.begin(), found)) + 1);
+  }
 }
 
 std::filesystem::path studio_config_path() {
@@ -4741,6 +4774,7 @@ int run_studio_ui() {
     if (auto loaded = apply_studio_config_file(*app, *state); !loaded) {
       config_warning = std::format("读取 Studio 配置失败：{}", loaded.error());
     }
+    load_system_font_options(*app);
     sync_template_flags(*app);
     state->last_config_snapshot = capture_studio_config(*app, state.get());
     if (auto warning = shell_context_menu_warning(state->menu_params)) {
@@ -5348,7 +5382,13 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
                   (*app)->set_progress(static_cast<float>(event.completed) /
                                       static_cast<float>(event.total));
                 }
-                if (!event.text.empty()) {
+                if (event.kind == awj::BatchEventKind::warning ||
+                    event.kind == awj::BatchEventKind::large_image_queued) {
+                  (*app)->set_status_text(to_shared(event.text));
+                } else if (event.total > 0) {
+                  (*app)->set_status_text(to_shared(std::format(
+                      "处理中：{} / {}", event.completed, event.total)));
+                } else if (!event.text.empty()) {
                   (*app)->set_status_text(to_shared(event.text));
                 }
               }
@@ -5421,6 +5461,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -5518,6 +5559,8 @@ struct PcloseDeleter {
   }
 };
 
+slint::SharedString to_shared(std::string_view text);
+
 std::optional<std::string> run_capture(const std::string& command) {
   std::unique_ptr<FILE, PcloseDeleter> pipe{popen(command.c_str(), "r")};
   if (!pipe) return std::nullopt;
@@ -5529,6 +5572,40 @@ std::optional<std::string> run_capture(const std::string& command) {
   output = trim_copy(std::move(output));
   if (output.empty()) return std::nullopt;
   return output;
+}
+
+void load_system_font_options(AwjStudio& app) {
+  std::unordered_set<std::string> families;
+  if (auto output = run_capture("fc-list -f '%{family}\\n' 2>/dev/null")) {
+    std::size_t line_start = 0;
+    while (line_start <= output->size()) {
+      const auto line_end = output->find('\n', line_start);
+      const auto line = output->substr(
+          line_start, line_end == std::string::npos ? std::string::npos : line_end - line_start);
+      std::size_t name_start = 0;
+      while (name_start <= line.size()) {
+        const auto name_end = line.find(',', name_start);
+        auto name = trim_copy(line.substr(
+            name_start, name_end == std::string::npos ? std::string::npos : name_end - name_start));
+        if (!name.empty() && name.front() != '@') families.insert(std::move(name));
+        if (name_end == std::string::npos) break;
+        name_start = name_end + 1;
+      }
+      if (line_end == std::string::npos) break;
+      line_start = line_end + 1;
+    }
+  }
+  std::vector<std::string> sorted(families.begin(), families.end());
+  std::ranges::sort(sorted);
+  std::vector<ComboOption> options;
+  options.reserve(sorted.size() + 1);
+  options.push_back(ComboOption{.text = to_shared("系统默认字体"), .enabled = true});
+  for (const auto& family : sorted) {
+    options.push_back(ComboOption{.text = to_shared(family), .enabled = true});
+  }
+  app.set_ui_font_options(std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
+  app.set_ui_font_index(0);
+  app.set_ui_font_family({});
 }
 
 std::expected<fs::path, std::string> choose_path(bool directory) {
@@ -6234,6 +6311,7 @@ int run_studio_ui() {
     state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
     auto weak = slint::ComponentWeakHandle(app);
     initialize_ui(*app);
+    load_system_font_options(*app);
     for (int i = 0; i < 5; ++i) {
       state->menu_params[static_cast<std::size_t>(i)] = default_linux_menu_params(i);
     }

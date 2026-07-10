@@ -4,7 +4,7 @@ English: [README.en.md](README.en.md)
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
-- AVIF：libavif/AOM；Windows 构建可静态链接实验 `zenrav1e` 与 `svt-av1-hdr`，Linux GCC 首版启用 AOM 与 `svt-av1-hdr`，暂不启用 `zenrav1e`
+- AVIF：libavif/AOM、实验 `zenrav1e` 与 `svt-av1-hdr`；Windows 和 Linux GCC Release 均静态链接
 - WebP：libwebp
 - JXL：libjxl
 - JPGLI：google/jpegli；Windows 与 Linux GCC Release 均可用，生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
@@ -70,7 +70,7 @@ git tag 0.9.1
 .\release.ps1
 ```
 
-`svt-av1-hdr` 作为源码依赖构建并静态链接进主程序，Release 不需要 `SvtAv1EncApp.exe`、DLL 或其他 SVT sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出；Linux GCC 首版启用 SVT，但暂不启用 `zenrav1e`。
+`svt-av1-hdr` 与实验 `zenrav1e` 均静态链接进主程序，不需要 sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
 `AWJ_ENABLE_JPEGLI` 默认开启，CMake 会拉取 google/jpegli 并静态链接 `jpegli-static`。JPGLI 没有独立容器格式，AWJ 的 UI、CLI、summary 和日志统一显示 `JPGLI` / `jpegli`，但输出文件扩展名默认保持 `.jpg`，以兼容系统缩略图和常见图片查看器。
 
@@ -95,7 +95,7 @@ AWJ -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
 AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 ```
 
-`zenrav1e` 是实验编码器：必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`。默认 `auto` 不会选择实验编码器。Linux GCC 首版暂不启用 `zenrav1e`；SVT 可用。
+`zenrav1e` 是实验编码器：普通单图必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`；自动大图链路可按资源使用它。Windows 与 Linux GCC Release 均可用。
 
 ### AVIF 大图与队列策略
 
@@ -106,14 +106,16 @@ AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高�
 2. 参数页“大图优先”可改为 `grid` 优先再回退 `zenrav1e`；
 3. 两条路径都不可用/都失败，或触达输入/运行时内存上限时明确报错。
 
-Studio 大图页可继续对单项强制指定 `zenrav1e` / `grid`（手动强制不会静默改路）。CLI：
+Studio 不再提供独立大图页；自动处理状态直接显示在主队列。CLI：
 - `--large-image-priority zenrav1e|grid`
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit`：仅当前会话解除默认 20 GiB 输入/运行时上限，不写入 `AWJ.jsonc`；过大图片可能 OOM。
 参数设置页其余编码参数同样只在本次运行内保持，不写入 `AWJ.jsonc`。
 
 `--format jpgli` 和 `--format jpegli` 是 JPGLI 入口；`--format jpg` 不作为新增入口。启用 `--summary` 后，`summary.csv` 会记录 `format=JPGLI`、`encoder_id=jpegli`，输出路径仍通常是 `.jpg`。
 
-`--allow-wic-fallback` 仅 Windows 有效；Linux 会接受但忽略该参数，并保持 native codec / CPU/Vulkan 路径。Linux UI 的“选择”按钮会调用已安装的 `zenity`/`yad`/`kdialog`；未安装时仍可手动输入路径。右键菜单写入 Nautilus 用户脚本 `~/.local/share/nautilus/scripts/AWJ 转换为 AVIF` 和 Thunar 用户级 `~/.config/Thunar/uca.xml`，必要时重启文件管理器（Thunar 可执行 `thunar -q`）。
+`--allow-wic-fallback` 仅 Windows 有效；Linux 会接受但忽略该参数。Linux UI 的“选择”按钮会调用 `zenity`/`yad`/`kdialog`。右键菜单为 AVIF、WebP、JXL、JPGLI、PNG 分别写入 Nautilus 用户脚本，并同步写入 Thunar UCA；必要时重启文件管理器。
+
+多帧 WebP/GIF/APNG/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高。
 
 Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。
 
@@ -159,5 +161,4 @@ Linux smoke test：
 ./bin/x64/Release/AWJ --help
 ./bin/x64/Release/AWJ -i ui/logo.png -o /tmp/awj-vq --format webp --visual-quality 50 --visual-quality-gpu --visual-quality-fallback --summary
 ```
-
 

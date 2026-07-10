@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.10.1 - 2026-07-11
+
+- 移除 Studio 独立“大图模式”页面；超过当前 AVIF 编码器单图上限时自动进入大图链路，默认 `zenrav1e` 后回退 `grid`，会话内可改为 `grid` 优先。
+- 修复 AVIF grid 的非整数倍尺寸：右列和底行使用实际剩余尺寸，输出保持原始宽高；奇数尺寸自动回退 4:4:4，显式不兼容的 4:2:0/4:2:2 会明确报错。
+- 动图和多图容器统一只转换合成后的第一帧，包括 WebP、GIF、APNG、JXL、TIFF、AVIF sequence、WIC 多帧和 JPEG MPF；不能可靠提取时直接报错，不保留其余帧。
+- 右键菜单移除视觉质量，仅保留固定编码质量预设；精简右键转换窗口，文件名居中、目录以较小字号显示在下方，并合并冗余状态列。
+- Studio 新增已安装字体下拉选择，首项可恢复系统默认；Windows 将 `ui_font_family` 写入 `AWJ.jsonc`。
+- Linux GCC Release 启用静态 `zenrav1e`，Nautilus/Thunar 对齐五种格式及其质量、位深、速度、尺寸限制和格式专属菜单参数；WIC/JXR 等 Windows 专属功能仍不提供。
+
 ## 0.10.0 - 2026-07-10
 
 0.10.0 是一次把 Linux/Vulkan 首版并入主线、统一 Windows/Linux 共用 core，并落地超大图自动处理链路的版本。
@@ -203,4 +212,3 @@
 
 - 初始 C++23 / Slint / MagickWand 迁移版本。
 - 提供 AVIF/WebP CLI 批处理和 Studio 桌面 UI。
-

@@ -8,7 +8,7 @@
 
 当前转换核心只保留 native codec，不再依赖内置 ImageMagick/MagickWand 后端。
 
-- AVIF：libavif/AOM；Windows 构建可启用 libavif SVT backend；实验 `zenrav1e` 通过静态 Rust bridge 显式启用。Linux GCC 首版启用 AOM 与 SVT，暂不启用 `zenrav1e`。
+- AVIF：libavif/AOM、SVT backend 与实验 `zenrav1e` 静态 Rust bridge；Windows 与 Linux GCC Release 均启用。
 - WebP：libwebp。
 - JXL：libjxl。
 - JPGLI：google/jpegli，Windows 与 Linux GCC Release 均可用；输出为 JPEG 兼容 bitstream，默认扩展名为 `.jpg`，用户可见格式和诊断显示为 `JPGLI` / `jpegli`。
@@ -131,10 +131,10 @@ Linux Studio 继续使用 `ui/awj_studio.slint`，不重做 UI。Win32 DWM、COM
 - 可以把体积较大的源码依赖接入 CI cache，减少首次 Release 构建时间；体积继续优化优先考虑拆分可选 codec/Slint renderer，而不是牺牲静态 `libstdc++` / `libgcc` 兼容性。
 - 如需重新接入 Magick/ffmpeg，应以外部 exe/runtime 形式隔离，不能恢复为默认内部后端。
 
-## 大图模式（0.10.0）
+## 大图处理（0.10.1）
 
 - 超过 AVIF 单图硬限制的输入进入自动大图链路：默认 `zenrav1e` 优先，失败回退 `grid`；参数页可改 `grid` 优先。
-- Studio「大图模式」页面展示状态，也可对单项强制指定路径；强制路径不会静默切换。
+- Studio 不再保留独立“大图模式”页面，自动处理状态并入主队列。
 - 两条路径都不可用/失败，或触达输入/运行时上限时明确报错。
 - 默认 20 GiB 输入/运行时上限可通过会话开关解除（UI 设置页 / CLI `--unlock-max-input-file-bytes`），不写入 `AWJ.jsonc`。
-- grid 在不可整除且需要 padding 时会失败并给出明确诊断；`zenrav1e` 要求边长 <= 65536。
+- grid 支持非整数倍布局，右列和底行使用实际剩余尺寸并保持原始输出宽高；显式不兼容的 420/422 色度会明确报错。

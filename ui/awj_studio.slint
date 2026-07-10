@@ -457,7 +457,8 @@ export component AwjStudio inherits Window {
     in-out property <int> collision-index: 0;
     in-out property <int> theme-index: 0;
     in-out property <string> ui-font-family: "";
-    in-out property <string> ui-font-label: "系统默认字体";
+    in property <[ComboOption]> ui-font-options: [{ text: "系统默认字体", enabled: true }];
+    in-out property <int> ui-font-index: 0;
     in-out property <bool> system-dark-mode: false;
     in-out property <bool> strip-metadata: false;
     in-out property <bool> write-summary: false;
@@ -619,6 +620,12 @@ export component AwjStudio inherits Window {
 
     changed menu-preset-index => {
         root.menu-preset-defaults-requested(root.menu-preset-index);
+    }
+
+    changed ui-font-index => {
+        root.ui-font-family = root.ui-font-index > 0 && root.ui-font-index < root.ui-font-options.length
+            ? root.ui-font-options[root.ui-font-index].text
+            : "";
     }
 
     changed avif-encoder-index => {
@@ -1366,13 +1373,27 @@ if root.selected-page == 2: ScrollView {
                                 HorizontalLayout {
                                     spacing: root.page-gap;
                                     Text { text: "字体"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit {
+                                    SoftComboBox {
+                                        viewport-height: root.height;
+                                        close-generation: root.combo-close-generation;
+                                        popup-requested => { root.combo-popup-requested(); }
+                                        popup-finished => { root.combo-popup-finished(); }
+                                        model: root.ui-font-options;
+                                        current-index <=> root.ui-font-index;
+                                        enabled: !root.running;
                                         horizontal-stretch: 1;
-                                        text <=> root.ui-font-family;
-                                        placeholder-text: "系统默认字体";
                                         height: root.control-button-height;
+                                        normal-background: root.combo-bg;
+                                        hover-background: root.combo-bg-hover;
+                                        disabled-background: root.combo-bg-disabled;
+                                        selected-background: root.combo-selected-bg;
+                                        normal-border: root.combo-border;
+                                        hover-border: root.combo-border-hover;
+                                        normal-text: root.text-body;
+                                        disabled-text: root.text-soft;
+                                        muted-text: root.text-muted;
+                                        selected-text: root.text-body;
                                     }
-                                    SoftButton { dark-mode: root.dark-mode; text: "系统默认"; width: 104px; height: root.control-button-height; clicked => { root.ui-font-family = ""; } }
                                 }
                             }
                         }

@@ -4,7 +4,7 @@ Chinese: [README.md](README.md)
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
-- AVIF: libavif/AOM; Windows builds can statically link experimental `zenrav1e` and `svt-av1-hdr`. Linux GCC builds enable AOM and `svt-av1-hdr`; `zenrav1e` remains Windows experimental for now.
+- AVIF: libavif/AOM, experimental `zenrav1e`, and `svt-av1-hdr`; Windows and Linux GCC Release builds link them statically.
 - WebP: libwebp
 - JXL: libjxl
 - JPGLI: google/jpegli; produces JPEG-compatible bitstreams with the default `.jpg` extension.
@@ -66,7 +66,7 @@ AVIF inputs over the single-image limits (AOM 65536 edge / `2^30` pixels; SVT 16
 2. parameter page “large-image priority” can prefer `grid` first
 3. if both paths are unavailable/fail, or the input/runtime memory cap is hit, the job fails clearly
 
-Studio large-image page can still force a single path for one item; forced manual selection never silently switches. Inputs above 10 MP but still under single-image limits stay in the ordinary queue tail.
+Studio no longer has a separate large-image page; automatic large-image status stays in the main queue. Inputs above 10 MP but still under single-image limits stay in the ordinary queue tail. Grid supports smaller right/bottom edge cells for non-divisible dimensions while preserving the original output size.
 
 CLI session unlock (not written to `AWJ.jsonc`):
 - `--large-image-priority zenrav1e|grid`
@@ -81,6 +81,8 @@ CLI session unlock (not written to `AWJ.jsonc`):
 | WIC / JXR | yes | no |
 | Shell integration | registry context menu | Nautilus Scripts + Thunar UCA |
 | Preferred compiler | MSVC | GCC 16 side-by-side |
+
+Animated or multi-image WebP/GIF/APNG/JXL/TIFF/AVIF, Windows WIC inputs, and JPEG MPF inputs are flattened to their composed first frame. Extraction failures are reported instead of silently retaining extra frames.
 
 ## Docs
 

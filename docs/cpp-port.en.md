@@ -10,7 +10,7 @@ AWJimage is a C++23 / native-codec / Slint batch converter. Windows and Linux sh
 
 Native codecs only:
 
-- AVIF: libavif/AOM; experimental `zenrav1e` on Windows; SVT-AV1-HDR available on Windows and Linux when enabled
+- AVIF: libavif/AOM, experimental `zenrav1e`, and SVT-AV1-HDR on Windows and Linux Release builds
 - WebP: libwebp
 - JXL: libjxl
 - JPGLI: google/jpegli (JPEG-compatible `.jpg` output)
@@ -38,9 +38,9 @@ Native codecs only:
 - File picker via zenity/yad/kdialog when available
 - User-level Nautilus Scripts and Thunar UCA context actions
 
-## Large-image mode (0.10.0)
+## Large-image handling (0.10.1)
 
 - Oversized AVIF inputs use an automatic chain: preferred path then one fallback (`zenrav1e` default priority, or `grid` first).
-- Studio large-image page still shows status and can force one path for a selected item.
+- Studio has no separate large-image page; automatic handling remains visible in the main queue.
 - Session-only unlock removes the default 20 GiB input/runtime cap; it is never written to `AWJ.jsonc`.
-- Grid planning that requires unsupported padding fails with an actionable error.
+- Non-divisible grids use smaller right/bottom edge cells and preserve the original dimensions; incompatible explicit 420/422 requests fail clearly.
