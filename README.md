@@ -119,6 +119,8 @@ Studio 不再提供独立大图页；自动处理状态直接显示在主队列�
 
 Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。
 
+Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时，启动请求会合并到一个右键窗口和同一队列。右键窗口提供普通取消与强制终止；本体和右键窗口点击右上角关闭时会先终止活动任务。
+
 ## 基准测试
 
 以下测试均使用 AOM AV1 编码器（libavif）。AWJ 自动多核并行，ffmpeg 为单线程每实例。
@@ -161,4 +163,3 @@ Linux smoke test：
 ./bin/x64/Release/AWJ --help
 ./bin/x64/Release/AWJ -i ui/logo.png -o /tmp/awj-vq --format webp --visual-quality 50 --visual-quality-gpu --visual-quality-fallback --summary
 ```
-

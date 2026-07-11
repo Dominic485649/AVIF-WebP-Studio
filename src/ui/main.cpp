@@ -2710,6 +2710,81 @@ std::wstring shell_convert_command_line(const std::filesystem::path& awj_exe,
   return command;
 }
 
+std::wstring shell_batch_name(awj::OutputFormat format) {
+  return std::format(L"AWJimage.ShellBatch.{}",
+                     cli_output_format_arg(format));
+}
+
+std::expected<bool, std::string> collect_shell_launch_inputs(
+    awj::OutputFormat format, std::vector<std::filesystem::path>& inputs) {
+  const auto suffix = shell_batch_name(format);
+  const auto mutex_name = L"Local\\" + suffix;
+  UniqueWin32Handle mutex{CreateMutexW(nullptr, TRUE, mutex_name.c_str())};
+  if (!mutex) {
+    return std::unexpected{std::format("创建右键队列锁失败，错误码 {}。",
+                                       GetLastError())};
+  }
+  const bool leader = GetLastError() != ERROR_ALREADY_EXISTS;
+  const auto slot_name = L"\\\\.\\mailslot\\" + suffix;
+  if (!leader) {
+    for (int attempt = 0; attempt < 25; ++attempt) {
+      UniqueWin32Handle slot{CreateFileW(slot_name.c_str(), GENERIC_WRITE,
+                                         FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                         FILE_ATTRIBUTE_NORMAL, nullptr)};
+      if (slot) {
+        for (const auto& input : inputs) {
+          const auto value = input.wstring();
+          if (value.empty() || value.size() > 32760) continue;
+          DWORD written = 0;
+          WriteFile(slot.get(), value.data(),
+                    static_cast<DWORD>(value.size() * sizeof(wchar_t)),
+                    &written, nullptr);
+        }
+        return false;
+      }
+      Sleep(20);
+    }
+    return std::unexpected{"无法把所选文件加入现有右键转换队列。"};
+  }
+
+  UniqueWin32Handle slot{CreateMailslotW(slot_name.c_str(), 65520, 0, nullptr)};
+  if (!slot) {
+    ReleaseMutex(mutex.get());
+    return std::unexpected{std::format("创建右键队列通道失败，错误码 {}。",
+                                       GetLastError())};
+  }
+  std::unordered_set<std::wstring> seen;
+  for (const auto& input : inputs) seen.insert(queue_path_key(input));
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds{650};
+  while (std::chrono::steady_clock::now() < deadline) {
+    DWORD next_size = MAILSLOT_NO_MESSAGE;
+    DWORD message_count = 0;
+    if (GetMailslotInfo(slot.get(), nullptr, &next_size, &message_count, nullptr) &&
+        next_size != MAILSLOT_NO_MESSAGE) {
+      while (message_count > 0 && next_size != MAILSLOT_NO_MESSAGE) {
+        std::vector<wchar_t> buffer((next_size / sizeof(wchar_t)) + 1, L'\0');
+        DWORD read = 0;
+        if (ReadFile(slot.get(), buffer.data(), next_size, &read, nullptr) &&
+            read > 0 && read % sizeof(wchar_t) == 0) {
+          std::filesystem::path input{
+              std::wstring{buffer.data(), read / sizeof(wchar_t)}};
+          if (seen.insert(queue_path_key(input)).second) {
+            inputs.push_back(std::move(input));
+          }
+        }
+        if (!GetMailslotInfo(slot.get(), nullptr, &next_size, &message_count,
+                             nullptr)) {
+          break;
+        }
+      }
+    }
+    Sleep(15);
+  }
+  ReleaseMutex(mutex.get());
+  return true;
+}
+
 std::wstring shell_menu_icon_value(const std::filesystem::path& awj_exe) {
   return quote_windows_command_arg(awj_exe.wstring(), true) + L",0";
 }
@@ -5261,6 +5336,7 @@ int run_studio_ui() {
     constrain_window_to_work_area(app->window());
     DropBridge drop_bridge{app->window(), weak, state};
     app->window().on_close_requested([weak, state] {
+      force_stop_current_worker(state);
       if (auto app = weak.lock()) {
         if (auto saved = persist_studio_config_if_changed(**app, *state);
             !saved) {
@@ -5268,9 +5344,6 @@ int run_studio_ui() {
               **app,
               std::format("保存 Studio 配置失败：{}", saved.error()));
         }
-      }
-      if (worker_active(state)) {
-        force_stop_current_worker(state);
       }
       return slint::CloseRequestResponse::HideWindow;
     });
@@ -5317,6 +5390,14 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
       MessageBoxW(nullptr, awj::wide_from_utf8(valid.error()).c_str(), L"AWJimage", MB_OK | MB_ICONERROR);
       return 1;
     }
+    auto collected = collect_shell_launch_inputs(parsed->config.output_format,
+                                                 parsed->shell_inputs);
+    if (!collected) {
+      MessageBoxW(nullptr, awj::wide_from_utf8(collected.error()).c_str(),
+                  L"AWJimage", MB_OK | MB_ICONERROR);
+      return 1;
+    }
+    if (!*collected) return 0;
 
     auto app = ShellConvertWindow::create();
     app->set_ui_font_family(to_shared(select_system_ui_font_family()));
@@ -5351,6 +5432,10 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
       } else if (auto app = weak.lock()) {
         (*app)->window().hide();
       }
+    });
+    app->on_force_terminate_requested([] {
+      TerminateProcess(GetCurrentProcess(),
+                       awj::studio_defaults::worker_force_stop_exit_code);
     });
     app->on_open_output_requested([output_dir] {
       if (!output_dir.empty()) {
@@ -5420,6 +5505,14 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
 
     app->show();
     apply_title_bar_theme(app->window(), dark_mode);
+    app->window().on_close_requested([&stop_source, &running] {
+      if (running.load(std::memory_order_acquire)) {
+        stop_source.request_stop();
+        TerminateProcess(GetCurrentProcess(),
+                         awj::studio_defaults::worker_force_stop_exit_code);
+      }
+      return slint::CloseRequestResponse::HideWindow;
+    });
     slint::run_event_loop();
     const int rc = 0;
     stop_source.request_stop();

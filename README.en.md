@@ -84,6 +84,8 @@ CLI session unlock (not written to `AWJ.jsonc`):
 
 Animated or multi-image WebP/GIF/APNG/JXL/TIFF/AVIF, Windows WIC inputs, and JPEG MPF inputs are flattened to their composed first frame. Extraction failures are reported instead of silently retaining extra frames.
 
+Windows Explorer multi-selection launches are coalesced into one shell window and one queue. The shell window offers graceful cancellation and force termination; closing either UI terminates active work first.
+
 ## Docs
 
 - Chinese migration notes: [docs/cpp-port.md](docs/cpp-port.md)

@@ -1531,6 +1531,7 @@ export component ShellConvertWindow inherits Window {
     in-out property <bool> dark-mode: false;
     in-out property <string> ui-font-family: "";
     callback cancel-requested();
+    callback force-terminate-requested();
     callback open-output-requested();
 
     property <color> page-bg: root.dark-mode ? #10151e : #f3f7fd;
@@ -1628,7 +1629,8 @@ export component ShellConvertWindow inherits Window {
             spacing: 10px;
             Rectangle { horizontal-stretch: 1; background: transparent; }
             SoftButton { dark-mode: root.dark-mode; text: "打开输出目录"; width: 132px; height: 40px; enabled: !root.running; clicked => { root.open-output-requested(); } }
-            SoftButton { dark-mode: root.dark-mode; text: root.running ? "取消" : "关闭"; variant: root.running ? "danger" : "outline"; width: 92px; height: 40px; clicked => { root.cancel-requested(); } }
+            SoftButton { dark-mode: root.dark-mode; text: "强制终止"; variant: "danger"; width: 112px; height: 40px; enabled: root.running; clicked => { root.force-terminate-requested(); } }
+            SoftButton { dark-mode: root.dark-mode; text: root.running ? "取消" : "关闭"; variant: "outline"; width: 92px; height: 40px; clicked => { root.cancel-requested(); } }
         }
     }
 }
