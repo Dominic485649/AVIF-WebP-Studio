@@ -14,11 +14,17 @@ $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $PSCommandPath
 $BuildDir = Join-Path $Repo "build\x64\Release"
 $OutputDir = Join-Path $Repo "bin\x64\Release"
+$ReleaseFiles = @("AWJ.exe", "AWJ.com", "AWJ.exe.sha256", "AWJ.com.sha256", "AWJ", "AWJ.sha256", "LICENSE", "THIRD_PARTY_NOTICES.txt", "BUILD_INFO.txt")
 $Version = (Get-Content (Join-Path $Repo "VERSION") -Raw).Trim()
 $VcpkgConfiguration = Get-Content (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
 $VcpkgBaseline = $VcpkgConfiguration.'default-registry'.baseline
 $GitCommit = (git -C $Repo rev-parse HEAD).Trim()
-$GitDirty = [bool](git -C $Repo status --porcelain)
+$GitStatus = @(git -C $Repo status --porcelain=v1 --untracked-files=all)
+$GitDirty = @($GitStatus | Where-Object {
+    $Path = $_.Substring(3).Trim('"').Replace('\', '/')
+    -not ($Path.StartsWith('bin/x64/Release/') -and
+          [IO.Path]::GetFileName($Path) -in $ReleaseFiles)
+}).Count -gt 0
 try {
     $GitTag = (git -C $Repo describe --tags --exact-match HEAD 2>$null).Trim()
 } catch {
@@ -156,7 +162,6 @@ $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { '
 $ConfigureArgs += "-DAWJ_ENABLE_ZENRAVIF=$(if ($DisableZenravif) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAWJ_ENABLE_SVTAV1HDR=$(if ($DisableSvtAv1Hdr) { 'OFF' } else { 'ON' })"
 
-$ReleaseFiles = @("AWJ.exe", "AWJ.com", "AWJ.exe.sha256", "AWJ.com.sha256", "AWJ", "AWJ.sha256", "LICENSE", "THIRD_PARTY_NOTICES.txt", "BUILD_INFO.txt")
 if (Test-Path $OutputDir) {
     Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $ReleaseFiles -notcontains $_.Name } | Remove-Item -Recurse -Force
 }
