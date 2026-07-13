@@ -46,8 +46,14 @@ component SoftComboBox inherits Rectangle {
     in property <bool> defer-current-index: false;
     in property <bool> center-text: false;
     in property <length> viewport-height: 100000px;
+    in property <int> max-visible-items: 0;
     property <length> popup-gap: 8px;
-    property <length> popup-height: max(root.model.length, 1) * 36px + 8px;
+    property <int> popup-visible-items: root.max-visible-items > 0
+        ? min(max(root.model.length, 1), root.max-visible-items)
+        : max(root.model.length, 1);
+    property <length> popup-content-height: max(root.model.length, 1) * 36px + 8px;
+    property <length> popup-height: root.popup-visible-items * 36px + 8px;
+    property <length> popup-scroll-y: -max(0, min(root.current-index, root.model.length - root.popup-visible-items)) * 36px;
     property <bool> popup-upwards: touch.absolute-position.y + root.height + root.popup-gap + root.popup-height > root.viewport-height && touch.absolute-position.y >= root.popup-height + root.popup-gap;
     property <bool> popup-open: false;
     property <bool> popup-opening: false;
@@ -196,54 +202,68 @@ component SoftComboBox inherits Rectangle {
                 background: root.normal-background;
                 clip: true;
 
-                Rectangle {
-                    x: 4px;
-                    y: 4px + root.bounded-highlight-index * 36px;
-                    width: parent.width - 8px;
-                    height: 36px;
-                    border-radius: 6px;
-                    background: root.model[root.bounded-highlight-index].enabled ? (root.bounded-highlight-index == root.current-index ? root.selected-background : root.hover-background) : transparent;
-                    animate y, background { duration: 180ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
-                }
+                popup-list := ScrollView {
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-width: self.width;
+                    viewport-height: root.popup-content-height;
+                    viewport-y: root.popup-scroll-y;
 
-                VerticalLayout {
-                    padding: 4px;
-                    for option[index] in root.model: Rectangle {
-                        height: 36px;
-                        border-radius: 6px;
+                    Rectangle {
+                        width: popup-list.width;
+                        height: root.popup-content-height;
                         background: transparent;
 
-                        Text {
-                            x: 10px;
-                            width: parent.width - 20px;
-                            text: option.text;
-                            color: !option.enabled ? root.disabled-text : (index == root.current-index ? root.selected-text : root.normal-text);
-                            font-size: 13px;
-                            vertical-alignment: center;
-                            overflow: elide;
+                        Rectangle {
+                            x: 4px;
+                            y: 4px + root.bounded-highlight-index * 36px;
+                            width: parent.width - 8px;
+                            height: 36px;
+                            border-radius: 6px;
+                            background: root.model[root.bounded-highlight-index].enabled ? (root.bounded-highlight-index == root.current-index ? root.selected-background : root.hover-background) : transparent;
+                            animate y, background { duration: 180ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                         }
 
-                        item-touch := TouchArea {
-                            changed has-hover => {
-                                if (item-touch.has-hover && option.enabled) {
-                                    root.hover-index = index;
-                                } else if (root.hover-index == index) {
-                                    root.hover-index = -1;
+                        VerticalLayout {
+                            padding: 4px;
+                            for option[index] in root.model: Rectangle {
+                                height: 36px;
+                                border-radius: 6px;
+                                background: transparent;
+
+                                Text {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    text: option.text;
+                                    color: !option.enabled ? root.disabled-text : (index == root.current-index ? root.selected-text : root.normal-text);
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
                                 }
-                            }
-                            clicked => {
-                                if (option.enabled) {
-                                    root.selection-accepted(index, item-touch.absolute-position.x + item-touch.mouse-x, item-touch.absolute-position.y + item-touch.mouse-y);
-                                    if (!root.defer-current-index) {
-                                        root.current-index = index;
+
+                                item-touch := TouchArea {
+                                    changed has-hover => {
+                                        if (item-touch.has-hover && option.enabled) {
+                                            root.hover-index = index;
+                                        } else if (root.hover-index == index) {
+                                            root.hover-index = -1;
+                                        }
                                     }
-                                    root.popup-open = false;
-                                    root.popup-opening = false;
-                                    root.popup-animate-open = false;
-                                    root.popup-had-focus = false;
-                                    root.hover-index = -1;
-                                    root.popup-finished();
-                                    popup.close();
+                                    clicked => {
+                                        if (option.enabled) {
+                                            root.selection-accepted(index, item-touch.absolute-position.x + item-touch.mouse-x, item-touch.absolute-position.y + item-touch.mouse-y);
+                                            if (!root.defer-current-index) {
+                                                root.current-index = index;
+                                            }
+                                            root.popup-open = false;
+                                            root.popup-opening = false;
+                                            root.popup-animate-open = false;
+                                            root.popup-had-focus = false;
+                                            root.hover-index = -1;
+                                            root.popup-finished();
+                                            popup.close();
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1385,6 +1405,7 @@ if root.selected-page == 2: ScrollView {
                                     Text { text: "字体"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                     SoftComboBox {
                                         viewport-height: root.height;
+                                        max-visible-items: 10;
                                         close-generation: root.combo-close-generation;
                                         popup-requested => { root.combo-popup-requested(); }
                                         popup-finished => { root.combo-popup-finished(); }
