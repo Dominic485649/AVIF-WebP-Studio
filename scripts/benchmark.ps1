@@ -57,11 +57,16 @@ function Select-Evenly([object[]]$Items, [int]$Take) {
     })
 }
 
+function Get-GitStatusPath([string]$Line) {
+    return $Line.Substring(3).Trim('"').Replace('\', '/')
+}
+
 function Invoke-SelfTest {
     if ((Get-Median @(5, 1, 3, 2, 4)) -ne 3) { throw 'Median self-test failed.' }
     if ((Get-P95 @(5, 1, 3, 2, 4)) -ne 5) { throw 'P95 self-test failed.' }
     $sample = @(Select-Evenly @(0, 1, 2, 3, 4, 5, 6) 4)
     if (($sample -join ',') -ne '0,2,4,6') { throw 'Selection self-test failed.' }
+    if ((Get-GitStatusPath ' M bin/x64/Release/AWJ.exe') -ne 'bin/x64/Release/AWJ.exe') { throw 'Git status self-test failed.' }
     Write-Host 'benchmark.ps1 self-test passed.'
 }
 
@@ -132,7 +137,8 @@ function Get-ExpectedEncoderThreads([int]$Budget, [int]$FileCount) {
 
 $Version = (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()
 $GitCommit = Invoke-Git @('rev-parse', 'HEAD')
-$GitStatus = @((Invoke-Git @('status', '--porcelain=v1', '--untracked-files=all')) -split "`n" | Where-Object { $_ })
+$GitStatus = @(& git -C $Repo status --porcelain=v1 --untracked-files=all)
+if ($LASTEXITCODE -ne 0) { throw 'git status failed.' }
 $GeneratedReleaseFiles = @(
     'bin/x64/Release/AWJ',
     'bin/x64/Release/AWJ.com',
@@ -145,11 +151,11 @@ $GeneratedReleaseFiles = @(
     'bin/x64/Release/THIRD_PARTY_NOTICES.txt'
 )
 $SourceChanges = @($GitStatus | Where-Object {
-    $path = $_.Substring(3).Trim('"').Replace('\', '/')
+    $path = Get-GitStatusPath $_
     $path -notin $GeneratedReleaseFiles
 })
 $GeneratedReleaseChanges = @($GitStatus | Where-Object {
-    $path = $_.Substring(3).Trim('"').Replace('\', '/')
+    $path = Get-GitStatusPath $_
     $path -in $GeneratedReleaseFiles
 })
 $GitDirty = $SourceChanges.Count -gt 0
