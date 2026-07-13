@@ -85,6 +85,24 @@ function Ensure-VcpkgManifestPackages([string]$Root, [string]$Triplet, [string[]
     }
 }
 
+function Get-VcpkgPackageVersion([string]$Root, [string]$Triplet, [string]$Package) {
+    $InfoDirs = @(
+        (Join-Path $BuildDir "vcpkg_installed\vcpkg\info"),
+        (Join-Path $Repo "vcpkg_installed\vcpkg\info")
+    )
+    if ($Root) {
+        $InfoDirs += Join-Path $Root "installed\vcpkg\info"
+    }
+    foreach ($InfoDir in $InfoDirs) {
+        $File = Get-ChildItem -LiteralPath $InfoDir -Filter "${Package}_*_${Triplet}.list" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($File.Name -match "^$([Regex]::Escape($Package))_(.+)_$([Regex]::Escape($Triplet))\.list$") {
+            return $Matches[1]
+        }
+    }
+    return "unknown"
+}
+
 if ($StaticRuntime -and $DynamicRuntime) {
     throw "不能同时指定 -StaticRuntime 和 -DynamicRuntime。"
 }
@@ -155,16 +173,21 @@ if ($LASTEXITCODE -ne 0) {
 
 # --- Generate BUILD_INFO.txt ---
 $BuildDate = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
+$AomVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "aom"
+$Dav1dVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "dav1d"
 
 $BuildInfoContent = @"
 AWJimage $Version
 Build Date: $BuildDate
+Build Type: Release
 Git Commit: $GitCommit
 Git Tag: $GitTag
 Architecture: x64
 Source: https://github.com/Dominic485649/AWJimage
 
 Vcpkg baseline: $VcpkgBaseline
+AOM: $AomVersion
+dav1d: $Dav1dVersion
 
 FetchContent Dependencies (pinned commits):
   svt-av1-hdr: cfb4e17693ae16945a7fe288d45437243d96c12e

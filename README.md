@@ -127,6 +127,16 @@ Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时�
 
 ## 基准测试
 
+Windows Release 的 canonical 基准使用固定 AVIF/AOM `quality=80`、`speed=6`、`chroma=420`、8-bit 和当前电源方案：
+
+```powershell
+pwsh .\scripts\benchmark.ps1 -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e
+```
+
+脚本先预热一次，再运行五次（P95 使用 nearest-rank）；混合输入覆盖 1、4、12、13、613 张，透明与不透明输入分别覆盖 1、13 张，并测试 CLI、Studio manifest worker、右键 `shell` policy。`report.md`、`summary.csv`、`runs.csv`、`metadata.json` 和输入 SHA-256 清单写入 `build/benchmarks/`。canonical 运行要求干净工作树、匹配当前 commit 的 `BUILD_INFO.txt`、Release 构建和显式电源方案；`-Smoke` 只用于验证基准工具，不可作为性能结论。
+
+报告中的 `Process CPU` 是 Windows 进程 CPU 时间；`Item seconds sum` 是 `summary.csv` 逐图 `seconds` 之和，仅用于和下方历史数据比较。两者以及整批墙钟时间不得混用。
+
 以下为历史基准，AWJ 使用固定 `quality=80`、`speed=6`，不是当前 AVIF `quality=70` 的默认参数。612 张成功项中 610 张使用 AOM/libavif，2 张超过普通单图路径后使用 zenrav1e；另有 1 张空 WebP 按预期失败。AWJ 自动多核并行，ffmpeg 为单线程每实例。
 
 ### 固定 q80 / speed6，FFmpeg 传递同样参数（613 张混合分辨率图片）

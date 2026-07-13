@@ -74,6 +74,18 @@ CLI session unlock (not written to `AWJ.jsonc`):
 - `--large-image-priority zenrav1e|grid`
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit` removes the default 20 GiB input/runtime cap for the current process only; huge images may OOM.
 
+## Reproducible benchmark
+
+Run the canonical Windows Release benchmark with the expected power scheme:
+
+```powershell
+pwsh .\scripts\benchmark.ps1 -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e
+```
+
+The fixed AVIF/AOM profile is quality 80, speed 6, 4:2:0, and 8-bit. Each case has one warmup and five measured runs. Mixed inputs cover 1, 4, 12, 13, and 613 files; opaque and transparent inputs cover 1 and 13 files; CLI, the Studio manifest worker, and the shell conversion policy are measured separately. Results and the content-addressed input manifest are written under `build/benchmarks/`.
+
+`Process CPU` is Windows process CPU time. `Item seconds sum` is the sum of per-image `summary.csv` durations retained only for comparison with historical numbers; it is not batch wall time or process CPU time. Canonical runs require a clean worktree, a matching Release `BUILD_INFO.txt`, and an explicit power scheme. `-Smoke` validates the runner only.
+
 ## Platform notes
 
 | Feature | Windows | Linux |
