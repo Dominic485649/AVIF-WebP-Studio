@@ -132,7 +132,27 @@ function Get-ExpectedEncoderThreads([int]$Budget, [int]$FileCount) {
 
 $Version = (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()
 $GitCommit = Invoke-Git @('rev-parse', 'HEAD')
-$GitDirty = [bool](Invoke-Git @('status', '--porcelain'))
+$GitStatus = @((Invoke-Git @('status', '--porcelain=v1', '--untracked-files=all')) -split "`n" | Where-Object { $_ })
+$GeneratedReleaseFiles = @(
+    'bin/x64/Release/AWJ',
+    'bin/x64/Release/AWJ.com',
+    'bin/x64/Release/AWJ.exe',
+    'bin/x64/Release/AWJ.sha256',
+    'bin/x64/Release/AWJ.com.sha256',
+    'bin/x64/Release/AWJ.exe.sha256',
+    'bin/x64/Release/BUILD_INFO.txt',
+    'bin/x64/Release/LICENSE',
+    'bin/x64/Release/THIRD_PARTY_NOTICES.txt'
+)
+$SourceChanges = @($GitStatus | Where-Object {
+    $path = $_.Substring(3).Trim('"').Replace('\', '/')
+    $path -notin $GeneratedReleaseFiles
+})
+$GeneratedReleaseChanges = @($GitStatus | Where-Object {
+    $path = $_.Substring(3).Trim('"').Replace('\', '/')
+    $path -in $GeneratedReleaseFiles
+})
+$GitDirty = $SourceChanges.Count -gt 0
 $BuildInfoPath = Join-Path (Split-Path -Parent $Executable) 'BUILD_INFO.txt'
 $BuildCommit = Get-BuildInfoValue $BuildInfoPath 'Git Commit'
 $BuildVersion = if (Test-Path -LiteralPath $BuildInfoPath) {
@@ -545,6 +565,7 @@ $Metadata = [pscustomobject]@{
     build_commit = $BuildCommit
     workspace_commit = $GitCommit
     workspace_dirty = $GitDirty
+    generated_release_changes = $GeneratedReleaseChanges
     encoder_versions = [pscustomobject]@{ aom = $AomVersion; libavif_commit = $LibavifCommit; dav1d = $Dav1dVersion }
     profile = [pscustomobject]@{ format = 'avif'; encoder = 'aom'; quality = $Quality; speed = $Speed; chroma = $Chroma; bit_depth = $BitDepth; alpha = 'auto'; threads = 'auto'; memory = 'auto' }
     protocol = [pscustomobject]@{ warmups = $WarmupsPerCase; measured_runs = $RunsPerCase; cooldown_seconds = $CooldownSeconds; p95 = 'nearest-rank' }

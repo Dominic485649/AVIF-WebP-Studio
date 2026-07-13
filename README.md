@@ -133,7 +133,7 @@ Windows Release 的 canonical 基准使用固定 AVIF/AOM `quality=80`、`speed=
 pwsh .\scripts\benchmark.ps1 -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e
 ```
 
-脚本先预热一次，再运行五次（P95 使用 nearest-rank）；混合输入覆盖 1、4、12、13、613 张，透明与不透明输入分别覆盖 1、13 张，并测试 CLI、Studio manifest worker、右键 `shell` policy。`report.md`、`summary.csv`、`runs.csv`、`metadata.json` 和输入 SHA-256 清单写入 `build/benchmarks/`。canonical 运行要求干净工作树、匹配当前 commit 的 `BUILD_INFO.txt`、Release 构建和显式电源方案；`-Smoke` 只用于验证基准工具，不可作为性能结论。
+脚本先预热一次，再运行五次（P95 使用 nearest-rank）；混合输入覆盖 1、4、12、13、613 张，透明与不透明输入分别覆盖 1、13 张，并测试 CLI、Studio manifest worker、右键 `shell` policy。`report.md`、`summary.csv`、`runs.csv`、`metadata.json` 和输入 SHA-256 清单写入 `build/benchmarks/`。canonical 运行要求源码工作树干净（允许 `release.ps1` 重建的已跟踪 Release 产物变化）、匹配当前 commit 的 `BUILD_INFO.txt`、Release 构建和显式电源方案；`-Smoke` 只用于验证基准工具，不可作为性能结论。
 
 报告中的 `Process CPU` 是 Windows 进程 CPU 时间；`Item seconds sum` 是 `summary.csv` 逐图 `seconds` 之和，仅用于和下方历史数据比较。两者以及整批墙钟时间不得混用。
 
