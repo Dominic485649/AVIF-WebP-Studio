@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -16,6 +17,7 @@
 import awj.config;
 import awj.core;
 import awj.encoding_defaults;
+import awj.avif_aom_codec;
 import awj.image;
 import awj.jpegli_codec;
 import awj.jxl_codec;
@@ -58,6 +60,54 @@ awj::ImageBuffer make_test_image() {
                           .bit_depth = 8};
   image.planes.push_back(std::move(plane));
   return image;
+}
+
+awj::ImageBuffer make_alpha_test_image() {
+  constexpr std::uint32_t width = 32;
+  constexpr std::uint32_t height = 32;
+  awj::ImagePlane plane{.stride = width * 4};
+  plane.bytes.reserve(static_cast<std::size_t>(plane.stride) * height);
+  for (std::uint32_t y = 0; y < height; ++y) {
+    for (std::uint32_t x = 0; x < width; ++x) {
+      plane.bytes.push_back(std::byte{static_cast<unsigned char>(
+          (x * 17u + y * 31u + 5u) & 0xffu)});
+      plane.bytes.push_back(std::byte{static_cast<unsigned char>(
+          (x * 97u + y * 11u + x * y * 3u) & 0xffu)});
+      plane.bytes.push_back(std::byte{static_cast<unsigned char>(
+          (x * 7u + y * 89u + x * y * 13u) & 0xffu)});
+      plane.bytes.push_back(std::byte{static_cast<unsigned char>(
+          1u + ((x * 73u + y * 151u + x * y * 19u) % 254u))});
+    }
+  }
+  awj::ImageBuffer image{.width = width,
+                         .height = height,
+                         .pixel_format = awj::PixelFormat::rgba,
+                         .alpha_mode = awj::AlphaMode::straight,
+                         .bit_depth = 8};
+  image.planes.push_back(std::move(plane));
+  return image;
+}
+
+bool same_rgba(const awj::ImageBuffer& lhs, const awj::ImageBuffer& rhs) {
+  if (lhs.width != rhs.width || lhs.height != rhs.height ||
+      lhs.pixel_format != awj::PixelFormat::rgba ||
+      rhs.pixel_format != awj::PixelFormat::rgba || lhs.planes.empty() ||
+      rhs.planes.empty()) {
+    return false;
+  }
+  const auto& lhs_plane = lhs.planes.front();
+  const auto& rhs_plane = rhs.planes.front();
+  const auto row_bytes = lhs.width * 4;
+  for (std::size_t y = 0; y < lhs.height; ++y) {
+    const auto lhs_row = std::span<const std::byte>{lhs_plane.bytes}.subspan(
+        y * lhs_plane.stride, row_bytes);
+    const auto rhs_row = std::span<const std::byte>{rhs_plane.bytes}.subspan(
+        y * rhs_plane.stride, row_bytes);
+    if (!std::ranges::equal(lhs_row, rhs_row)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void push_u16(std::vector<std::byte>& bytes, std::uint16_t value) {
@@ -334,6 +384,111 @@ int main() {
       avif_result.command.find("aom") == std::string::npos ||
       avif_result.requested_encoder_id != "auto" || avif_result.encoder_id != "aom") {
     return fail("native backend AVIF auto result metadata invalid.");
+  }
+
+  const auto alpha_source = make_alpha_test_image();
+  const auto alpha_input = root / "alpha-input.webp";
+  auto alpha_webp = encoder.encode(
+      alpha_source,
+      awj::NativeEncodeSettings{
+          .output_format = awj::OutputFormat::webp,
+          .quality = 100,
+          .speed = 10,
+          .source_has_alpha_channel = true,
+          .encoder_supports_alpha = true,
+          .applied_alpha = "kept",
+          .resources = awj::ResourcePlan{.file_parallelism = 1,
+                                         .encoder_threads_per_file = 1,
+                                         .global_thread_budget = 1}});
+  if (!alpha_webp) {
+    return fail(alpha_webp.error());
+  }
+  {
+    std::ofstream stream{alpha_input, std::ios::binary};
+    stream.write(
+        reinterpret_cast<const char*>(alpha_webp->encoded.bytes.data()),
+        static_cast<std::streamsize>(alpha_webp->encoded.bytes.size()));
+  }
+  awj::WebPImageDecoder webp_decoder;
+  auto alpha_reference = webp_decoder.decode(alpha_input);
+  if (!alpha_reference ||
+      alpha_reference->image.alpha_mode == awj::AlphaMode::none) {
+    return fail(alpha_reference ? "WebP alpha fixture lost its alpha channel."
+                                : alpha_reference.error());
+  }
+
+  auto alpha_cfg = cfg;
+  alpha_cfg.input_path = alpha_input;
+  alpha_cfg.output_dir = output / "alpha-auto";
+  alpha_cfg.quality = 70;
+  alpha_cfg.visual_quality = {};
+  alpha_cfg.speed = 5;
+  alpha_cfg.chroma_mode = awj::ChromaMode::auto_keep;
+  alpha_cfg.bit_depth = {};
+  alpha_cfg.alpha_policy = awj::AlphaModePolicy::automatic;
+  awj::NativeBackend alpha_backend{
+      alpha_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto alpha_result = alpha_backend.encode(
+      awj::ImageFile{.index = 0,
+                     .path = alpha_input,
+                     .bytes = std::filesystem::file_size(alpha_input)});
+  const auto alpha_output = alpha_cfg.output_dir / "alpha-input.avif";
+  if (!alpha_result.ok || !alpha_result.lossless ||
+      alpha_result.final_encoder_quality != 100 ||
+      alpha_result.encoder_id != "aom" || alpha_result.applied_alpha != "kept" ||
+      alpha_result.applied_chroma != "444" || alpha_result.speed != 5 ||
+      !std::filesystem::exists(alpha_output)) {
+    return fail("transparent AVIF auto path did not force full AOM lossless while preserving speed.");
+  }
+  auto avif_decoder = awj::make_avif_image_decoder(1);
+  auto alpha_decoded = avif_decoder->decode(alpha_output);
+  if (!alpha_decoded ||
+      !same_rgba(alpha_decoded->image, alpha_reference->image)) {
+    return fail(alpha_decoded ? "transparent AVIF did not preserve full RGBA."
+                              : alpha_decoded.error());
+  }
+
+  auto alpha_off_cfg = alpha_cfg;
+  alpha_off_cfg.output_dir = output / "alpha-off";
+  alpha_off_cfg.alpha_policy = awj::AlphaModePolicy::off;
+  awj::NativeBackend alpha_off_backend{
+      alpha_off_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto alpha_off_result = alpha_off_backend.encode(
+      awj::ImageFile{.index = 0,
+                     .path = alpha_input,
+                     .bytes = std::filesystem::file_size(alpha_input)});
+  if (!alpha_off_result.ok || alpha_off_result.lossless ||
+      alpha_off_result.final_encoder_quality != 70 ||
+      alpha_off_result.applied_alpha != "stripped" ||
+      alpha_off_result.speed != 5) {
+    return fail("alpha=off no longer follows the requested lossy quality and speed.");
+  }
+
+  auto alpha_visual_cfg = alpha_cfg;
+  alpha_visual_cfg.output_dir = output / "alpha-visual";
+  alpha_visual_cfg.visual_quality = 80;
+  awj::NativeBackend alpha_visual_backend{
+      alpha_visual_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto alpha_visual_result = alpha_visual_backend.encode(
+      awj::ImageFile{.index = 0,
+                     .path = alpha_input,
+                     .bytes = std::filesystem::file_size(alpha_input)});
+  if (!alpha_visual_result.ok || !alpha_visual_result.lossless ||
+      alpha_visual_result.final_encoder_quality != 100 ||
+      alpha_visual_result.search_attempt_count != 1 ||
+      alpha_visual_result.applied_alpha != "kept" ||
+      alpha_visual_result.applied_chroma != "444" ||
+      alpha_visual_result.speed != 5) {
+    return fail("transparent AVIF visual-quality path did not bypass to one lossless encode.");
   }
 
   cfg.visual_quality = 100;

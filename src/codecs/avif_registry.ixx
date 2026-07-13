@@ -162,6 +162,9 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
     if (capability.mode == AvifEncoderMode::svt) {
       return "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha auto/off 或 --avif-encoder auto/aom。";
     }
+    if (capability.mode == AvifEncoderMode::zenrav1e) {
+      return "zenrav1e 当前不能保证 alpha 严格无损；请使用 --avif-encoder auto/aom。";
+    }
     return std::format("AVIF encoder {} 不支持保留 alpha。", capability.id);
   }
   const auto chroma = applied_chroma_for(capability, request.requested_chroma);
@@ -341,7 +344,7 @@ std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experimental(
                             .id = "zenrav1e",
                             .chroma_modes = {ChromaMode::yuv420, ChromaMode::yuv444},
                             .bit_depths = {8, 10, 12},
-                            .supports_alpha = true,
+                            .supports_alpha = false,
                             .supports_avif_grid = false,
                             .max_single_image_width = encoding_defaults::avif_single_image_max_dimension,
                             .max_single_image_height = encoding_defaults::avif_single_image_max_dimension,

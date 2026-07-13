@@ -53,10 +53,10 @@ struct ImageSizeLimit {
   std::optional<int> max_short_edge{};
 };
 
-int default_max_jobs() noexcept {
+constexpr int automatic_thread_budget(unsigned hardware) noexcept {
   // 自动并发不是“吃满 CPU”，而是给桌面、UI 线程和编码器内部线程预留余量。
-  constexpr auto max_auto_jobs = 128u;
-  const auto hardware = std::thread::hardware_concurrency();
+  constexpr auto max_auto_jobs =
+      static_cast<unsigned>(encoding_defaults::max_automatic_thread_budget);
   if (hardware <= 1) {
     return 1;
   }
@@ -67,6 +67,10 @@ int default_max_jobs() noexcept {
     return static_cast<int>(hardware - 2);
   }
   return static_cast<int>(hardware - 1);
+}
+
+int default_max_jobs() noexcept {
+  return automatic_thread_budget(std::thread::hardware_concurrency());
 }
 
 constexpr int default_quality_for(OutputFormat format) noexcept {
@@ -160,6 +164,7 @@ struct AppConfig {
   bool shell_close_on_finish{true};
   ImageSizeLimit image_size_limit{};
   std::wstring studio_cancel_event_name{};
+  std::filesystem::path studio_queue_manifest{};
   // ponytail: empty = auto chain; kept for worker/CLI compatibility, not a Studio page action.
   std::wstring studio_large_action{};
   // auto large-image path preference: zenrav1e (default) or grid first.
@@ -594,29 +599,6 @@ std::string avif_encoder_name(AvifEncoderMode mode) {
   }
 }
 
-constexpr int encoder_thread_cap_for(OutputFormat format,
-                                     AvifEncoderMode avif_encoder) noexcept {
-  switch (format) {
-    case OutputFormat::avif:
-      switch (avif_encoder) {
-        case AvifEncoderMode::svt:
-          return encoding_defaults::default_svtav1hdr_thread_cap;
-        case AvifEncoderMode::zenrav1e:
-          return encoding_defaults::default_zenrav1e_thread_cap;
-        case AvifEncoderMode::aom:
-        case AvifEncoderMode::automatic:
-        default:
-          return encoding_defaults::default_aom_thread_cap;
-      }
-    case OutputFormat::jxl:
-      return encoding_defaults::default_jxl_thread_cap;
-    case OutputFormat::webp:
-    case OutputFormat::jpgli:
-    default:
-      return encoding_defaults::default_other_encoder_thread_cap;
-  }
-}
-
 bool avif_encoder_is_experimental(AvifEncoderMode mode) noexcept {
   return mode == AvifEncoderMode::zenrav1e;
 }
@@ -679,11 +661,6 @@ std::string chroma_mode_name(ChromaMode mode) {
 
 std::string avif_encoder_mode_name(AvifEncoderMode mode) {
   return config_detail::avif_encoder_name(mode);
-}
-
-int encoder_thread_cap_for_config(OutputFormat format,
-                                  AvifEncoderMode avif_encoder) noexcept {
-  return config_detail::encoder_thread_cap_for(format, avif_encoder);
 }
 
 std::string alpha_mode_policy_name(AlphaModePolicy policy) {
@@ -866,7 +843,7 @@ std::string help_text() {
   --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
   --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 默认 AOM，显式 svt 仅用于 420/8-10bit/无 alpha/非无损输入；AOM 单图上限 65536 边/2^30 像素，SVT 上限 16384x8704；超限后自动走大图链路（默认 zenrav1e，可优先 grid），再失败则报错
-  --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha 通道，auto 删除无效 alpha，off 总是删除 alpha
+  --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha，auto 删除无效 alpha，off 总是删除 alpha；AVIF 保留 alpha 时整图自动走 AOM q100/444 无损，speed 保持不变
   --svtav1hdr-crf <0-63>     svt-av1-hdr 专家 CRF；未指定时使用通用 quality，避免默认 quality 与默认 CRF 同时生效
   --svtav1hdr-preset <0-13>  svt-av1-hdr preset；默认 @SVTAV1HDR_PRESET@
   --svtav1hdr-tune <值>      svt-av1-hdr tune；默认 @SVTAV1HDR_TUNE@，UI 不提供修改入口
@@ -883,7 +860,7 @@ std::string help_text() {
   --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时尝试 padding；当前编码仍会拒绝尚未能安全裁切的 padding 计划，默认关闭
   --no-experimental-clamped-grid-padding 禁用 AVIF grid padding；不可整除分割会报错
   -p, --preset <名称>         fast / balanced / best / extreme；未指定时为自定义默认值；设置默认质量和编码超时，显式 --quality 可覆盖质量
-  -t, --threads <auto|数量>   并发数量；auto/jthread/自动 使用 CPU 线程数
+  -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
   --memory-limit <auto|大小>  内存限制；auto 为总内存一半与可用内存 80% 的较小值，可用 4GiB/4096MiB
   --large-image-priority <zenrav1e|grid> 超过 AOM 单图上限后的自动大图优先路径；默认 zenrav1e，失败回退另一路径
   --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/运行时上限（默认关闭，不写入配置）
@@ -1117,6 +1094,15 @@ std::expected<ParseResult, std::string> parse_arguments(
         return std::unexpected{value.error()};
       }
       cfg.studio_cancel_event_name = *value;
+      continue;
+    }
+
+    if (lower == L"--studio-queue-manifest") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      cfg.studio_queue_manifest = *value;
       continue;
     }
 

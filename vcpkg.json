@@ -1,6 +1,6 @@
 {
   "name": "awjimage",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "dependencies": [
     "scnlib",
     "libwebp",
@@ -21,6 +21,7 @@
       ]
     },
     "aom",
+    "dav1d",
     {
       "name": "libyuv",
       "platform": "windows"

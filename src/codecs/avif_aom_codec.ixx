@@ -16,6 +16,7 @@ import awj.image;
 export namespace awj {
 
 bool avif_libavif_encoder_available(AvifEncoderMode mode);
+bool avif_dav1d_decoder_available() noexcept;
 bool avif_zenravif_encoder_available() noexcept;
 bool avif_svtav1hdr_encoder_available() noexcept;
 

@@ -471,7 +471,8 @@ std::expected<void, std::string> append_standard_metadata_box(std::vector<Metada
 }
 
 int codec_thread_count(int requested_threads) noexcept {
-  return std::clamp(requested_threads, 1, encoding_defaults::default_jxl_thread_cap);
+  return std::clamp(requested_threads, 1,
+                    encoding_defaults::max_automatic_thread_budget);
 }
 
 std::expected<RunnerPtr, std::string> create_runner(int requested_threads) {

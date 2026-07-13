@@ -1,8 +1,13 @@
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <expected>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <iterator>
 #include <span>
 #include <string>
@@ -83,6 +88,163 @@ int main() {
     return fail("failed to create temp root.");
   }
 
+  std::vector<awj::ImageFile> manifest_files;
+  for (std::size_t index = 0; index < 13; ++index) {
+    manifest_files.push_back(awj::ImageFile{
+        .index = index,
+        .path = root / std::format("input-{}.webp", index),
+        .relative_dir = "nested",
+        .bytes = 123,
+        .date_token = L"20260713",
+        .time_token = L"120000",
+        .datetime_token = L"20260713-120000",
+        .unix_token = L"1783915200",
+        .random_token = std::format(L"{:08x}", index),
+        .hash_token = L"hash",
+        .sha256_token = L"sha256",
+        .resolved_output_path = root / std::format("output-{}.avif", index),
+        .output_path_resolved = true});
+  }
+  const auto manifest_path = root / "studio-queue.awjq";
+  if (auto written =
+          awj::write_studio_queue_manifest(manifest_path, manifest_files);
+      !written) {
+    return fail(written.error());
+  }
+  auto manifest = awj::read_studio_queue_manifest(manifest_path);
+  if (!manifest || manifest->files.size() != manifest_files.size() ||
+      manifest->files.back().resolved_output_path !=
+          manifest_files.back().resolved_output_path ||
+      manifest->files.back().random_token !=
+          manifest_files.back().random_token) {
+    return fail(manifest ? "studio queue manifest round-trip changed data."
+                         : manifest.error());
+  }
+  const auto manifest_plan = awj::plan_resources(awj::ResourcePlanRequest{
+      .automatic_thread_budget = 8,
+      .file_count = static_cast<int>(manifest->files.size()),
+      .estimated_bytes_per_file = 1});
+  if (manifest_plan.encoder_threads_per_file != 1 ||
+      manifest_plan.file_parallelism *
+              manifest_plan.encoder_threads_per_file !=
+          manifest_plan.global_thread_budget) {
+    return fail("13-file Studio worker plan did not keep one encoder thread.");
+  }
+  {
+    std::fstream corrupt{manifest_path,
+                         std::ios::binary | std::ios::in | std::ios::out};
+    corrupt.seekp(8);
+    const std::array<char, 4> invalid_version{};
+    corrupt.write(invalid_version.data(), invalid_version.size());
+  }
+  if (auto invalid = awj::read_studio_queue_manifest(manifest_path); invalid) {
+    return fail("studio queue manifest accepted an invalid version.");
+  }
+
+  if (auto written =
+          awj::write_studio_queue_manifest(manifest_path, manifest_files);
+      !written) {
+    return fail(written.error());
+  }
+  {
+    std::fstream inflated{manifest_path,
+                           std::ios::binary | std::ios::in | std::ios::out};
+    inflated.seekp(12);
+    constexpr std::uint64_t declared_files = 1'000'000;
+    for (int shift = 0; shift < 64; shift += 8) {
+      inflated.put(static_cast<char>((declared_files >> shift) & 0xffu));
+    }
+  }
+  std::filesystem::resize_file(manifest_path, 20, ec);
+  if (ec) {
+    return fail("failed to truncate inflated manifest.");
+  }
+  if (auto inflated = awj::read_studio_queue_manifest(manifest_path);
+      inflated) {
+    return fail("studio queue manifest trusted an inflated record count.");
+  }
+
+  auto traversal_files = manifest_files;
+  traversal_files.front().relative_dir = "../escape";
+  if (auto traversal = awj::write_studio_queue_manifest(
+          root / "studio-queue-traversal.awjq", traversal_files);
+      traversal) {
+    return fail("studio queue manifest accepted parent path traversal.");
+  }
+
+  auto disambiguator_files = manifest_files;
+  disambiguator_files.front().output_path_resolved = false;
+  disambiguator_files.front().resolved_output_path.clear();
+  disambiguator_files.front().extension_disambiguated = true;
+  disambiguator_files.front().source_extension_disambiguator = L"/../escape";
+  if (auto disambiguator = awj::write_studio_queue_manifest(
+          root / "studio-queue-disambiguator.awjq", disambiguator_files);
+      !disambiguator) {
+    // The writer may reject malformed records before they reach the worker.
+  } else {
+    auto disambiguator_cfg = awj::default_app_config();
+    disambiguator_cfg.input_path = root;
+    disambiguator_cfg.output_dir = root / "allowed-output";
+    disambiguator_cfg.studio_queue_manifest =
+        root / "studio-queue-disambiguator.awjq";
+    disambiguator_cfg.write_log = false;
+    disambiguator_cfg.write_summary = false;
+    if (auto escaped = awj::run_batch(disambiguator_cfg); escaped) {
+      return fail("Studio worker accepted a malicious extension disambiguator.");
+    }
+  }
+
+  if (auto written =
+          awj::write_studio_queue_manifest(manifest_path, manifest_files);
+      !written) {
+    return fail(written.error());
+  }
+  auto manifest_cfg = awj::default_app_config();
+  manifest_cfg.input_path = root;
+  manifest_cfg.output_dir = root / "allowed-output";
+  manifest_cfg.studio_queue_manifest = manifest_path;
+  manifest_cfg.write_log = false;
+  manifest_cfg.write_summary = false;
+  auto escaped_output = awj::run_batch(manifest_cfg);
+  if (escaped_output ||
+      escaped_output.error().find("输出路径越界") == std::string::npos) {
+    return fail("Studio worker accepted a resolved output outside output_dir.");
+  }
+
+  auto wrong_extension_files = manifest_files;
+  wrong_extension_files.front().resolved_output_path =
+      manifest_cfg.output_dir / "wrong-extension.txt";
+  if (auto written = awj::write_studio_queue_manifest(
+          manifest_path, wrong_extension_files);
+      !written) {
+    return fail(written.error());
+  }
+  auto wrong_extension = awj::run_batch(manifest_cfg);
+  if (wrong_extension ||
+      wrong_extension.error().find("扩展名无效") == std::string::npos) {
+    return fail("Studio worker accepted an unexpected output extension.");
+  }
+
+  auto input_overwrite_files = manifest_files;
+  for (std::size_t index = 0; index < input_overwrite_files.size(); ++index) {
+    input_overwrite_files[index].resolved_output_path =
+        root / std::format("safe-output-{}.webp", index);
+  }
+  input_overwrite_files.front().resolved_output_path = manifest_files[1].path;
+  if (auto written = awj::write_studio_queue_manifest(
+          manifest_path, input_overwrite_files);
+      !written) {
+    return fail(written.error());
+  }
+  auto input_overwrite_cfg = manifest_cfg;
+  input_overwrite_cfg.output_dir = root;
+  input_overwrite_cfg.output_format = awj::OutputFormat::webp;
+  auto input_overwrite = awj::run_batch(input_overwrite_cfg);
+  if (input_overwrite ||
+      input_overwrite.error().find("覆盖输入") == std::string::npos) {
+    return fail("Studio worker accepted an output that overwrites another input.");
+  }
+
   auto missing_cfg = awj::default_app_config();
   missing_cfg.input_path = root / "missing.webp";
   auto missing_summary = awj::run_batch(missing_cfg);
@@ -101,6 +263,117 @@ int main() {
   }
   if (auto ok = write_webp(input_dir / "same-b.webp", std::byte{128}); !ok) {
     return fail(ok.error());
+  }
+
+  const auto invalid_batch_input = root / "invalid-batch-input";
+  const auto invalid_batch_output = root / "invalid-batch-output";
+  std::filesystem::create_directories(invalid_batch_input, ec);
+  if (ec || !write_webp(invalid_batch_input / "valid.webp")) {
+    return fail("failed to create valid input for probe failure isolation.");
+  }
+  std::ofstream{invalid_batch_input / "empty.webp", std::ios::binary};
+  auto invalid_batch_cfg = awj::default_app_config();
+  invalid_batch_cfg.input_path = invalid_batch_input;
+  invalid_batch_cfg.output_dir = invalid_batch_output;
+  invalid_batch_cfg.output_format = awj::OutputFormat::avif;
+  invalid_batch_cfg.max_jobs = 2;
+  invalid_batch_cfg.quality = 90;
+  invalid_batch_cfg.write_log = false;
+  invalid_batch_cfg.write_summary = true;
+  const auto invalid_batch_summary = awj::run_batch(invalid_batch_cfg);
+  if (!invalid_batch_summary || invalid_batch_summary->ok_count != 1 ||
+      invalid_batch_summary->failed_count != 1 ||
+      !std::filesystem::exists(invalid_batch_output / "valid.avif")) {
+    return fail(invalid_batch_summary
+                    ? "one invalid input stopped the rest of the AVIF batch."
+                    : invalid_batch_summary.error());
+  }
+  const auto invalid_batch_csv =
+      read_text(invalid_batch_output / "summary.csv");
+  if (invalid_batch_csv.find("empty.webp") == std::string::npos ||
+      invalid_batch_csv.find("failed") == std::string::npos) {
+    return fail("invalid AVIF batch input was not recorded as one failed item.");
+  }
+
+  const auto manifest_input_dir = root / "manifest-input";
+  const auto manifest_output_dir = root / "manifest-output";
+  std::filesystem::create_directories(manifest_input_dir, ec);
+  if (ec) {
+    return fail("failed to create manifest input dir.");
+  }
+  std::vector<awj::ImageFile> runnable_manifest_files;
+  for (std::size_t index = 0; index < 13; ++index) {
+    const auto input =
+        manifest_input_dir / std::format("manifest-input-{}.webp", index);
+    if (auto ok = write_webp(input, std::byte{static_cast<unsigned char>(index)});
+        !ok) {
+      return fail(ok.error());
+    }
+    runnable_manifest_files.push_back(awj::ImageFile{
+        .index = index,
+        .path = input,
+        .bytes = std::filesystem::file_size(input, ec),
+        .resolved_output_path =
+            manifest_output_dir / std::format("manifest-output-{}.webp", index),
+        .output_path_resolved = true});
+  }
+  const auto runnable_manifest_path = root / "studio-queue-runnable.awjq";
+  if (auto written = awj::write_studio_queue_manifest(
+          runnable_manifest_path, runnable_manifest_files);
+      !written) {
+    return fail(written.error());
+  }
+  auto runnable_manifest_cfg = awj::default_app_config();
+  runnable_manifest_cfg.input_path = manifest_input_dir;
+  runnable_manifest_cfg.output_dir = manifest_output_dir;
+  runnable_manifest_cfg.output_format = awj::OutputFormat::webp;
+  runnable_manifest_cfg.studio_queue_manifest = runnable_manifest_path;
+  runnable_manifest_cfg.max_jobs = 8;
+  runnable_manifest_cfg.quality = 100;
+  runnable_manifest_cfg.speed = 10;
+  runnable_manifest_cfg.write_log = false;
+  runnable_manifest_cfg.write_summary = false;
+  std::vector<int> manifest_encoder_threads(13, -1);
+  std::atomic<int> manifest_started_count{0};
+  auto runnable_manifest_summary = awj::run_batch(
+      runnable_manifest_cfg, [&](const awj::BatchProgress& event) {
+        if (event.kind == awj::BatchEventKind::item_started) {
+          manifest_started_count.fetch_add(1, std::memory_order_relaxed);
+        } else if (event.kind == awj::BatchEventKind::item_finished &&
+                   event.result.index < manifest_encoder_threads.size()) {
+          manifest_encoder_threads[event.result.index] =
+              event.result.encoder_threads;
+        }
+      });
+  if (!runnable_manifest_summary || runnable_manifest_summary->ok_count != 13 ||
+      manifest_started_count.load(std::memory_order_relaxed) != 13 ||
+      manifest_encoder_threads.size() != 13 ||
+      std::ranges::any_of(manifest_encoder_threads,
+                          [](int threads) { return threads != 1; })) {
+    return fail(runnable_manifest_summary
+                    ? "Studio manifest batch did not keep one encoder thread per image."
+                    : runnable_manifest_summary.error());
+  }
+
+  auto runnable_scan_cfg = runnable_manifest_cfg;
+  runnable_scan_cfg.studio_queue_manifest.clear();
+  runnable_scan_cfg.output_dir = root / "scan-output";
+  std::vector<int> scan_encoder_threads(13, -1);
+  auto runnable_scan_summary = awj::run_batch(
+      runnable_scan_cfg, [&](const awj::BatchProgress& event) {
+        if (event.kind == awj::BatchEventKind::item_finished &&
+            event.result.index < scan_encoder_threads.size()) {
+          scan_encoder_threads[event.result.index] =
+              event.result.encoder_threads;
+        }
+      });
+  if (!runnable_scan_summary || runnable_scan_summary->ok_count != 13 ||
+      scan_encoder_threads.size() != 13 ||
+      std::ranges::any_of(scan_encoder_threads,
+                          [](int threads) { return threads != 1; })) {
+    return fail(runnable_scan_summary
+                    ? "13-file scanned batch did not keep one encoder thread per image."
+                    : runnable_scan_summary.error());
   }
 
   awj::AppConfig cfg = awj::default_app_config();

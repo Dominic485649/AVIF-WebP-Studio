@@ -126,9 +126,13 @@ struct StudioChildProcess {
   UniqueWin32Handle cancel_event{};
   UniqueWin32Handle output_read{};
   std::wstring command_line{};
+  std::filesystem::path queue_manifest_path{};
+  std::vector<std::filesystem::path> temp_directories{};
   DWORD process_id{};
   std::atomic_bool cancel_requested{};
-  std::atomic_bool force_terminated{};
+  std::mutex termination_mutex{};
+  bool force_terminated{};
+  bool process_tree_terminated{};
 
   void request_cancel() noexcept {
     cancel_requested.store(true, std::memory_order_release);
@@ -139,16 +143,29 @@ struct StudioChildProcess {
 
   bool terminate(DWORD exit_code =
                      awj::studio_defaults::worker_force_stop_exit_code) noexcept {
-    force_terminated.store(true, std::memory_order_release);
+    std::scoped_lock lock{termination_mutex};
+    if (process_tree_terminated) {
+      return true;
+    }
     request_cancel();
-    bool terminated = false;
-    if (job != nullptr) {
-      terminated = TerminateJobObject(job.get(), exit_code) != FALSE;
+    if (job != nullptr && TerminateJobObject(job.get(), exit_code) != FALSE) {
+      force_terminated = true;
+      process_tree_terminated = true;
+      return true;
     }
-    if (!terminated && process != nullptr) {
-      terminated = TerminateProcess(process.get(), exit_code) != FALSE;
+    if (!force_terminated && process != nullptr &&
+        WaitForSingleObject(process.get(), 0) == WAIT_TIMEOUT &&
+        TerminateProcess(process.get(), exit_code) != FALSE) {
+      force_terminated = true;
+      process_tree_terminated = true;
+      return true;
     }
-    return terminated;
+    return false;
+  }
+
+  bool was_force_terminated() noexcept {
+    std::scoped_lock lock{termination_mutex};
+    return force_terminated;
   }
 };
 
@@ -1992,6 +2009,37 @@ TaskRow pending_shell_task_row(const awj::AppConfig& cfg, const awj::ImageFile& 
                  .locked = true};
 }
 
+void mark_task_row_running(
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+    const awj::EncodeResult& result) noexcept {
+  if (rows == nullptr) {
+    return;
+  }
+  try {
+    if (result.index < rows->row_count()) {
+      auto row = rows->row_data(result.index);
+      if (row) {
+        row->status = to_shared("正在转码");
+        row->locked = true;
+        rows->set_row_data(result.index, *row);
+        return;
+      }
+    }
+    push_task_row(rows,
+                  TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
+                          .filename = to_shared(awj::path_to_utf8(
+                              result.input_path.filename())),
+                          .folder = to_shared(awj::path_to_utf8(
+                              result.input_path.parent_path())),
+                          .size = to_shared(awj::format_size(result.original_bytes)),
+                          .status = to_shared("正在转码"),
+                          .output = to_shared(awj::path_to_utf8(
+                              result.output_path.filename())),
+                          .locked = true});
+  } catch (...) {
+  }
+}
+
 void add_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
                   const awj::EncodeResult& result) noexcept {
   try {
@@ -2228,16 +2276,15 @@ void append_pending_event(UiState& state, std::uint64_t run_id,
 }
 
 bool request_all_workers_stop_locked(UiState& state) noexcept {
-  bool stop_requested = false;
-  if (state.worker_active) {
-    state.worker.request_stop();
-    stop_requested = true;
-  }
   if (state.active_child != nullptr) {
     state.active_child->request_cancel();
-    stop_requested = true;
+    return true;
   }
-  return stop_requested;
+  if (!state.worker_active) {
+    return false;
+  }
+  state.worker.request_stop();
+  return true;
 }
 
 bool request_all_workers_stop(const std::shared_ptr<UiState>& state) noexcept {
@@ -2264,9 +2311,12 @@ bool worker_active(const std::shared_ptr<UiState>& state) noexcept {
   }
 }
 
-bool force_stop_current_worker(const std::shared_ptr<UiState>& state) noexcept {
+enum class ForceStopResult { no_worker, terminated, terminate_failed };
+
+ForceStopResult force_stop_current_worker(
+    const std::shared_ptr<UiState>& state) noexcept {
   if (state == nullptr) {
-    return false;
+    return ForceStopResult::no_worker;
   }
   std::shared_ptr<StudioChildProcess> child;
   bool had_worker = false;
@@ -2274,14 +2324,18 @@ bool force_stop_current_worker(const std::shared_ptr<UiState>& state) noexcept {
     std::scoped_lock lock{state->mutex};
     had_worker = state->worker_active || state->active_child != nullptr;
     child = state->active_child;
-    request_all_workers_stop_locked(*state);
+    if (child == nullptr && state->worker_active) {
+      state->worker.request_stop();
+    }
   } catch (...) {
-    return false;
+    return ForceStopResult::terminate_failed;
   }
   if (child != nullptr) {
-    return child->terminate() || had_worker;
+    return child->terminate() ? ForceStopResult::terminated
+                              : ForceStopResult::terminate_failed;
   }
-  return had_worker;
+  return had_worker ? ForceStopResult::terminate_failed
+                    : ForceStopResult::no_worker;
 }
 
 std::wstring cli_output_format_arg(awj::OutputFormat format) {
@@ -2377,6 +2431,10 @@ std::vector<std::wstring> cli_arguments_from_config(
   push_cli_option(args, L"--collision", cli_collision_arg(cfg.collision_mode));
   push_cli_option(args, L"--studio-cancel-event",
                   std::wstring{cancel_event_name});
+  if (!cfg.studio_queue_manifest.empty()) {
+    push_cli_option(args, L"--studio-queue-manifest",
+                    cfg.studio_queue_manifest);
+  }
   if (!cfg.studio_large_action.empty()) {
     push_cli_option(args, L"--studio-large-action", cfg.studio_large_action);
   }
@@ -2725,41 +2783,85 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
                                        GetLastError())};
   }
   const bool leader = GetLastError() != ERROR_ALREADY_EXISTS;
+  const auto send_mutex_name = mutex_name + L".Send";
+  UniqueWin32Handle send_mutex{
+      CreateMutexW(nullptr, FALSE, send_mutex_name.c_str())};
+  if (!send_mutex) {
+    const DWORD error = GetLastError();
+    if (leader) ReleaseMutex(mutex.get());
+    return std::unexpected{std::format("创建右键队列发送锁失败，错误码 {}。",
+                                       error)};
+  }
   const auto slot_name = L"\\\\.\\mailslot\\" + suffix;
   if (!leader) {
+    std::vector<std::filesystem::path> unsent;
+    unsent.reserve(inputs.size());
     for (int attempt = 0; attempt < 25; ++attempt) {
+      const DWORD gate = WaitForSingleObject(send_mutex.get(), 1000);
+      if (gate != WAIT_OBJECT_0 && gate != WAIT_ABANDONED) {
+        return true;
+      }
+      const DWORD leader_state = WaitForSingleObject(mutex.get(), 0);
+      if (leader_state != WAIT_TIMEOUT) {
+        if (leader_state == WAIT_OBJECT_0 || leader_state == WAIT_ABANDONED) {
+          ReleaseMutex(mutex.get());
+        }
+        ReleaseMutex(send_mutex.get());
+        return true;
+      }
       UniqueWin32Handle slot{CreateFileW(slot_name.c_str(), GENERIC_WRITE,
                                          FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                          FILE_ATTRIBUTE_NORMAL, nullptr)};
       if (slot) {
         for (const auto& input : inputs) {
           const auto value = input.wstring();
-          if (value.empty() || value.size() > 32760) continue;
+          if (value.empty() || value.size() > 32760) {
+            unsent.push_back(input);
+            continue;
+          }
+          const auto byte_count =
+              static_cast<DWORD>(value.size() * sizeof(wchar_t));
           DWORD written = 0;
-          WriteFile(slot.get(), value.data(),
-                    static_cast<DWORD>(value.size() * sizeof(wchar_t)),
-                    &written, nullptr);
+          if (!WriteFile(slot.get(), value.data(), byte_count, &written,
+                         nullptr) ||
+              written != byte_count) {
+            unsent.push_back(input);
+          }
         }
-        return false;
+        ReleaseMutex(send_mutex.get());
+        if (unsent.empty()) return false;
+        inputs = std::move(unsent);
+        return true;
       }
+      ReleaseMutex(send_mutex.get());
       Sleep(20);
     }
-    return std::unexpected{"无法把所选文件加入现有右键转换队列。"};
+    return true;
   }
 
+  const DWORD create_gate = WaitForSingleObject(send_mutex.get(), INFINITE);
+  if (create_gate != WAIT_OBJECT_0 && create_gate != WAIT_ABANDONED) {
+    ReleaseMutex(mutex.get());
+    return std::unexpected{"无法锁定右键队列发送通道。"};
+  }
   UniqueWin32Handle slot{CreateMailslotW(slot_name.c_str(), 65520, 0, nullptr)};
   if (!slot) {
+    const DWORD error = GetLastError();
+    ReleaseMutex(send_mutex.get());
     ReleaseMutex(mutex.get());
     return std::unexpected{std::format("创建右键队列通道失败，错误码 {}。",
-                                       GetLastError())};
+                                       error)};
   }
+  ReleaseMutex(send_mutex.get());
   std::unordered_set<std::wstring> seen;
   for (const auto& input : inputs) seen.insert(queue_path_key(input));
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds{650};
-  while (std::chrono::steady_clock::now() < deadline) {
+  const auto started = std::chrono::steady_clock::now();
+  const auto hard_deadline = started + std::chrono::milliseconds{650};
+  auto quiet_deadline = started + std::chrono::milliseconds{180};
+  const auto drain_messages = [&] {
     DWORD next_size = MAILSLOT_NO_MESSAGE;
     DWORD message_count = 0;
+    bool received_message = false;
     if (GetMailslotInfo(slot.get(), nullptr, &next_size, &message_count, nullptr) &&
         next_size != MAILSLOT_NO_MESSAGE) {
       while (message_count > 0 && next_size != MAILSLOT_NO_MESSAGE) {
@@ -2767,6 +2869,7 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
         DWORD read = 0;
         if (ReadFile(slot.get(), buffer.data(), next_size, &read, nullptr) &&
             read > 0 && read % sizeof(wchar_t) == 0) {
+          received_message = true;
           std::filesystem::path input{
               std::wstring{buffer.data(), read / sizeof(wchar_t)}};
           if (seen.insert(queue_path_key(input)).second) {
@@ -2779,9 +2882,29 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
         }
       }
     }
-    Sleep(15);
+    return received_message;
+  };
+  while (true) {
+    const bool received_message = drain_messages();
+    const auto now = std::chrono::steady_clock::now();
+    if (received_message) {
+      quiet_deadline = std::min(
+          hard_deadline, now + std::chrono::milliseconds{80});
+    }
+    if (now >= hard_deadline || now >= quiet_deadline) break;
+    Sleep(10);
   }
+
+  // Stop new writers before the final drain so a successful late write cannot be lost.
+  const DWORD close_gate = WaitForSingleObject(send_mutex.get(), INFINITE);
+  if (close_gate != WAIT_OBJECT_0 && close_gate != WAIT_ABANDONED) {
+    ReleaseMutex(mutex.get());
+    return std::unexpected{"无法关闭右键队列发送通道。"};
+  }
+  (void)drain_messages();
+  slot.reset();
   ReleaseMutex(mutex.get());
+  ReleaseMutex(send_mutex.get());
   return true;
 }
 
@@ -2961,6 +3084,8 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
   const auto exe_dir = exe_path->parent_path();
 
   auto child = std::make_shared<StudioChildProcess>();
+  child->queue_manifest_path = cfg.studio_queue_manifest;
+  child->temp_directories.push_back(awj::output_dir_for(cfg));
   const auto event_name = std::format(L"Local\\AWJStudioCancel-{}-{}",
                                       GetCurrentProcessId(), run_id);
   child->cancel_event.reset(CreateEventW(nullptr, TRUE, FALSE, event_name.c_str()));
@@ -2978,13 +3103,18 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
   child->command_line = command_line;
 
   UniqueWin32Handle job{CreateJobObjectW(nullptr, nullptr)};
-  if (job != nullptr) {
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
-                                 &limits, sizeof(limits))) {
-      job.reset();
-    }
+  if (job == nullptr) {
+    return std::unexpected{std::format(
+        "创建编码 worker Job Object 失败: {}",
+        awj::win32_error_message(GetLastError()))};
+  }
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
+                               &limits, sizeof(limits))) {
+    return std::unexpected{std::format(
+        "配置编码 worker Job Object 失败: {}",
+        awj::win32_error_message(GetLastError()))};
   }
 
   HANDLE pipe_read = nullptr;
@@ -3011,7 +3141,8 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
   const auto cwd = exe_dir.native();
   const BOOL created = CreateProcessW(
       exe_path->c_str(), mutable_command_line.data(), nullptr, nullptr, TRUE,
-      CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, nullptr, cwd.c_str(),
+      CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
+      nullptr, cwd.c_str(),
       &startup, &process);
   if (!created) {
     return std::unexpected{std::format("启动编码 worker 失败: {}",
@@ -3022,10 +3153,73 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
   child->output_read = std::move(output_read);
   output_write.reset();
   child->process_id = process.dwProcessId;
-  if (job != nullptr && AssignProcessToJobObject(job.get(), child->process.get())) {
-    child->job = std::move(job);
+  if (!AssignProcessToJobObject(job.get(), child->process.get())) {
+    const DWORD error = GetLastError();
+    TerminateProcess(child->process.get(),
+                     awj::studio_defaults::worker_force_stop_exit_code);
+    WaitForSingleObject(child->process.get(), INFINITE);
+    return std::unexpected{std::format(
+        "将编码 worker 加入 Job Object 失败: {}",
+        awj::win32_error_message(error))};
+  }
+  child->job = std::move(job);
+  if (ResumeThread(child->thread.get()) == static_cast<DWORD>(-1)) {
+    const DWORD error = GetLastError();
+    TerminateJobObject(child->job.get(),
+                       awj::studio_defaults::worker_force_stop_exit_code);
+    WaitForSingleObject(child->process.get(), INFINITE);
+    return std::unexpected{std::format(
+        "恢复编码 worker 执行失败: {}",
+        awj::win32_error_message(error))};
   }
   return child;
+}
+
+void cleanup_studio_queue_manifest(
+    const std::shared_ptr<StudioChildProcess>& child) noexcept {
+  if (child == nullptr || child->queue_manifest_path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::remove(child->queue_manifest_path, ec);
+  child->queue_manifest_path.clear();
+}
+
+void cleanup_forced_worker_temp_files(
+    const std::shared_ptr<StudioChildProcess>& child) noexcept {
+  try {
+    if (child == nullptr || child->process_id == 0) {
+      return;
+    }
+    const auto output_prefix =
+        std::format(L".awj-output-{}-", child->process_id);
+    const auto summary_prefix =
+        std::format(L"summary.csv.tmp-{}-", child->process_id);
+    for (const auto& directory : child->temp_directories) {
+      std::error_code ec;
+      std::filesystem::directory_iterator it{
+          directory, std::filesystem::directory_options::skip_permission_denied,
+          ec};
+      const std::filesystem::directory_iterator end;
+      while (!ec && it != end) {
+        const auto entry = *it;
+        it.increment(ec);
+        const auto name = entry.path().filename().wstring();
+        const bool output_temp =
+            name.starts_with(output_prefix) && name.ends_with(L".tmp");
+        const bool summary_temp = name.starts_with(summary_prefix);
+        if (!output_temp && !summary_temp) {
+          continue;
+        }
+        std::error_code type_ec;
+        if (entry.is_regular_file(type_ec) && !type_ec) {
+          std::error_code remove_ec;
+          std::filesystem::remove(entry.path(), remove_ec);
+        }
+      }
+    }
+  } catch (...) {
+  }
 }
 
 bool reject_when_worker_active(AwjStudio& app,
@@ -3181,6 +3375,21 @@ void constrain_window_to_work_area(slint::Window& window) {
   RECT current_rect{position.x, position.y,
                     add_window_extent(position.x, current_width),
                     add_window_extent(position.y, current_height)};
+  LONG non_client_width = 0;
+  LONG non_client_height = 0;
+  if (const auto hwnd = window.win32_hwnd(); hwnd != nullptr) {
+    RECT window_rect{};
+    RECT client_rect{};
+    if (GetWindowRect(hwnd, &window_rect) && GetClientRect(hwnd, &client_rect)) {
+      current_rect = window_rect;
+      non_client_width = std::max<LONG>(
+          0, (window_rect.right - window_rect.left) -
+                 (client_rect.right - client_rect.left));
+      non_client_height = std::max<LONG>(
+          0, (window_rect.bottom - window_rect.top) -
+                 (client_rect.bottom - client_rect.top));
+    }
+  }
 
   HMONITOR monitor = MonitorFromRect(&current_rect, MONITOR_DEFAULTTONEAREST);
   MONITORINFO monitor_info{.cbSize = sizeof(MONITORINFO)};
@@ -3191,10 +3400,13 @@ void constrain_window_to_work_area(slint::Window& window) {
   const RECT& work = monitor_info.rcWork;
   const auto work_width = std::max<LONG>(1, work.right - work.left);
   const auto work_height = std::max<LONG>(1, work.bottom - work.top);
+  const auto max_client_width = std::max<LONG>(1, work_width - non_client_width);
+  const auto max_client_height =
+      std::max<LONG>(1, work_height - non_client_height);
   const auto clamped_width = std::min<std::uint32_t>(
-      physical_size.width, static_cast<std::uint32_t>(work_width));
+      physical_size.width, static_cast<std::uint32_t>(max_client_width));
   const auto clamped_height = std::min<std::uint32_t>(
-      physical_size.height, static_cast<std::uint32_t>(work_height));
+      physical_size.height, static_cast<std::uint32_t>(max_client_height));
 
   if (clamped_width != physical_size.width ||
       clamped_height != physical_size.height) {
@@ -3202,15 +3414,19 @@ void constrain_window_to_work_area(slint::Window& window) {
     window.set_size(physical_size);
   }
 
-  const auto width = physical_extent_to_long(physical_size.width);
-  const auto height = physical_extent_to_long(physical_size.height);
+  const auto width =
+      physical_extent_to_long(physical_size.width) + non_client_width;
+  const auto height =
+      physical_extent_to_long(physical_size.height) + non_client_height;
   const auto max_x = work.right - width;
   const auto max_y = work.bottom - height;
   const auto clamped_x =
-      std::clamp<LONG>(position.x, work.left, std::max(work.left, max_x));
+      std::clamp<LONG>(current_rect.left, work.left,
+                       std::max(work.left, max_x));
   const auto clamped_y =
-      std::clamp<LONG>(position.y, work.top, std::max(work.top, max_y));
-  if (clamped_x != position.x || clamped_y != position.y) {
+      std::clamp<LONG>(current_rect.top, work.top,
+                       std::max(work.top, max_y));
+  if (clamped_x != current_rect.left || clamped_y != current_rect.top) {
     window.set_position(slint::PhysicalPosition{{clamped_x, clamped_y}});
   }
 }
@@ -3947,136 +4163,94 @@ std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
   }
 }
 
-awj::EncodeResult failed_queue_result(const awj::AppConfig& cfg,
-                                      const awj::ImageFile& image,
-                                      std::string message) {
-  return awj::EncodeResult{.index = image.index,
-                           .input_path = image.path,
-                           .output_path = awj::output_path_for(cfg, image),
-                           .output_format = awj::output_format_name(cfg.output_format),
-                           .original_bytes = image.bytes,
-                           .quality = cfg.quality,
-                           .requested_visual_quality = cfg.visual_quality,
-                           .final_encoder_quality = cfg.quality,
-                           .speed = cfg.speed.value_or(
-                               awj::default_speed_for(cfg.output_format)),
-                           .processed = true,
-                           .ok = false,
-                           .message = std::move(message)};
+std::expected<std::filesystem::path, std::string>
+create_studio_queue_manifest(std::uint64_t run_id,
+                             std::span<const awj::ImageFile> files) {
+  try {
+    std::error_code ec;
+    const auto temp_dir = std::filesystem::temp_directory_path(ec);
+    if (ec) {
+      return std::unexpected{std::format(
+          "无法获取 Studio worker 临时目录：{}", ec.message())};
+    }
+    std::random_device random_device;
+    std::mt19937_64 rng{random_device()};
+    for (int attempt = 0; attempt < 16; ++attempt) {
+      const auto path = temp_dir / std::format(
+                                       L"AWJStudioQueue-{}-{}-{:016x}.awjq",
+                                       GetCurrentProcessId(), run_id, rng());
+      if (std::filesystem::exists(path, ec)) {
+        ec.clear();
+        continue;
+      }
+      auto written = awj::write_studio_queue_manifest(path, files);
+      if (written) {
+        return path;
+      }
+      std::filesystem::remove(path, ec);
+      return std::unexpected{written.error()};
+    }
+    return std::unexpected{"无法创建唯一的 Studio 队列 manifest。"};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"创建 Studio 队列 manifest 时内存不足。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"创建 Studio 队列 manifest 时文件系统访问失败。"};
+  }
 }
 
-std::expected<std::optional<awj::BatchLargeImageItem>, awj::EncodeResult>
-classify_queue_large_item(const awj::AppConfig& cfg,
-                          const awj::ImageFile& image) {
-  if (cfg.output_format != awj::OutputFormat::avif) {
-    return std::optional<awj::BatchLargeImageItem>{};
-  }
-  const auto availability =
-      large_image_manual_availability(cfg.enable_experimental_encoders);
-  auto dimensions = awj::probe_image_dimensions_for_path(
-      image.path,
-      awj::DecoderRegistryOptions{.allow_wic_fallback = cfg.allow_wic_fallback});
-  if (!dimensions) {
-    return std::unexpected{
-        failed_queue_result(cfg, image, dimensions.error())};
-  }
-  auto decision =
-      awj::classify_large_image(*dimensions, availability.grid,
-                                availability.zenrav1e);
-  if (decision.klass != awj::LargeImageClass::large_mode_required) {
-    return std::optional<awj::BatchLargeImageItem>{};
-  }
-  return awj::BatchLargeImageItem{.file = image,
-                                  .dimensions = *dimensions,
-                                  .decision = std::move(decision)};
-}
-
-struct WorkerComApartment {
-  explicit WorkerComApartment(bool enabled) noexcept : enabled_{enabled} {
-    if (enabled_) {
-      init_ = CoInitializeEx(nullptr, COINIT_MULTITHREADED |
-                                          COINIT_DISABLE_OLE1DDE);
-    }
-  }
-  ~WorkerComApartment() {
-    if (enabled_ && SUCCEEDED(init_)) {
-      CoUninitialize();
-    }
-  }
-  [[nodiscard]] bool usable() const noexcept {
-    return !enabled_ || SUCCEEDED(init_) || init_ == RPC_E_CHANGED_MODE;
-  }
-  bool enabled_{};
-  HRESULT init_{S_FALSE};
+struct StudioWorkerItemEvent {
+  std::size_t index{};
+  char status{};
+  std::size_t completed{};
+  std::size_t total{};
 };
 
-void post_queue_refresh(slint::ComponentWeakHandle<AwjStudio> weak,
-                        const std::shared_ptr<UiState>& state,
-                        std::string status_text = {},
-                        std::optional<float> progress = std::nullopt) {
-  post_to_ui(weak, [state, status_text = std::move(status_text),
-                    progress](AwjStudio& app) {
-    std::scoped_lock lock{state->mutex};
-    refresh_queue_rows(app, *state);
-    if (!status_text.empty()) {
-      app.set_status_text(to_shared(status_text));
-    }
-    if (progress) {
-      app.set_progress(*progress);
-    }
-  });
-}
-
-std::uint64_t queue_id_for_run_index(const UiState& state,
-                                     std::size_t run_index) noexcept {
-  if (auto index = queue_index_for_run_index(state, run_index)) {
-    return state.queue_items[*index].id;
+std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
+    std::string_view line) {
+  constexpr std::string_view prefix = "@AWJ-STUDIO/1 ITEM ";
+  if (!line.starts_with(prefix)) {
+    return std::nullopt;
   }
-  return 0;
-}
-
-void apply_result_to_queue_item(QueueImageItem& item,
-                                const awj::EncodeResult& result) {
-  item.warning = result.ok && result.requested_visual_quality.has_value() &&
-                 !result.visual_quality_target_met;
-  item.log_text = result_log_text(result);
-  if (result.canceled) {
-    item.status = QueueItemStatus::canceled;
-  } else if (result.ok && result.skipped) {
-    item.status = QueueItemStatus::skipped;
-  } else if (result.ok) {
-    item.status = QueueItemStatus::done;
-  } else {
-    item.status = QueueItemStatus::failed;
-    item.warning = true;
-  }
-  item.status_text = result_status_text(result);
-  if (!result.output_path.empty()) {
-    item.locked_output_path = result.output_path;
-  }
-}
-
-std::optional<awj::ImageFile> take_next_queue_work(
-    UiState& state, const std::vector<awj::ImageFile>& files,
-    std::unordered_set<std::wstring>& active_outputs) {
-  for (auto& item : state.queue_items) {
-    if (item.status != QueueItemStatus::pending ||
-        item.run_index >= files.size()) {
-      continue;
+  line.remove_prefix(prefix.size());
+  std::array<std::string_view, 4> fields;
+  for (auto& field : fields) {
+    const auto separator = line.find(' ');
+    if (separator == std::string_view::npos) {
+      field = line;
+      line = {};
+    } else {
+      field = line.substr(0, separator);
+      line.remove_prefix(separator + 1);
     }
-    const auto output_key = queue_path_key(item.locked_output_path);
-    if (!output_key.empty() && active_outputs.contains(output_key)) {
-      continue;
+    if (field.empty()) {
+      return std::nullopt;
     }
-    item.status = QueueItemStatus::running;
-    item.status_text = "正在编码";
-    item.warning = false;
-    if (!output_key.empty()) {
-      active_outputs.insert(output_key);
-    }
-    return files[item.run_index];
   }
-  return std::nullopt;
+  if (!line.empty() || fields[1].size() != 1 ||
+      (fields[1][0] != 'R' && fields[1][0] != 'D' &&
+       fields[1][0] != 'S' &&
+       fields[1][0] != 'C' && fields[1][0] != 'F')) {
+    return std::nullopt;
+  }
+  const auto parse_size = [](std::string_view field)
+      -> std::optional<std::size_t> {
+    const auto value = scn::scan_int<std::size_t>(field);
+    if (!value || value->begin() != value->end()) {
+      return std::nullopt;
+    }
+    return value->value();
+  };
+  const auto index = parse_size(fields[0]);
+  const auto completed = parse_size(fields[2]);
+  const auto total = parse_size(fields[3]);
+  if (!index || !completed || !total || *total == 0 ||
+      *index >= *total || *completed > *total) {
+    return std::nullopt;
+  }
+  return StudioWorkerItemEvent{.index = *index,
+                               .status = fields[1][0],
+                               .completed = *completed,
+                               .total = *total};
 }
 
 void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
@@ -4091,7 +4265,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
   {
     std::scoped_lock lock{state->mutex};
     if (state->worker_active) {
-      (*app)->set_status_text(to_shared("当前任务正在运行，请先取消或强制终止"));
+      (*app)->set_status_text(to_shared("当前任务正在运行，请先停止任务或强制终止"));
       return;
     }
     if (state->queue_items.empty()) {
@@ -4103,7 +4277,8 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
 
   auto files = build_run_files(cfg, queue_snapshot);
   if (!files) {
-    (*app)->set_status_text(to_shared(std::format("队列准备失败：{}", files.error())));
+    (*app)->set_status_text(
+        to_shared(std::format("队列准备失败：{}", files.error())));
     return;
   }
   if (files->empty()) {
@@ -4112,15 +4287,30 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     return;
   }
 
+  std::vector<std::filesystem::path> temp_directories;
+  try {
+    temp_directories.push_back(awj::output_dir_for(cfg));
+    for (const auto& file : *files) {
+      const auto directory = awj::output_path_for(cfg, file).parent_path();
+      if (std::ranges::find(temp_directories, directory) ==
+          temp_directories.end()) {
+        temp_directories.push_back(directory);
+      }
+    }
+  } catch (...) {
+    (*app)->set_status_text(to_shared("队列准备失败：无法记录临时输出目录。"));
+    return;
+  }
+
   std::uint64_t run_id{};
   {
     std::scoped_lock lock{state->mutex};
     run_id = ++state->run_id;
     state->worker_active = true;
+    state->active_child.reset();
     state->pending_events.clear();
     std::size_t run_index = 0;
-    for (const auto i : std::views::iota(std::size_t{}, state->queue_items.size())) {
-      auto& item = state->queue_items[i];
+    for (auto& item : state->queue_items) {
       item.run_index = std::numeric_limits<std::size_t>::max();
       if (!queue_item_runnable(item)) {
         continue;
@@ -4137,214 +4327,272 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
   }
   (*app)->set_running(true);
   (*app)->set_progress(0.0f);
-  (*app)->set_status_text(to_shared("正在启动队列编码…"));
+  (*app)->set_status_text(to_shared("正在启动队列 worker…"));
 
-  std::vector<awj::ImageFile> run_files = std::move(*files);
-  std::optional<std::jthread> coordinator;
+  auto manifest_path = create_studio_queue_manifest(run_id, *files);
+  if (!manifest_path) {
+    reset_failed_run(**app, *state, run_id,
+                     std::format("队列 worker 准备失败：{}",
+                                 manifest_path.error()));
+    return;
+  }
+  cfg.studio_queue_manifest = *manifest_path;
+
+  auto child = start_studio_cli_worker(cfg, run_id);
+  if (!child) {
+    std::error_code ec;
+    std::filesystem::remove(*manifest_path, ec);
+    reset_failed_run(**app, *state, run_id,
+                     std::format("启动队列 worker 失败：{}", child.error()));
+    return;
+  }
+  (*child)->temp_directories = std::move(temp_directories);
+  {
+    std::scoped_lock lock{state->mutex};
+    state->active_child = *child;
+  }
+  (*app)->set_status_text(to_shared(std::format(
+      "队列 worker 已启动，PID {}，共 {} 张图片。", (*child)->process_id,
+      files->size())));
+
+  std::optional<std::jthread> monitor;
   try {
-    coordinator.emplace([weak, state, cfg = std::move(cfg),
-                         files = std::move(run_files),
-                         run_id](std::stop_token stop_token) mutable {
-      const auto output_dir = awj::output_dir_for(cfg);
-      awj::FileLogger logger{output_dir, cfg.write_log};
-      if (cfg.write_log && !logger.enabled()) {
-        post_queue_refresh(
-            weak, state,
-            std::format("[WARN] 日志写入失败: {}", logger.last_error()));
-      }
-      const auto configured_memory_limit =
-          cfg.memory_limit_bytes == 0
-              ? awj::automatic_memory_limit(awj::current_memory_status())
-              : cfg.memory_limit_bytes;
-      std::uint64_t estimate = 1;
-      for (const auto& image : files) {
-        estimate = std::max<std::uint64_t>(
-            estimate, static_cast<std::uint64_t>(
-                          std::max<std::uintmax_t>(1, image.bytes)));
-      }
-      const auto resource_plan = awj::plan_resources(awj::ResourcePlanRequest{
-          .automatic_thread_budget = cfg.max_jobs,
-          .file_count = static_cast<int>(
-              std::min<std::size_t>(files.size(),
-                                    static_cast<std::size_t>(
-                                        std::numeric_limits<int>::max()))),
-          .memory_limit_bytes = configured_memory_limit,
-          .estimated_bytes_per_file = estimate,
-          .encoder_thread_cap = awj::encoder_thread_cap_for_config(
-              cfg.output_format, cfg.avif_encoder)});
-      const int jobs = std::max(
-          1, std::min<int>(resource_plan.file_parallelism,
-                           static_cast<int>(std::min<std::size_t>(
-                               files.size(), static_cast<std::size_t>(
-                                                 std::numeric_limits<int>::max())))));
-      post_queue_refresh(
-          weak, state,
-          std::format("队列共 {} 张图片，编码并发 {}。", files.size(), jobs));
+    monitor.emplace([weak, state, run_id, child = *child,
+                     file_count = files->size()](std::stop_token token) mutable {
+      std::string pending;
+      std::optional<StudioWorkerItemEvent> pending_item;
 
-      std::vector<awj::EncodeResult> results(files.size());
-      for (const auto& image : files) {
-        results[image.index] = awj::EncodeResult{
-            .index = image.index,
-            .input_path = image.path,
-            .output_path = awj::output_path_for(cfg, image),
-            .output_format = awj::output_format_name(cfg.output_format),
-            .original_bytes = image.bytes,
-            .quality = cfg.quality,
-            .requested_visual_quality = cfg.visual_quality,
-            .final_encoder_quality = cfg.quality,
-            .speed = cfg.speed.value_or(awj::default_speed_for(cfg.output_format)),
-            .message = "未处理。"};
-      }
-
-      std::atomic<std::size_t> completed{0};
-      std::atomic<int> worker_failures{0};
-      std::unordered_set<std::wstring> active_outputs;
-      std::vector<std::jthread> workers;
-      workers.reserve(static_cast<std::size_t>(jobs));
-      for (const int worker_index : std::views::iota(0, jobs)) {
-        try {
-          workers.emplace_back([&, worker_index] {
-            WorkerComApartment com{cfg.allow_wic_fallback};
-            awj::AppConfig effective_cfg = cfg;
-            if (cfg.allow_wic_fallback && !com.usable()) {
-              effective_cfg.allow_wic_fallback = false;
-            }
-            awj::NativeBackend backend{effective_cfg, logger, resource_plan};
-            while (!stop_token.stop_requested()) {
-              std::optional<awj::ImageFile> image;
-              {
-                std::scoped_lock lock{state->mutex};
-                if (state->run_id != run_id) {
-                  return;
-                }
-                image = take_next_queue_work(*state, files, active_outputs);
-              }
-              if (!image) {
-                break;
-              }
-              post_queue_refresh(weak, state);
-
-              awj::EncodeResult result;
-              auto large = classify_queue_large_item(effective_cfg, *image);
-              if (!large) {
-                result = std::move(large.error());
-              } else if (*large) {
-                const auto large_working_set =
-                    awj::avif_encode_working_set_bytes_for_dimensions(
-                        (**large).dimensions);
-                const auto large_resource_plan =
-                    awj::plan_large_mode_resources(resource_plan, 1,
-                                                   large_working_set);
-                result = awj::pipeline_detail::encode_large_mode_item(
-                    effective_cfg, logger, **large, large_resource_plan,
-                    stop_token);
-              } else {
-                result = backend.encode(*image, stop_token);
-              }
-
-              const auto output_key = queue_path_key(result.output_path);
-              const auto done = completed.fetch_add(1) + 1;
-              {
-                std::scoped_lock lock{state->mutex};
-                if (result.index < results.size()) {
-                  results[result.index] = result;
-                }
-                if (!output_key.empty()) {
-                  active_outputs.erase(output_key);
-                }
-                if (auto index = queue_index_for_run_index(*state, result.index)) {
-                  apply_result_to_queue_item(state->queue_items[*index], result);
-                }
-              }
-              post_queue_refresh(
-                  weak, state,
-                  std::format("已完成 {}/{}：{}", done, files.size(),
-                              awj::path_to_utf8(result.input_path.filename())),
-                  static_cast<float>(done) / static_cast<float>(files.size()));
-            }
-          });
-        } catch (...) {
-          worker_failures.fetch_add(1);
-        }
-      }
-      workers.clear();
-
-      const bool canceled = stop_token.stop_requested();
-      {
-        std::scoped_lock lock{state->mutex};
-        for (auto& item : state->queue_items) {
-          if (item.status == QueueItemStatus::pending ||
-              item.status == QueueItemStatus::running) {
-            item.status = canceled ? QueueItemStatus::canceled
-                                   : QueueItemStatus::failed;
-            item.status_text = canceled ? "已取消" : "未处理";
-            item.warning = !canceled;
+      auto publish_item = [&](StudioWorkerItemEvent event) {
+        post_to_ui(weak, [state, run_id, event](AwjStudio& app) {
+          std::scoped_lock lock{state->mutex};
+          if (state->run_id != run_id) {
+            return;
           }
-        }
-      }
+          if (auto queue_index =
+                  queue_index_for_run_index(*state, event.index)) {
+            auto& item = state->queue_items[*queue_index];
+            item.warning = item.warning || event.status == 'F';
+            switch (event.status) {
+              case 'R':
+                item.status = QueueItemStatus::running;
+                item.status_text = "正在转码";
+                break;
+              case 'D':
+                item.status = QueueItemStatus::done;
+                item.status_text = "完成";
+                break;
+              case 'S':
+                item.status = QueueItemStatus::skipped;
+                item.status_text = "已跳过";
+                break;
+              case 'C':
+                item.status = QueueItemStatus::canceled;
+                item.status_text = "已取消";
+                break;
+              case 'F':
+              default:
+                item.status = QueueItemStatus::failed;
+                item.status_text = "失败";
+                break;
+            }
+          }
+          refresh_queue_rows(app, *state);
+          app.set_progress(static_cast<float>(event.completed) /
+                           static_cast<float>(event.total));
+          app.set_status_text(to_shared(
+              event.status == 'R'
+                  ? std::format("正在转码第 {} 项；已完成 {}/{}。",
+                                event.index + 1, event.completed, event.total)
+                  : std::format("已完成 {}/{}。", event.completed,
+                                event.total)));
+        });
+      };
 
-      std::size_t ok_count = 0;
-      std::size_t failed_count = 0;
-      std::size_t canceled_count = 0;
-      std::uintmax_t original_total = 0;
-      std::uintmax_t output_total = 0;
-      for (const auto& result : results) {
-        if (result.ok) {
-          ++ok_count;
-          original_total += result.original_bytes;
-          output_total += result.output_bytes;
-        } else if (result.canceled || canceled) {
-          ++canceled_count;
-        } else if (result.processed) {
-          ++failed_count;
-          original_total += result.original_bytes;
-        }
-      }
-      bool csv_failed = false;
-      std::string csv_error;
-      if (cfg.write_summary) {
-        if (auto csv = awj::write_csv(output_dir, results); !csv) {
-          csv_failed = true;
-          csv_error = csv.error();
-        }
-      }
-      post_to_ui(weak, [state, run_id, ok_count, failed_count, canceled_count,
-                        worker_failures = worker_failures.load(), csv_failed,
-                        csv_error = std::move(csv_error),
-                        canceled](AwjStudio& app) {
-        std::scoped_lock lock{state->mutex};
-        if (state->run_id != run_id) {
+      auto publish_line = [&](std::string line) {
+        line = trim_copy(std::move(line));
+        if (line.empty()) {
           return;
         }
-        state->worker_active = false;
-        state->pending_events.clear();
+        if (auto event = parse_studio_worker_item_event(line)) {
+          if (event->status != 'R') {
+            pending_item = *event;
+          }
+          publish_item(*event);
+          return;
+        }
+        if (pending_item) {
+          const auto event = *pending_item;
+          pending_item.reset();
+          post_to_ui(weak, [state, run_id, event,
+                             line = std::move(line)](AwjStudio& app) {
+            std::scoped_lock lock{state->mutex};
+            if (state->run_id != run_id) {
+              return;
+            }
+            if (auto queue_index =
+                    queue_index_for_run_index(*state, event.index)) {
+              auto& item = state->queue_items[*queue_index];
+              item.log_text = line;
+              item.warning = item.warning ||
+                             line.find("未达标") != std::string::npos;
+            }
+            refresh_queue_rows(app, *state);
+          });
+          return;
+        }
+        post_to_ui(weak, [state, run_id,
+                          line = std::move(line)](AwjStudio& app) {
+          std::scoped_lock lock{state->mutex};
+          if (state->run_id == run_id) {
+            app.set_status_text(to_shared(line));
+          }
+        });
+      };
+
+      auto consume_output = [&] {
+        if (child->output_read == nullptr) {
+          return;
+        }
+        while (true) {
+          DWORD available = 0;
+          if (!PeekNamedPipe(child->output_read.get(), nullptr, 0, nullptr,
+                             &available, nullptr) ||
+              available == 0) {
+            break;
+          }
+          std::array<char, 4096> buffer{};
+          DWORD read_bytes = 0;
+          if (!ReadFile(child->output_read.get(), buffer.data(),
+                        static_cast<DWORD>(
+                            std::min<std::size_t>(buffer.size(), available)),
+                        &read_bytes, nullptr) ||
+              read_bytes == 0) {
+            break;
+          }
+          pending.append(buffer.data(), buffer.data() + read_bytes);
+          std::size_t pos = 0;
+          while ((pos = pending.find('\n')) != std::string::npos) {
+            auto line = pending.substr(0, pos);
+            if (!line.empty() && line.back() == '\r') {
+              line.pop_back();
+            }
+            pending.erase(0, pos + 1);
+            publish_line(std::move(line));
+          }
+        }
+      };
+
+      DWORD exit_code = 1;
+      while (!token.stop_requested()) {
+        consume_output();
+        const DWORD wait = WaitForSingleObject(child->process.get(), 80);
+        if (wait == WAIT_OBJECT_0) {
+          break;
+        }
+        if (wait != WAIT_TIMEOUT) {
+          break;
+        }
+      }
+      if (token.stop_requested() && child->process != nullptr) {
+        child->terminate();
+      }
+      WaitForSingleObject(child->process.get(), INFINITE);
+      consume_output();
+      if (!pending.empty()) {
+        publish_line(std::move(pending));
+      }
+      GetExitCodeProcess(child->process.get(), &exit_code);
+      const bool forced = child->was_force_terminated();
+      const bool canceled =
+          child->cancel_requested.load(std::memory_order_acquire) &&
+          !forced &&
+          exit_code == awj::studio_defaults::worker_force_stop_exit_code;
+      cleanup_studio_queue_manifest(child);
+      if (forced) {
+        cleanup_forced_worker_temp_files(child);
+      }
+
+      post_to_ui(weak, [state, run_id, exit_code, forced, canceled,
+                        file_count](AwjStudio& app) {
+        std::size_t ok_count = 0;
+        std::size_t failed_count = 0;
+        std::size_t canceled_count = 0;
+        {
+          std::scoped_lock lock{state->mutex};
+          if (state->run_id != run_id) {
+            return;
+          }
+          state->pending_events.clear();
+          state->worker_active = false;
+          state->active_child.reset();
+          for (auto& item : state->queue_items) {
+            if (item.run_index == std::numeric_limits<std::size_t>::max()) {
+              continue;
+            }
+            if (item.status == QueueItemStatus::pending ||
+                item.status == QueueItemStatus::running) {
+              if (forced || canceled) {
+                item.status = QueueItemStatus::canceled;
+                item.status_text =
+                    forced ? "已强制终止" : "已取消";
+                item.warning = false;
+              } else {
+                item.status = QueueItemStatus::failed;
+                item.status_text = "未处理";
+                item.warning = true;
+              }
+            }
+            if (item.status == QueueItemStatus::done ||
+                item.status == QueueItemStatus::skipped) {
+              ++ok_count;
+            } else if (item.status == QueueItemStatus::canceled) {
+              ++canceled_count;
+            } else if (item.status == QueueItemStatus::failed) {
+              ++failed_count;
+            }
+          }
+          refresh_queue_rows(app, *state);
+        }
         app.set_running(false);
-        app.set_progress(canceled ? 0.0f : 1.0f);
-        refresh_queue_rows(app, *state);
-        if (csv_failed) {
+        app.set_progress(exit_code == 0 ? 1.0f : 0.0f);
+        if (forced) {
+          app.set_status_text(
+              to_shared("编码已强制终止，Studio 仍可继续使用"));
+        } else if (canceled) {
           app.set_status_text(to_shared(std::format(
-              "完成：成功 {}，失败 {}，取消 {}，报告写入失败：{}",
-              ok_count, failed_count + static_cast<std::size_t>(worker_failures),
-              canceled_count, csv_error)));
+              "已取消：成功 {}，失败 {}，取消 {}。", ok_count,
+              failed_count, canceled_count)));
+        } else if (exit_code == 0) {
+          app.set_status_text(to_shared(std::format(
+              "完成：成功 {}，失败 {}，取消 {}，共 {}。", ok_count,
+              failed_count, canceled_count, file_count)));
         } else {
           app.set_status_text(to_shared(std::format(
-              "{}：成功 {}，失败 {}，取消 {}。",
-              canceled ? "已取消" : "完成", ok_count,
-              failed_count + static_cast<std::size_t>(worker_failures),
-              canceled_count)));
+              "队列 worker 失败，退出码 {}：成功 {}，失败 {}。",
+              exit_code, ok_count, failed_count)));
         }
       });
     });
   } catch (...) {
-    reset_failed_run(**app, *state, run_id, "队列转换启动失败。");
+    (*child)->terminate();
+    WaitForSingleObject((*child)->process.get(), INFINITE);
+    cleanup_studio_queue_manifest(*child);
+    cleanup_forced_worker_temp_files(*child);
+    {
+      std::scoped_lock lock{state->mutex};
+      if (state->run_id == run_id) {
+        state->active_child.reset();
+      }
+    }
+    reset_failed_run(**app, *state, run_id, "队列 worker 监控启动失败。");
     return;
   }
+
   {
     std::scoped_lock lock{state->mutex};
-    state->worker = std::move(*coordinator);
+    state->worker = std::move(*monitor);
   }
 }
-
 void handle_queue_menu_action(AwjStudio& app,
                               const std::shared_ptr<UiState>& state,
                               int index, std::string action) {
@@ -4373,6 +4621,9 @@ void handle_queue_menu_action(AwjStudio& app,
       }
       state->queue_items.erase(state->queue_items.begin() + index);
       status = "已从队列移除。";
+    } else if (state->worker_active) {
+      app.set_status_text(to_shared("运行中不能调整队列顺序。"));
+      return;
     } else if (!queue_item_editable(item)) {
       app.set_status_text(to_shared("该图片已开始编码，不能重新排序。"));
       return;
@@ -4444,7 +4695,7 @@ slint::DataTransfer make_queue_drag_data(
     return transfer;
   }
   const auto& item = state->queue_items[static_cast<std::size_t>(index)];
-  if (queue_item_editable(item)) {
+  if (!state->worker_active && queue_item_editable(item)) {
     transfer.set_user_data(QueueDragPayload{.id = item.id});
   }
   return transfer;
@@ -4478,6 +4729,9 @@ slint::language::DragAction handle_queue_drag_can_drop(
     return slint::language::DragAction::None;
   }
   std::scoped_lock lock{state->mutex};
+  if (state->worker_active) {
+    return slint::language::DragAction::None;
+  }
   const auto current = queue_index_for_id(*state, payload->id);
   if (!current || !queue_item_editable(state->queue_items[*current]) ||
       !queue_drop_target_index(*state, *current, target_slot)) {
@@ -4497,6 +4751,9 @@ slint::language::DragAction handle_queue_drag_dropped(
       return slint::language::DragAction::None;
     }
     std::scoped_lock lock{state->mutex};
+    if (state->worker_active) {
+      return slint::language::DragAction::None;
+    }
     const auto current = queue_index_for_id(*state, payload->id);
     if (!current || !queue_item_editable(state->queue_items[*current])) {
       return slint::language::DragAction::None;
@@ -4581,7 +4838,7 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
   {
     std::scoped_lock lock{state->mutex};
     if (state->worker_active) {
-      (*app)->set_status_text(to_shared("当前任务正在运行，请先取消或强制终止"));
+      (*app)->set_status_text(to_shared("当前任务正在运行，请先停止任务或强制终止"));
       return;
     }
     run_id = ++state->run_id;
@@ -4704,12 +4961,13 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
         publish_line(std::move(pending));
       }
       GetExitCodeProcess(child->process.get(), &exit_code);
-      const bool forced =
-          child->force_terminated.load(std::memory_order_acquire) ||
-          exit_code ==
-              awj::studio_defaults::worker_force_stop_exit_code;
-      const bool canceled = child->cancel_requested.load(std::memory_order_acquire) &&
-                            !forced;
+      const bool forced = child->was_force_terminated();
+      const bool canceled =
+          child->cancel_requested.load(std::memory_order_acquire) && !forced &&
+          exit_code == awj::studio_defaults::worker_force_stop_exit_code;
+      if (forced) {
+        cleanup_forced_worker_temp_files(child);
+      }
       post_to_ui(weak, [state, run_id, large_index, exit_code, forced,
                         canceled](AwjStudio& app) {
               {
@@ -4746,11 +5004,27 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       });
     });
   } catch (const std::exception&) {
-    force_stop_current_worker(state);
+    (*child)->terminate();
+    WaitForSingleObject((*child)->process.get(), INFINITE);
+    cleanup_forced_worker_temp_files(*child);
+    {
+      std::scoped_lock lock{state->mutex};
+      if (state->run_id == run_id) {
+        state->active_child.reset();
+      }
+    }
     reset_failed_run(**app, *state, run_id, "转换启动失败。");
     return;
   } catch (...) {
-    force_stop_current_worker(state);
+    (*child)->terminate();
+    WaitForSingleObject((*child)->process.get(), INFINITE);
+    cleanup_forced_worker_temp_files(*child);
+    {
+      std::scoped_lock lock{state->mutex};
+      if (state->run_id == run_id) {
+        state->active_child.reset();
+      }
+    }
     reset_failed_run(**app, *state, run_id, "转换启动失败。");
     return;
   }
@@ -5222,7 +5496,7 @@ int run_studio_ui() {
     });
 
     app->on_cancel_conversion([weak, state] {
-      run_ui_callback(weak, "取消任务失败", [&] {
+      run_ui_callback(weak, "停止任务失败", [&] {
         const bool stop_requested = request_all_workers_stop(state);
         if (auto app = weak.lock()) {
           if (!stop_requested) {
@@ -5231,7 +5505,7 @@ int run_studio_ui() {
             return;
           }
           (*app)->set_running(true);
-          (*app)->set_status_text(to_shared("正在取消当前任务…"));
+          (*app)->set_status_text(to_shared("正在停止当前任务…"));
         }
       });
     });
@@ -5297,11 +5571,21 @@ int run_studio_ui() {
         }
 
         if (worker_active(state)) {
-          const bool stopped = force_stop_current_worker(state);
-          (*app)->set_running(true);
-          (*app)->set_status_text(to_shared(
-              stopped ? "正在强制终止当前编码任务…"
-                      : "没有正在运行的编码任务"));
+          const auto stopped = force_stop_current_worker(state);
+          (*app)->set_running(stopped != ForceStopResult::no_worker);
+          switch (stopped) {
+            case ForceStopResult::terminated:
+              (*app)->set_status_text(
+                  to_shared("正在强制终止当前编码任务…"));
+              break;
+            case ForceStopResult::terminate_failed:
+              (*app)->set_status_text(to_shared(
+                  "强制终止失败，任务仍在运行；请重试或关闭 Studio"));
+              break;
+            case ForceStopResult::no_worker:
+              (*app)->set_status_text(to_shared("没有正在运行的编码任务"));
+              break;
+          }
           return;
         }
 
@@ -5372,7 +5656,6 @@ int run_studio_ui() {
 
 int run_shell_convert_window(int argc, wchar_t* argv[]) {
   try {
-    ensure_slint_backend();
     std::vector<std::wstring> args;
     args.reserve(static_cast<std::size_t>(std::max(argc - 1, 0)));
     for (int i = 1; i < argc; ++i) {
@@ -5399,6 +5682,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
     }
     if (!*collected) return 0;
 
+    ensure_slint_backend();
     auto app = ShellConvertWindow::create();
     app->set_ui_font_family(to_shared(select_system_ui_font_family()));
     const bool dark_mode = shell_window_dark_mode();
@@ -5427,7 +5711,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
       if (running.load(std::memory_order_acquire)) {
         stop_source.request_stop();
         if (auto app = weak.lock()) {
-          (*app)->set_status_text(to_shared("正在取消..."));
+          (*app)->set_status_text(to_shared("正在停止任务…"));
         }
       } else if (auto app = weak.lock()) {
         (*app)->window().hide();
@@ -5451,7 +5735,9 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
           [weak, rows](const awj::BatchProgress& event) {
             slint::invoke_from_event_loop([weak, rows, event] {
               if (auto app = weak.lock()) {
-                if (event.kind == awj::BatchEventKind::item_finished) {
+                if (event.kind == awj::BatchEventKind::item_started) {
+                  mark_task_row_running(rows, event.result);
+                } else if (event.kind == awj::BatchEventKind::item_finished) {
                   const auto row = task_row_from_result(event.result);
                   if (event.result.index < rows->row_count()) {
                     rows->set_row_data(event.result.index, row);
@@ -5505,6 +5791,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
 
     app->show();
     apply_title_bar_theme(app->window(), dark_mode);
+    constrain_window_to_work_area(app->window());
     app->window().on_close_requested([&stop_source, &running] {
       if (running.load(std::memory_order_acquire)) {
         stop_source.request_stop();
@@ -5830,6 +6117,35 @@ void push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
   if (!rows) return;
   try {
     rows->push_back(std::move(row));
+  } catch (...) {
+  }
+}
+
+void mark_task_row_running(
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+    const awj::EncodeResult& result) noexcept {
+  if (!rows) return;
+  try {
+    if (result.index < rows->row_count()) {
+      auto row = rows->row_data(result.index);
+      if (row) {
+        row->status = to_shared("正在转码");
+        row->locked = true;
+        rows->set_row_data(result.index, *row);
+        return;
+      }
+    }
+    push_task_row(rows,
+                  TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
+                          .filename = to_shared(awj::path_to_utf8(
+                              result.input_path.filename())),
+                          .folder = to_shared(awj::path_to_utf8(
+                              result.input_path.parent_path())),
+                          .size = to_shared(awj::format_size(result.original_bytes)),
+                          .status = to_shared("正在转码"),
+                          .output = to_shared(awj::path_to_utf8(
+                              result.output_path.filename())),
+                          .locked = true});
   } catch (...) {
   }
 }
@@ -6379,6 +6695,7 @@ void initialize_ui(AwjStudio& app) {
   app.set_large_image_rows(std::make_shared<slint::VectorModel<LargeImageRow>>());
   app.set_wic_ui_visible(false);
   app.set_allow_wic_fallback(false);
+  app.set_force_terminate_supported(false);
   app.set_menu_allow_wic_fallback(false);
   app.set_visual_quality_gpu_help_text(to_shared("默认启用 Vulkan 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"));
   app.set_avif_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
@@ -6391,7 +6708,7 @@ void initialize_ui(AwjStudio& app) {
   app.set_memory_limit_text(to_shared(std::string{awj::encoding_defaults::default_memory_limit_text}));
   app.set_unlock_max_input_file_bytes(false);
   app.set_selected_large_image_action_index(0);
-  app.set_status_text(to_shared("Linux：Vulkan/CPU fallback 可用；可手动输入或使用系统文件选择器。"));
+  app.set_status_text(to_shared("就绪"));
 }
 
 }  // namespace
@@ -6543,7 +6860,7 @@ int run_studio_ui() {
     app->on_cancel_conversion([weak, state] {
       if (auto app = weak.lock()) {
         state->worker.request_stop();
-        (*app)->set_status_text(to_shared("正在取消当前任务…"));
+        (*app)->set_status_text(to_shared("正在停止当前任务…"));
       }
     });
     app->on_toggle_template_token([weak](slint::SharedString token) {
@@ -6566,7 +6883,7 @@ int run_studio_ui() {
       auto app = weak.lock();
       if (!app) return;
       if ((*app)->get_running()) {
-        (*app)->set_status_text(to_shared("当前任务正在运行，请先取消"));
+        (*app)->set_status_text(to_shared("当前任务正在运行，请先停止任务"));
         return;
       }
       const auto action = shared_to_string(action_text);
@@ -6635,7 +6952,7 @@ int run_studio_ui() {
       }
       if ((*app)->get_running()) {
         state->worker.request_stop();
-        (*app)->set_status_text(to_shared("正在取消当前任务…"));
+        (*app)->set_status_text(to_shared("正在停止当前任务…"));
         return;
       }
       auto cfg = config_from_ui(**app);
@@ -6657,7 +6974,9 @@ int run_studio_ui() {
         auto progress = [weak, state, rows](const awj::BatchProgress& event) {
           slint::invoke_from_event_loop([weak, state, rows, event] {
             if (auto app = weak.lock()) {
-              if (event.kind == awj::BatchEventKind::item_finished) {
+              if (event.kind == awj::BatchEventKind::item_started) {
+                mark_task_row_running(rows, event.result);
+              } else if (event.kind == awj::BatchEventKind::item_finished) {
                 auto row = task_row_from_result(event.result);
                 if (event.result.index < rows->row_count()) {
                   rows->set_row_data(event.result.index, row);

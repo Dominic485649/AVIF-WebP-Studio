@@ -277,7 +277,7 @@ component SoftButton inherits Rectangle {
 
     min-height: 32px;
     vertical-stretch: 0;
-    border-radius: root.has-hover ? 10px : 8px;
+    border-radius: 6px;
     border-width: root.variant == "outline" ? 1px : 0px;
     border-color: root.enabled ? (root.has-hover ? root.combo-border-hover : root.combo-border) : root.combo-border;
 
@@ -307,12 +307,15 @@ component SoftButton inherits Rectangle {
         animate y { duration: 60ms; easing: ease-out; }
 
         Text {
+            x: 8px;
+            width: parent.width - 16px;
             text: root.text;
             color: !root.enabled ? root.text-soft : (root.checked ? root.accent-strong : (root.variant == "primary" || root.variant == "danger" || root.variant == "action" ? #ffffff : root.text-body));
             font-size: 13px;
             font-weight: root.variant == "primary" || root.variant == "action" || root.variant == "danger" || root.checked ? 700 : 500;
             horizontal-alignment: center;
             vertical-alignment: center;
+            overflow: elide;
             animate color { duration: 150ms; easing: ease-out; }
         }
     }
@@ -337,8 +340,8 @@ component NavItem inherits Rectangle {
     out property <bool> has-hover <=> touch.has-hover;
     callback clicked();
 
-    height: 50px;
-    border-radius: 12px;
+    height: 46px;
+    border-radius: 6px;
     background: root.selected ? root.selected-background : (root.has-hover ? root.hover-background : root.normal-background);
     animate background { duration: 150ms; easing: ease-out; }
 
@@ -356,7 +359,7 @@ component NavItem inherits Rectangle {
     Text {
         text: root.label;
         color: root.selected ? root.selected-text : root.normal-text;
-        font-size: 18px;
+        font-size: 16px;
         font-weight: 700;
         x: (parent.width - self.width) / 2 + (root.selected ? 6px : (root.has-hover ? 4px : 0px));
         vertical-alignment: center;
@@ -485,6 +488,7 @@ export component AwjStudio inherits Window {
     in-out property <string> menu-max-long-edge-text: "";
     in-out property <string> menu-max-short-edge-text: "";
     in-out property <bool> running: false;
+    in-out property <bool> force-terminate-supported: true;
     in-out property <float> progress: 0.0;
     in-out property <string> status-text: "就绪";
     in property <[TaskRow]> task-rows;
@@ -498,12 +502,15 @@ export component AwjStudio inherits Window {
     in-out property <length> queue-menu-origin-y: 0px;
     property <length> queue-menu-width: 216px;
     property <length> queue-menu-height: 338px;
-    property <length> parameter-control-width: 230px;
+    property <length> parameter-control-width: 210px;
     property <length> parameter-control-height: 38px;
     property <length> control-button-width: 86px;
     property <length> control-button-height: 38px;
     property <length> page-gap: 10px;
-    property <length> nav-width: 232px;
+    property <length> nav-width: 196px;
+    property <length> queue-filename-width: 170px;
+    property <length> queue-size-width: 72px;
+    property <length> queue-status-width: 104px;
     in-out property <int> pending-theme-index: -1;
     in-out property <int> combo-close-generation: 0;
     in-out property <bool> combo-popup-open: false;
@@ -699,7 +706,7 @@ export component AwjStudio inherits Window {
             y: root.page-gap;
             width: parent.width - root.nav-width - root.page-gap * 2;
             height: parent.height - root.page-gap * 2;
-            border-radius: 24px;
+            border-radius: 8px;
             background: root.mica-tint;
             opacity: 0.56;
             animate background { duration: 180ms; easing: ease-out; }
@@ -794,7 +801,7 @@ export component AwjStudio inherits Window {
                     Rectangle {
                         horizontal-stretch: 1;
                         vertical-stretch: 1;
-                        border-radius: 18px;
+                        border-radius: 8px;
                         background: root.panel-bg;
                         border-color: root.panel-border;
                         border-width: 1px;
@@ -958,7 +965,7 @@ export component AwjStudio inherits Window {
                 if root.selected-page == 3: Rectangle {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
-                    border-radius: 18px;
+                    border-radius: 8px;
                     background: root.panel-bg;
                     border-color: root.panel-border;
                     border-width: 1px;
@@ -1027,19 +1034,19 @@ export component AwjStudio inherits Window {
                                 Text { text: "AVIF/JPGLI 可用；其他格式会忽略。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: "Alpha"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                Text { text: "透明通道"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                 SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "强制", enabled: true }, { text: "自动", enabled: true }, { text: "关闭", enabled: true }]; current-index <=> root.menu-alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: "AVIF 可用；JPGLI 不支持强制 Alpha。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                Text { text: "仅 AVIF 可用；JPGLI 不支持强制保留透明通道。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "渐进"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "顺序", enabled: true }, { text: "渐进1", enabled: true }, { text: "渐进2", enabled: true }]; current-index <=> root.menu-jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: "JPGLI 渐进级别。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "关闭", enabled: true }, { text: "普通", enabled: true }, { text: "更细", enabled: true }]; current-index <=> root.menu-jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                Text { text: "关闭为顺序 JPEG；普通和更细使用渐进编码。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: "Huffman"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                CheckBox { text: "优化 Huffman"; checked <=> root.menu-jpegli-optimize-huffman; enabled: !root.running; width: root.parameter-control-width; }
-                                Text { text: "渐进 JPEG 会自动要求优化 Huffman。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                Text { text: "哈夫曼表"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                CheckBox { text: "优化哈夫曼表"; checked <=> root.menu-jpegli-optimize-huffman; enabled: !root.running; width: root.parameter-control-width; }
+                                Text { text: "渐进 JPEG 会自动启用哈夫曼表优化。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "XYB"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
@@ -1072,7 +1079,7 @@ export component AwjStudio inherits Window {
                     spacing: root.page-gap;
 
                     Rectangle {
-                        border-radius: 18px;
+                        border-radius: 8px;
                         background: root.panel-bg;
                         border-color: root.panel-border;
                         border-width: 1px;
@@ -1089,7 +1096,7 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "输入路径"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.input-path; placeholder-text: "输入图片文件或文件夹路径，回车加入队列"; enabled: !root.running; horizontal-stretch: 1; height: root.control-button-height; accepted(text) => { root.input-path-accepted(text); } }
+                                    LineEdit { text <=> root.input-path; placeholder-text: "输入图片文件或文件夹路径，回车加入队列"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: root.control-button-height; accepted(text) => { root.input-path-accepted(text); } }
                                     Rectangle {
                                         width: root.control-button-width * 2 + 10px;
                                         height: root.control-button-height;
@@ -1105,7 +1112,7 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "输出目录"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.output-dir; placeholder-text: "默认与输入同目录"; enabled: !root.running; horizontal-stretch: 1; height: root.control-button-height; }
+                                    LineEdit { text <=> root.output-dir; placeholder-text: "默认与输入同目录"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: root.control-button-height; }
                                     Rectangle {
                                         width: root.control-button-width * 2 + 10px;
                                         height: root.control-button-height;
@@ -1121,7 +1128,7 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "命名规则"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.template-text; placeholder-text: "例：{name}_{date}"; enabled: !root.running; horizontal-stretch: 1; height: 38px; }
+                                    LineEdit { text <=> root.template-text; placeholder-text: "例：{name}_{date}"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: 38px; }
                                     Rectangle {
                                         width: 302px;
                                         height: 38px;
@@ -1169,22 +1176,23 @@ export component AwjStudio inherits Window {
 
                                 HorizontalLayout {
                                     spacing: root.page-gap;
-                                    CheckBox { text: "写入 CSV 日志"; checked <=> root.write-summary; enabled: !root.running; }
+                                    CheckBox { text: "写入 CSV 报告"; checked <=> root.write-summary; enabled: !root.running; }
+                                    CheckBox { text: "写入运行日志"; checked <=> root.write-log; enabled: !root.running; }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
 
                                 HorizontalLayout {
                                 spacing: root.page-gap;
-                                SoftButton { dark-mode: root.dark-mode; text: root.running ? "强制终止" : "开始转换"; variant: "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
-                                SoftButton { dark-mode: root.dark-mode; text: "取消"; variant: "danger"; height: 42px; enabled: root.running; horizontal-stretch: 1; clicked => { root.cancel-conversion(); } }
-                                SoftButton { dark-mode: root.dark-mode; text: "清空"; height: 42px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
+                                SoftButton { dark-mode: root.dark-mode; text: root.running ? (root.force-terminate-supported ? "强制终止" : "停止任务") : "开始转换"; variant: root.running && root.force-terminate-supported ? "danger" : "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
+                                if root.force-terminate-supported: SoftButton { dark-mode: root.dark-mode; text: "停止任务"; variant: "outline"; height: 42px; enabled: root.running; horizontal-stretch: 1; clicked => { root.cancel-conversion(); } }
+                                SoftButton { dark-mode: root.dark-mode; text: "清空队列"; height: 42px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
                             }
 
                         }
                     }
 
                     Rectangle {
-                        border-radius: 18px;
+                        border-radius: 8px;
                         background: root.panel-bg;
                         border-color: root.panel-border;
                         border-width: 1px;
@@ -1196,49 +1204,49 @@ export component AwjStudio inherits Window {
                             spacing: 10px;
 
                             Rectangle {
-                                height: 32px;
-                                border-radius: 9px;
-                                background: root.field-bg;
-                                border-color: root.field-border;
-                                border-width: 1px;
-                                animate background, border-color { duration: 180ms; easing: ease-out; }
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    spacing: 10px;
-                                    Text { text: "#"; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                                    Text { text: "文件名"; width: 230px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "目录"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "大小"; width: 82px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "状态"; width: 118px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                    Text { text: "输出/日志"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                }
-                            }
-
-                            Text {
-                                text: "提示：右键队列项可打开菜单；拖动未开始队列项可调整顺序。";
-                                color: root.text-muted;
-                                font-size: 12px;
-                            }
-
-                            Rectangle {
                                 vertical-stretch: 1;
-                                border-radius: 12px;
+                                border-radius: 6px;
                                 background: root.dark-mode ? #151b25 : #ffffff;
                                 border-color: root.panel-border;
                                 border-width: 1px;
                                 clip: true;
                                 animate background, border-color { duration: 180ms; easing: ease-out; }
 
-                                if root.task-rows.length == 0: Text {
-                                    text: "队列为空";
-                                    color: root.text-muted;
-                                    font-size: 13px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
+                                VerticalLayout {
+                                    spacing: 0px;
 
-                                if root.task-rows.length > 0: ListView {
+                                    Rectangle {
+                                        height: 34px;
+                                        background: root.field-bg;
+                                        border-color: root.field-border;
+                                        border-width: 0px;
+                                        animate background, border-color { duration: 180ms; easing: ease-out; }
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            spacing: 10px;
+                                            Text { text: "#"; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
+                                            Text { text: "文件名"; width: root.queue-filename-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "目录"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "大小"; width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "状态"; width: root.queue-status-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                            Text { text: "输出或日志"; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        vertical-stretch: 1;
+                                        background: root.dark-mode ? #151b25 : #ffffff;
+
+                                        if root.task-rows.length == 0: Text {
+                                            text: "队列为空";
+                                            color: root.text-muted;
+                                            font-size: 13px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+
+                                        if root.task-rows.length > 0: ListView {
                                      for row[index] in root.task-rows: drop-row := DropArea {
                                          property <length> hover-y: 0px;
                                          property <int> drop-index: index + (drop-row.hover-y > drop-row.height / 2 ? 1 : 0);
@@ -1252,25 +1260,25 @@ export component AwjStudio inherits Window {
                                              return root.queue-drag-dropped(event, drop-row.drop-index);
                                          }
                                          row-drag := DragArea {
-                                             enabled: !row.locked;
-                                             allow-move: !row.locked;
+                                             enabled: !root.running && !row.locked;
+                                             allow-move: !root.running && !row.locked;
                                              data: root.queue-drag-data(index);
-                                             opacity: row-drag.dragging ? 0.45 : (row.locked ? 0.78 : 1.0);
+                                             opacity: row-drag.dragging ? 0.45 : 1.0;
                                              Rectangle {
                                                  width: parent.width;
                                                  height: parent.height;
-                                                 background: drop-row.has-drag ? (root.dark-mode ? #24324a : #e7f1ff) : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent);
+                                                 background: drop-row.has-drag ? (root.dark-mode ? #24324a : #e7f1ff) : (row-touch.has-hover ? (root.dark-mode ? #222d3c : #edf5ff) : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent));
                                                  border-radius: 6px;
                                                  animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                                                  HorizontalLayout {
                                                      padding-left: 10px;
                                                      padding-right: 10px;
                                                      spacing: 10px;
-                                                     Text { text: row.order; width: 40px; color: row.locked ? root.text-soft : root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                                                     Text { text: row.filename; width: 230px; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                     Text { text: row.order; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
+                                                     Text { text: row.filename; width: root.queue-filename-width; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                                      Text { text: row.folder; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                     Text { text: row.size; width: 82px; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                                     Text { text: row.status; width: 118px; color: row.warning ? root.warning : (row.locked ? root.text-soft : root.text-body); font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                                     Text { text: row.size; width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                                     Text { text: row.status; width: root.queue-status-width; color: row.warning ? root.warning : root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                                      Text { text: row.output.is-empty ? row.log : row.output; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                                  }
                                                  row-touch := TouchArea {
@@ -1306,7 +1314,9 @@ export component AwjStudio inherits Window {
                                              border-radius: 1px;
                                          }
                                      }
-                                 }
+                                        }
+                                    }
+                                }
                             }
 
                             Rectangle {
@@ -1317,7 +1327,7 @@ export component AwjStudio inherits Window {
                                 animate background { duration: 180ms; easing: ease-out; }
                                 Rectangle {
                                     x: 0px;
-                                    width: parent.width * root.progress;
+                                    width: max(0px, min(parent.width, parent.width * root.progress));
                                     height: parent.height;
                                     border-radius: 5px;
                                     background: root.progress-fill;
@@ -1325,7 +1335,7 @@ export component AwjStudio inherits Window {
                                 }
                             }
 
-                            Text { text: "总进度：" + root.status-text; color: root.text-muted; font-size: 12px; }
+                            Text { text: "总进度：" + root.status-text; color: root.text-muted; font-size: 12px; overflow: elide; }
                         }
                     }
                 }
@@ -1335,7 +1345,7 @@ if root.selected-page == 2: ScrollView {
                         spacing: root.page-gap;
 
                         Rectangle {
-                            border-radius: 18px;
+                            border-radius: 8px;
                             background: root.panel-bg;
                             border-color: root.panel-border;
                             border-width: 1px;
@@ -1399,7 +1409,7 @@ if root.selected-page == 2: ScrollView {
                         }
 
                         Rectangle {
-                            border-radius: 18px;
+                            border-radius: 8px;
                             background: root.panel-bg;
                             border-color: root.panel-border;
                             border-width: 1px;
@@ -1440,7 +1450,7 @@ if root.selected-page == 2: ScrollView {
                         }
 
                         Rectangle {
-                            border-radius: 18px;
+                            border-radius: 8px;
                             background: root.panel-bg;
                             border-color: root.panel-border;
                             border-width: 1px;
@@ -1449,9 +1459,9 @@ if root.selected-page == 2: ScrollView {
                                 padding: 24px;
                                 spacing: root.page-gap;
                                 Text { text: "关于后端"; color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                Text { text: "当前内置后端：native codec"; color: root.text-body; font-size: 14px; }
+                                Text { text: "当前内置后端：原生编解码器"; color: root.text-body; font-size: 14px; }
                                 Text { text: "Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"; color: root.text-body; font-size: 14px; }
-                                Text { text: "外部后端设置已移除，编码流程统一走 native。"; color: root.text-muted; font-size: 13px; }
+                                Text { text: "编码流程统一使用内置原生后端。"; color: root.text-muted; font-size: 13px; }
                             }
                         }
                     }
@@ -1490,7 +1500,7 @@ if root.selected-page == 2: ScrollView {
                 y: root.queue-menu-visible ? 0px : root.queue-menu-origin-y;
                 width: root.queue-menu-visible ? parent.width : 0px;
                 height: root.queue-menu-visible ? parent.height : 0px;
-                border-radius: 10px;
+                border-radius: 6px;
                 border-width: 1px;
                 border-color: root.panel-border;
                 background: root.dark-mode ? #17202c : #ffffff;
@@ -1502,12 +1512,12 @@ if root.selected-page == 2: ScrollView {
                     spacing: 2px;
                     QueueMenuItem { dark-mode: root.dark-mode; text: "打开所在位置"; enabled: root.queue-menu-valid; clicked => { root.queue-menu-action(root.queue-menu-index, "open-folder"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
                     QueueMenuItem { dark-mode: root.dark-mode; text: "默认方式打开图片"; enabled: root.queue-menu-valid; clicked => { root.queue-menu-action(root.queue-menu-index, "open-image"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "优先编码"; enabled: root.queue-menu-editable; clicked => { root.queue-menu-action(root.queue-menu-index, "priority"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "最后编码"; enabled: root.queue-menu-editable; clicked => { root.queue-menu-action(root.queue-menu-index, "last"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "上移"; enabled: root.queue-menu-editable; clicked => { root.queue-menu-action(root.queue-menu-index, "move-up"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "下移"; enabled: root.queue-menu-editable; clicked => { root.queue-menu-action(root.queue-menu-index, "move-down"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
+                    QueueMenuItem { dark-mode: root.dark-mode; text: "优先编码"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "priority"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
+                    QueueMenuItem { dark-mode: root.dark-mode; text: "最后编码"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "last"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
+                    QueueMenuItem { dark-mode: root.dark-mode; text: "上移"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "move-up"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
+                    QueueMenuItem { dark-mode: root.dark-mode; text: "下移"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "move-down"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
                     QueueMenuItem { dark-mode: root.dark-mode; text: "复制完整路径"; enabled: root.queue-menu-valid; clicked => { root.queue-menu-action(root.queue-menu-index, "copy-path"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "从队列移除"; enabled: root.queue-menu-removable; danger: true; clicked => { root.queue-menu-action(root.queue-menu-index, "remove"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
+                    QueueMenuItem { dark-mode: root.dark-mode; text: "从队列移除"; enabled: root.queue-menu-removable && !root.running; danger: true; clicked => { root.queue-menu-action(root.queue-menu-index, "remove"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
                 }
             }
         }
@@ -1525,7 +1535,7 @@ export component ShellConvertWindow inherits Window {
     min-height: 440px;
 
     in property <[TaskRow]> task-rows;
-    in-out property <string> status-text: "准备转换";
+    in-out property <string> status-text: "正在准备任务…";
     in-out property <float> progress: 0.0;
     in-out property <bool> running: true;
     in-out property <bool> dark-mode: false;
@@ -1552,17 +1562,17 @@ export component ShellConvertWindow inherits Window {
         spacing: 14px;
 
         Text {
-            text: "右键转换队列";
+            text: "右键转换";
             color: root.text-strong;
             font-size: 22px;
             font-weight: 800;
-            horizontal-alignment: center;
+            horizontal-alignment: left;
         }
         Text {
             text: root.status-text;
             color: root.text-muted;
             font-size: 12px;
-            horizontal-alignment: center;
+            horizontal-alignment: left;
             overflow: elide;
         }
         Rectangle {
@@ -1585,40 +1595,67 @@ export component ShellConvertWindow inherits Window {
             border-color: root.panel-border;
             border-width: 1px;
             clip: true;
-            ListView {
-                x: 1px;
-                y: 1px;
-                width: parent.width - 2px;
-                height: parent.height - 2px;
-                for row[i] in root.task-rows: Rectangle {
-                    height: 72px;
-                    background: i / 2 * 2 == i ? root.row-bg : root.panel-bg;
+            VerticalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    height: 34px;
+                    background: root.dark-mode ? #222c3b : #f8fbff;
                     HorizontalLayout {
                         padding-left: 14px;
                         padding-right: 14px;
                         spacing: 12px;
-                        Text { text: row.order; width: 32px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            spacing: 3px;
-                            Text { text: row.filename; color: root.text-body; font-size: 13px; font-weight: 700; overflow: elide; horizontal-alignment: center; }
-                            Text { text: row.folder; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: center; }
-                        }
-                        Text { text: row.size; width: 82px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
-                        VerticalLayout {
-                            width: 164px;
-                            alignment: center;
-                            spacing: 3px;
-                            Text { text: row.status; color: row.warning ? root.warning-color : root.text-body; font-size: 12px; overflow: elide; horizontal-alignment: center; }
-                            Text { text: row.output.is-empty ? row.log : row.output; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: center; }
-                        }
+                        Text { text: "#"; width: 32px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                        Text { text: "文件"; horizontal-stretch: 1; color: root.text-muted; font-size: 11px; vertical-alignment: center; }
+                        Text { text: "大小"; width: 82px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                        Text { text: "状态与输出"; width: 164px; color: root.text-muted; font-size: 11px; vertical-alignment: center; }
                     }
-                    Rectangle {
-                        y: parent.height - 1px;
-                        width: parent.width;
-                        height: 1px;
-                        background: root.panel-border;
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: root.panel-bg;
+
+                    if root.task-rows.length == 0: Text {
+                        text: "正在准备任务…";
+                        color: root.text-muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    if root.task-rows.length > 0: ListView {
+                        for row[i] in root.task-rows: Rectangle {
+                            height: 64px;
+                            background: i / 2 * 2 == i ? root.row-bg : root.panel-bg;
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                spacing: 12px;
+                                Text { text: row.order; width: 32px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 3px;
+                                    Text { text: row.filename; color: root.text-body; font-size: 13px; font-weight: 700; overflow: elide; horizontal-alignment: left; }
+                                    Text { text: row.folder; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: left; }
+                                }
+                                Text { text: row.size; width: 82px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                                VerticalLayout {
+                                    width: 164px;
+                                    alignment: center;
+                                    spacing: 3px;
+                                    Text { text: row.status; color: row.warning ? root.warning-color : root.text-body; font-size: 12px; overflow: elide; horizontal-alignment: left; }
+                                    Text { text: row.output.is-empty ? row.log : row.output; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: left; }
+                                }
+                            }
+                            Rectangle {
+                                y: parent.height - 1px;
+                                width: parent.width;
+                                height: 1px;
+                                background: root.panel-border;
+                            }
+                        }
                     }
                 }
             }
@@ -1630,7 +1667,7 @@ export component ShellConvertWindow inherits Window {
             Rectangle { horizontal-stretch: 1; background: transparent; }
             SoftButton { dark-mode: root.dark-mode; text: "打开输出目录"; width: 132px; height: 40px; enabled: !root.running; clicked => { root.open-output-requested(); } }
             SoftButton { dark-mode: root.dark-mode; text: "强制终止"; variant: "danger"; width: 112px; height: 40px; enabled: root.running; clicked => { root.force-terminate-requested(); } }
-            SoftButton { dark-mode: root.dark-mode; text: root.running ? "取消" : "关闭"; variant: "outline"; width: 92px; height: 40px; clicked => { root.cancel-requested(); } }
+            SoftButton { dark-mode: root.dark-mode; text: root.running ? "停止任务" : "关闭"; variant: "outline"; width: 92px; height: 40px; clicked => { root.cancel-requested(); } }
         }
     }
 }

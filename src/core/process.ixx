@@ -10,6 +10,7 @@ module;
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -47,6 +48,10 @@ module;
 #include <utility>
 #include <vector>
 #include <locale>
+
+#ifndef AWJ_BUILD_VERSION
+#error "AWJ_BUILD_VERSION must be provided by CMake"
+#endif
 
 export module awj.core;
 
@@ -89,6 +94,8 @@ extern "C" __declspec(dllimport) NTSTATUS __stdcall BCryptDestroyHash(
 export namespace awj {
 
 namespace fs = std::filesystem;
+
+inline constexpr std::string_view kAwjVersion = AWJ_BUILD_VERSION;
 
 struct ImageFile {
   std::size_t index{};
@@ -212,7 +219,7 @@ struct EncodeResult {
 
 std::uint64_t current_process_id() noexcept {
 #ifdef _WIN32
-  return static_cast<std::uint64_t>(current_process_id());
+  return static_cast<std::uint64_t>(::GetCurrentProcessId());
 #else
   return static_cast<std::uint64_t>(::getpid());
 #endif
@@ -225,16 +232,6 @@ void set_process_low_priority() noexcept {
   SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
 #else
   ::setpriority(PRIO_PROCESS, 0, 10);
-#endif
-}
-
-void set_current_thread_low_priority() noexcept {
-#ifdef _WIN32
-  // 只降低 CPU 调度优先级。THREAD_MODE_BACKGROUND_BEGIN 会连带降低 I/O
-  // 和内存优先级，高负载时容易让图片读写表现成“卡住”。
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-#else
-  // POSIX 线程优先级需要调度策略配合；Linux 首版保持 no-op。
 #endif
 }
 
@@ -647,6 +644,192 @@ std::expected<fs::path, std::string> executable_directory() {
   return path->parent_path();
 }
 
+namespace core_detail {
+
+class LogFileLock {
+ public:
+  LogFileLock() = default;
+  LogFileLock(const LogFileLock&) = delete;
+  LogFileLock& operator=(const LogFileLock&) = delete;
+
+  ~LogFileLock() {
+#ifdef _WIN32
+    if (handle_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(handle_);
+    }
+#else
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
+#endif
+  }
+
+  bool open(const fs::path& path) noexcept {
+#ifdef _WIN32
+    handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE |
+                              FILE_SHARE_DELETE,
+                          nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
+    return handle_ != INVALID_HANDLE_VALUE;
+#else
+    fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    return fd_ >= 0;
+#endif
+  }
+
+  bool lock() noexcept {
+#ifdef _WIN32
+    OVERLAPPED overlapped{};
+    return handle_ != INVALID_HANDLE_VALUE &&
+           LockFileEx(handle_, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0,
+                      &overlapped) != FALSE;
+#else
+    if (fd_ < 0) {
+      return false;
+    }
+    while (::flock(fd_, LOCK_EX) != 0) {
+      if (errno != EINTR) {
+        return false;
+      }
+    }
+    return true;
+#endif
+  }
+
+  void unlock() noexcept {
+#ifdef _WIN32
+    if (handle_ != INVALID_HANDLE_VALUE) {
+      OVERLAPPED overlapped{};
+      UnlockFileEx(handle_, 0, 1, 0, &overlapped);
+    }
+#else
+    if (fd_ >= 0) {
+      while (::flock(fd_, LOCK_UN) != 0 && errno == EINTR) {
+      }
+    }
+#endif
+  }
+
+ private:
+#ifdef _WIN32
+  HANDLE handle_{INVALID_HANDLE_VALUE};
+#else
+  int fd_{-1};
+#endif
+};
+
+class ScopedLogFileLock {
+ public:
+  explicit ScopedLogFileLock(LogFileLock& lock) noexcept
+      : lock_{lock}, locked_{lock_.lock()} {}
+  ScopedLogFileLock(const ScopedLogFileLock&) = delete;
+  ScopedLogFileLock& operator=(const ScopedLogFileLock&) = delete;
+  ~ScopedLogFileLock() {
+    if (locked_) {
+      lock_.unlock();
+    }
+  }
+  explicit operator bool() const noexcept { return locked_; }
+
+ private:
+  LogFileLock& lock_;
+  bool locked_{};
+};
+
+bool valid_utf8(std::string_view text) noexcept {
+  if (text.empty()) {
+    return true;
+  }
+#ifdef _WIN32
+  if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    return false;
+  }
+  return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
+                             static_cast<int>(text.size()), nullptr, 0) > 0;
+#else
+  try {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> convert;
+    (void)convert.from_bytes(text.data(), text.data() + text.size());
+    return true;
+  } catch (...) {
+    return false;
+  }
+#endif
+}
+
+bool invalid_log_control(unsigned char ch) noexcept {
+  return (ch < 0x20 && ch != '\t') || ch == 0x7f;
+}
+
+bool valid_log_line(std::string_view line) noexcept {
+  constexpr std::array<std::size_t, 14> digit_positions{
+      1, 2, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19};
+  if (line.size() < 29 || !valid_utf8(line) || line[0] != '[' ||
+      line[5] != '-' || line[8] != '-' || line[11] != ' ' ||
+      line[14] != ':' || line[17] != ':' || line[20] != ']' ||
+      std::ranges::any_of(line, invalid_log_control) ||
+      !std::ranges::all_of(digit_positions, [&](std::size_t position) {
+        return std::isdigit(static_cast<unsigned char>(line[position]));
+      })) {
+    return false;
+  }
+  const auto two_digits = [&](std::size_t position) {
+    return (line[position] - '0') * 10 + line[position + 1] - '0';
+  };
+  const int year = (line[1] - '0') * 1000 + (line[2] - '0') * 100 +
+                   (line[3] - '0') * 10 + line[4] - '0';
+  const int month = two_digits(6);
+  const int day = two_digits(9);
+  const int hour = two_digits(12);
+  const int minute = two_digits(15);
+  const int second = two_digits(18);
+  const std::chrono::year_month_day date{
+      std::chrono::year{year}, std::chrono::month{static_cast<unsigned>(month)},
+      std::chrono::day{static_cast<unsigned>(day)}};
+  if (year < 1 || !date.ok() || hour > 23 || minute > 59 || second > 59) {
+    return false;
+  }
+  const auto suffix = line.substr(21);
+  return suffix.starts_with(" [INFO] ") || suffix.starts_with(" [WARN] ") ||
+         suffix.starts_with(" [ERROR] ");
+}
+
+bool valid_existing_log(const fs::path& path) noexcept try {
+  std::ifstream input{path, std::ios::binary};
+  if (!input) {
+    return false;
+  }
+  input.seekg(0, std::ios::end);
+  const auto size = input.tellg();
+  if (size < 0) {
+    return false;
+  }
+  if (size == 0) {
+    return true;
+  }
+  input.seekg(-1, std::ios::end);
+  char last{};
+  if (!input.get(last) || last != '\n') {
+    return false;
+  }
+  input.clear();
+  input.seekg(0);
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (!valid_log_line(line)) {
+      return false;
+    }
+  }
+  return input.eof();
+} catch (...) {
+  return false;
+}
+
+}  // namespace core_detail
+
 class FileLogger {
  public:
   explicit FileLogger(fs::path output_dir, bool enabled = true)
@@ -657,6 +840,7 @@ class FileLogger {
     try {
       log_dir_ = std::move(output_dir) / L"log";
       log_file_ = log_dir_ / L"awj.log";
+      lock_file_ = log_dir_ / L".awj.log.lock";
       std::error_code ec;
       fs::create_directories(log_dir_, ec);
       if (ec) {
@@ -666,7 +850,40 @@ class FileLogger {
         });
         return;
       }
-      stream_.open(log_file_, std::ios::app | std::ios::binary);
+      if (!interprocess_lock_.open(lock_file_)) {
+        disable_with_error("无法创建日志锁文件。", [&] {
+          return std::format("无法创建日志锁文件 {}",
+                             display_path_for_user(lock_file_));
+        });
+        return;
+      }
+      core_detail::ScopedLogFileLock file_lock{interprocess_lock_};
+      if (!file_lock) {
+        disable_with_error("无法锁定日志文件。", [&] {
+          return std::format("无法锁定日志文件 {}",
+                             display_path_for_user(log_file_));
+        });
+        return;
+      }
+      const bool log_exists = fs::exists(log_file_, ec);
+      if (ec) {
+        disable_with_error("无法检查日志文件。", [&] {
+          return std::format("无法检查日志文件 {}: {}",
+                             display_path_for_user(log_file_), ec.message());
+        });
+        return;
+      }
+      if (log_exists && !core_detail::valid_existing_log(log_file_)) {
+        std::ofstream reset{log_file_, std::ios::binary | std::ios::trunc};
+        if (!reset) {
+          disable_with_error("无法清空无效日志文件。", [&] {
+            return std::format("无法清空无效日志文件 {}",
+                               display_path_for_user(log_file_));
+          });
+          return;
+        }
+      }
+      stream_.open(log_file_, std::ios::binary | std::ios::app);
       if (!stream_) {
         disable_with_error("无法写入日志文件。", [&] {
           return std::format("无法写入日志文件 {}",
@@ -674,7 +891,17 @@ class FileLogger {
         });
         return;
       }
-      info("===== NEW SESSION START =====");
+      const auto now = std::chrono::floor<std::chrono::seconds>(
+          std::chrono::system_clock::now());
+      stream_ << std::format("[{:%F %T}] [INFO] ===== NEW SESSION START =====\n",
+                             now);
+      stream_.flush();
+      if (!stream_) {
+        disable_with_error("无法写入日志文件。", [&] {
+          return std::format("无法写入日志文件 {}",
+                             display_path_for_user(log_file_));
+        });
+      }
     } catch (...) {
       disable_with_error("初始化日志失败。",
                          [] { return std::string{"初始化日志失败。"}; });
@@ -718,12 +945,28 @@ class FileLogger {
       if (!enabled_) {
         return;
       }
+      core_detail::ScopedLogFileLock file_lock{interprocess_lock_};
+      if (!file_lock) {
+        disable_with_error("无法锁定日志文件。", [&] {
+          return std::format("无法锁定日志文件 {}",
+                             display_path_for_user(log_file_));
+        });
+        return;
+      }
+      std::string normalized_message;
+      if (!core_detail::valid_utf8(message)) {
+        message = "[invalid UTF-8 log message]";
+      } else if (std::ranges::any_of(message,
+                                     core_detail::invalid_log_control)) {
+        normalized_message.assign(message);
+        std::ranges::replace_if(normalized_message,
+                                core_detail::invalid_log_control, ' ');
+        message = normalized_message;
+      }
       const auto now = std::chrono::floor<std::chrono::seconds>(
           std::chrono::system_clock::now());
       stream_ << std::format("[{:%F %T}] [{}] {}\n", now, level, message);
-      if (level != "INFO") {
-        stream_.flush();
-      }
+      stream_.flush();
       if (!stream_) {
         disable_with_error("无法写入日志文件。", [&] {
           return std::format("无法写入日志文件 {}",
@@ -743,8 +986,10 @@ class FileLogger {
   bool enabled_{true};
   fs::path log_dir_;
   fs::path log_file_;
+  fs::path lock_file_;
   std::string last_error_{};
   std::ofstream stream_{};
+  core_detail::LogFileLock interprocess_lock_{};
   mutable std::mutex mutex_;
 };
 
@@ -2271,7 +2516,7 @@ std::expected<void, std::string> write_csv(
          "applied_color_primaries,applied_transfer_characteristics,applied_"
          "matrix_coefficients,applied_color_range,"
          "source_has_icc,applied_icc,source_has_hdr_metadata,applied_hdr_"
-         "metadata,color_metadata_source,color_reason,visual_quality_search_trace\n";
+         "metadata,color_metadata_source,color_reason,visual_quality_search_trace,awj_version\n";
 
   for (const auto& result : results) {
     const double ratio = result.original_bytes == 0
@@ -2424,7 +2669,8 @@ std::expected<void, std::string> write_csv(
         << core_detail::csv_escape(result.applied_hdr_metadata) << ','
         << core_detail::csv_escape(result.color_metadata_source) << ','
         << core_detail::csv_escape(result.color_reason) << ','
-        << core_detail::csv_escape(result.visual_quality_search_trace) << '\n';
+        << core_detail::csv_escape(result.visual_quality_search_trace) << ','
+        << kAwjVersion << '\n';
   }
 
   if (auto closed = csv.close(); !closed) {

@@ -17,6 +17,18 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
+  if (awj::automatic_thread_budget(0) != 1 ||
+      awj::automatic_thread_budget(1) != 1 ||
+      awj::automatic_thread_budget(2) != 1 ||
+      awj::automatic_thread_budget(4) != 3 ||
+      awj::automatic_thread_budget(5) != 3 ||
+      awj::automatic_thread_budget(11) != 9 ||
+      awj::automatic_thread_budget(12) != 8 ||
+      awj::automatic_thread_budget(32) != 28 ||
+      awj::automatic_thread_budget(256) != 128) {
+    return fail("automatic thread budget reservation rules changed.");
+  }
+
   const auto defaults = awj::default_app_config();
   if (defaults.input_path.native() !=
       std::wstring{awj::encoding_defaults::default_input_path}) {

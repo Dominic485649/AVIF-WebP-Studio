@@ -44,12 +44,14 @@ Windows 也可使用脚本：
 .\release.ps1
 ```
 
-Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留面向用户的：
+Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留发行文件；若目录中已有 Linux 构建，也会保留 `AWJ` 与 `AWJ.sha256`：
 
 - `bin\x64\Release\AWJ.exe`
 - `bin\x64\Release\AWJ.com`
 - `bin\x64\Release\AWJ.exe.sha256`
 - `bin\x64\Release\AWJ.com.sha256`
+- `bin\x64\Release\AWJ`（已有 Linux 构建时）
+- `bin\x64\Release\AWJ.sha256`（已有 Linux 构建时）
 - `bin\x64\Release\LICENSE`
 - `bin\x64\Release\THIRD_PARTY_NOTICES.txt`
 - `bin\x64\Release\BUILD_INFO.txt`
@@ -58,13 +60,13 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 
 ```powershell
 # 1. 更新版本号
-Set-Content VERSION "0.9.1"
+Set-Content VERSION "0.10.2"
 .\scripts\Update-VcpkgVersion.ps1
 
 # 2. 提交并打 tag
 git add VERSION vcpkg.json
-git commit -m "release: 0.9.1"
-git tag 0.9.1
+git commit -m "release: 0.10.2"
+git tag 0.10.2
 
 # 3. 构建
 .\release.ps1
@@ -99,7 +101,9 @@ AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 
 ### AVIF 大图与队列策略
 
-AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）；`svt-av1-hdr` 上限为 16384×8704。超过 1000 万像素但仍在单图上限内的图片只会排到普通队列末尾，仍使用普通编码器和现有单任务多线程编码。
+AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）；`svt-av1-hdr` 上限为 16384×8704。超过 1000 万像素但仍在单图上限内的图片会排到普通队列末尾，避免单张大图的内存估算降低全部小图的并发；它们仍使用普通编码器，不会强制进入大图链路。总批次超过 12 张时，普通、延后和大图阶段都保持每张图片单编码线程。
+
+AVIF 输入需要保留透明通道时，颜色与 alpha 会一起自动使用 AOM q100/4:4:4 无损编码，用户设置的 `speed` 保持不变；`--alpha off` 仍按请求的质量与 speed 编码。
 
 超过 AOM 单图上限后自动进入大图链路：
 1. 默认优先 `zenrav1e`，失败或不支持再回退 `grid`；
@@ -123,9 +127,9 @@ Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时�
 
 ## 基准测试
 
-以下测试均使用 AOM AV1 编码器（libavif）。AWJ 自动多核并行，ffmpeg 为单线程每实例。
+以下为历史基准，AWJ 使用固定 `quality=80`、`speed=6`，不是当前 AVIF `quality=70` 的默认参数。612 张成功项中 610 张使用 AOM/libavif，2 张超过普通单图路径后使用 zenrav1e；另有 1 张空 WebP 按预期失败。AWJ 自动多核并行，ffmpeg 为单线程每实例。
 
-### 以AWJ默认参数为基准，FFmpeg传递同样参数（613 张混合分辨率图片）
+### 固定 q80 / speed6，FFmpeg 传递同样参数（613 张混合分辨率图片）
 
 | 指标 | AWJ | ffmpeg 8.1.1（scoop） |
 |------|-----|----------------------|
@@ -133,7 +137,7 @@ Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时�
 | 总耗时 | 1,367.2 核秒 | 2,316 核秒 |
 | 平均每张 | 2.23 核秒 | 3.78 核秒 |
 
-> ffmpeg 测试通过 PowerShell 传参，可能含额外传参与启动开销。
+> 表中总耗时为逐图 `seconds` 之和，不是整批墙钟时间。ffmpeg 测试通过 PowerShell 传参，可能含额外传参与启动开销。
 
 ### 2560×1600 固定分辨率（20 张，AWJ）
 

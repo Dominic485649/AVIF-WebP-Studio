@@ -511,7 +511,8 @@ std::optional<int> color_value_for_encode(std::optional<int> value,
 }
 
 int codec_thread_count(int requested_threads) noexcept {
-  return std::clamp(requested_threads, 1, encoding_defaults::default_aom_thread_cap);
+  return std::clamp(requested_threads, 1,
+                    encoding_defaults::max_automatic_thread_budget);
 }
 
 std::expected<void, std::string> validate_optional_int_range(std::optional<int> value,
@@ -1077,7 +1078,9 @@ bool libavif_encoder_available(AvifEncoderMode mode) {
 }
 
 bool lossless_requested(const NativeEncodeSettings& settings) noexcept {
-  return settings.visual_quality ? *settings.visual_quality >= 100 : settings.quality >= 100;
+  return preserve_alpha_for_encode(settings) ||
+         (settings.visual_quality ? *settings.visual_quality >= 100
+                                  : settings.quality >= 100);
 }
 
 SpeedMapping libavif_speed_mapping(AvifEncoderMode, int speed) {
@@ -1264,6 +1267,9 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
     if (capability.mode == AvifEncoderMode::svt) {
       return "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha auto/off 或 --avif-encoder auto/aom。";
     }
+    if (capability.mode == AvifEncoderMode::zenrav1e) {
+      return "zenrav1e 当前不能保证 alpha 严格无损；请使用 --avif-encoder auto/aom。";
+    }
     return std::format("AVIF encoder {} 不支持保留 alpha。", capability.id);
   }
   const auto chroma = applied_chroma_for(capability, request.requested_chroma);
@@ -1432,7 +1438,7 @@ std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_experimental(
                             .id = "zenrav1e",
                             .chroma_modes = {ChromaMode::yuv420, ChromaMode::yuv444},
                             .bit_depths = {8, 10, 12},
-                            .supports_alpha = true,
+                            .supports_alpha = false,
                             .supports_avif_grid = false,
                             .max_single_image_width = encoding_defaults::avif_single_image_max_dimension,
                             .max_single_image_height = encoding_defaults::avif_single_image_max_dimension,
@@ -1514,6 +1520,10 @@ std::expected<AvifEncoderSelection, std::string> select_avif_encoder_from_capabi
 bool avif_libavif_encoder_available(AvifEncoderMode mode) {
   return mode != AvifEncoderMode::svt && mode != AvifEncoderMode::zenrav1e &&
          avif_aom_detail::libavif_encoder_available(mode);
+}
+
+bool avif_dav1d_decoder_available() noexcept {
+  return avifCodecName(AVIF_CODEC_CHOICE_DAV1D, AVIF_CODEC_FLAG_CAN_DECODE) != nullptr;
 }
 
 bool avif_zenravif_encoder_available() noexcept {
@@ -1627,7 +1637,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   encoder->codecChoice = avif_aom_detail::codec_choice_for(actual_mode);
   const int final_quality = lossless ? AVIF_QUALITY_LOSSLESS : std::clamp(settings.quality, 1, 100);
   encoder->quality = final_quality;
-  encoder->qualityAlpha = lossless ? AVIF_QUALITY_LOSSLESS : 100;
+  encoder->qualityAlpha = AVIF_QUALITY_LOSSLESS;
   const int encoder_speed = std::clamp(settings.speed, 0, 10);
   encoder->speed = encoder_speed;
   encoder->keyframeInterval = 1;
@@ -1892,8 +1902,7 @@ class ZenravifImageEncoder final : public ImageEncoder {
 
   [[nodiscard]] CodecCapabilities capabilities() const override {
     return CodecCapabilities{.output_format = OutputFormat::avif,
-                             .features = CodecFeature::alpha |
-                                         CodecFeature::thread_control,
+                             .features = CodecFeature::thread_control,
                              .min_quality = 1,
                              .max_quality = 100,
                              .min_speed = 1,
@@ -1918,6 +1927,10 @@ class ZenravifImageEncoder final : public ImageEncoder {
     if (avif_aom_detail::lossless_requested(settings)) {
       return std::unexpected{
           "zenrav1e 无损 AVIF 重编码不能保证继承全部源图参数；请使用 --avif-encoder auto/aom。"};
+    }
+    if (settings.source_has_alpha_channel && settings.applied_alpha == "kept") {
+      return std::unexpected{
+          "zenrav1e 当前不能保证 alpha 严格无损；请使用 --avif-encoder auto/aom。"};
     }
     auto plane = avif_aom_detail::rgba_plane(image, "zenravif");
     if (!plane) {
@@ -2202,7 +2215,9 @@ class AvifImageDecoder final : public ImageDecoder {
       avifImage& image,
       std::string_view source_name,
       int decode_threads,
-      bool copy_metadata_payloads = true) {
+      bool copy_metadata_payloads,
+      std::string decoder_id,
+      bool used_fallback) {
     const auto dimensions = decoder_common::make_image_dimensions_checked(image.width,
                                                                          image.height,
                                                                          "AVIF decoder");
@@ -2267,7 +2282,13 @@ class AvifImageDecoder final : public ImageDecoder {
       return std::unexpected{copied.error()};
     }
     out.planes.push_back(std::move(plane));
-    return ImageDecodeResult{.image = std::move(out), .decoder_id = "libavif"};
+    return ImageDecodeResult{.image = std::move(out),
+                             .decoder_id = std::move(decoder_id),
+                             .used_fallback = used_fallback};
+  }
+
+  static constexpr std::array<avifCodecChoice, 2> decode_codec_choices() noexcept {
+    return {AVIF_CODEC_CHOICE_DAV1D, AVIF_CODEC_CHOICE_AOM};
   }
 
   static std::expected<ImageDecodeResult, std::string> decode_file(
@@ -2275,30 +2296,43 @@ class AvifImageDecoder final : public ImageDecoder {
       std::string_view source_name,
       int decode_threads) {
     try {
-      avif_aom_detail::AvifDecoder decoder{avifDecoderCreate()};
-      if (!decoder) {
-        return std::unexpected{"无法创建 libavif decoder。"};
-      }
       const auto clamped_decode_threads = avif_aom_detail::codec_thread_count(decode_threads);
-      decoder->codecChoice = AVIF_CODEC_CHOICE_AUTO;
-      decoder->maxThreads = clamped_decode_threads;
-      avif_aom_detail::configure_decoder_metadata_payloads(*decoder, true);
+      std::string last_error;
+      for (const auto codec_choice : decode_codec_choices()) {
+        const char* codec_name = avifCodecName(codec_choice, AVIF_CODEC_FLAG_CAN_DECODE);
+        if (codec_name == nullptr) {
+          continue;
+        }
+        avif_aom_detail::AvifDecoder decoder{avifDecoderCreate()};
+        if (!decoder) {
+          return std::unexpected{"无法创建 libavif decoder。"};
+        }
+        decoder->codecChoice = codec_choice;
+        decoder->maxThreads = clamped_decode_threads;
+        avif_aom_detail::configure_decoder_metadata_payloads(*decoder, true);
+        avifDecoderSetIO(decoder.get(), &file_io.io);
 
-      avifDecoderSetIO(decoder.get(), &file_io.io);
-      auto result = avifDecoderParse(decoder.get());
-      if (result != AVIF_RESULT_OK) {
-        return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
-                                           avif_aom_detail::avif_decode_error(result, decoder.get()))};
+        auto result = avifDecoderParse(decoder.get());
+        if (result == AVIF_RESULT_OK) {
+          result = avifDecoderNextImage(decoder.get());
+        }
+        if (result != AVIF_RESULT_OK) {
+          last_error = std::format("AVIF {} 解码失败: {}: {}", codec_name, source_name,
+                                   avif_aom_detail::avif_decode_error(result, decoder.get()));
+          continue;
+        }
+        if (decoder->image == nullptr) {
+          last_error = std::format("AVIF {} 解码后图像信息为空: {}", codec_name, source_name);
+          continue;
+        }
+        return finish_decoded_image(
+            *decoder->image, source_name, clamped_decode_threads, true,
+            std::format("libavif-{}", codec_name),
+            codec_choice != AVIF_CODEC_CHOICE_DAV1D);
       }
-      result = avifDecoderNextImage(decoder.get());
-      if (result != AVIF_RESULT_OK) {
-        return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
-                                           avif_aom_detail::avif_decode_error(result, decoder.get()))};
-      }
-      if (decoder->image == nullptr) {
-        return std::unexpected{std::format("AVIF 图像信息为空: {}", source_name)};
-      }
-      return finish_decoded_image(*decoder->image, source_name, clamped_decode_threads);
+      return std::unexpected{last_error.empty()
+                                 ? "当前 libavif 构建没有可用的 dav1d 或 AOM decoder。"
+                                 : std::move(last_error)};
     } catch (const std::bad_alloc&) {
       return std::unexpected{"AVIF 解码内存不足。"};
     } catch (const std::length_error&) {
@@ -2317,36 +2351,46 @@ class AvifImageDecoder final : public ImageDecoder {
       if (bytes.empty()) {
         return std::unexpected{std::format("AVIF 输入为空: {}", source_name)};
       }
-      avif_aom_detail::AvifDecoder decoder{avifDecoderCreate()};
-      if (!decoder) {
-        return std::unexpected{"无法创建 libavif decoder。"};
-      }
       const auto clamped_decode_threads = avif_aom_detail::codec_thread_count(decode_threads);
-      decoder->codecChoice = AVIF_CODEC_CHOICE_AUTO;
-      decoder->maxThreads = clamped_decode_threads;
-      avif_aom_detail::configure_decoder_metadata_payloads(*decoder, copy_metadata_payloads);
+      std::string last_error;
+      for (const auto codec_choice : decode_codec_choices()) {
+        const char* codec_name = avifCodecName(codec_choice, AVIF_CODEC_FLAG_CAN_DECODE);
+        if (codec_name == nullptr) {
+          continue;
+        }
+        avif_aom_detail::AvifDecoder decoder{avifDecoderCreate()};
+        if (!decoder) {
+          return std::unexpected{"无法创建 libavif decoder。"};
+        }
+        decoder->codecChoice = codec_choice;
+        decoder->maxThreads = clamped_decode_threads;
+        avif_aom_detail::configure_decoder_metadata_payloads(*decoder, copy_metadata_payloads);
 
-      auto result = avifDecoderSetIOMemory(
-          decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
-      if (result != AVIF_RESULT_OK) {
-        return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
-                                           avif_aom_detail::avif_decode_error(result, decoder.get()))};
+        auto result = avifDecoderSetIOMemory(
+            decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
+        if (result == AVIF_RESULT_OK) {
+          result = avifDecoderParse(decoder.get());
+        }
+        if (result == AVIF_RESULT_OK) {
+          result = avifDecoderNextImage(decoder.get());
+        }
+        if (result != AVIF_RESULT_OK) {
+          last_error = std::format("AVIF {} 解码失败: {}: {}", codec_name, source_name,
+                                   avif_aom_detail::avif_decode_error(result, decoder.get()));
+          continue;
+        }
+        if (decoder->image == nullptr) {
+          last_error = std::format("AVIF {} 解码后图像信息为空: {}", codec_name, source_name);
+          continue;
+        }
+        return finish_decoded_image(
+            *decoder->image, source_name, clamped_decode_threads, copy_metadata_payloads,
+            std::format("libavif-{}", codec_name),
+            codec_choice != AVIF_CODEC_CHOICE_DAV1D);
       }
-      result = avifDecoderParse(decoder.get());
-      if (result != AVIF_RESULT_OK) {
-        return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
-                                           avif_aom_detail::avif_decode_error(result, decoder.get()))};
-      }
-      result = avifDecoderNextImage(decoder.get());
-      if (result != AVIF_RESULT_OK) {
-        return std::unexpected{std::format("AVIF 解码失败: {}: {}", source_name,
-                                           avif_aom_detail::avif_decode_error(result, decoder.get()))};
-      }
-      if (decoder->image == nullptr) {
-        return std::unexpected{std::format("AVIF 图像信息为空: {}", source_name)};
-      }
-      return finish_decoded_image(*decoder->image, source_name, clamped_decode_threads,
-                                  copy_metadata_payloads);
+      return std::unexpected{last_error.empty()
+                                 ? "当前 libavif 构建没有可用的 dav1d 或 AOM decoder。"
+                                 : std::move(last_error)};
     } catch (const std::bad_alloc&) {
       return std::unexpected{"AVIF 解码内存不足。"};
     } catch (const std::length_error&) {

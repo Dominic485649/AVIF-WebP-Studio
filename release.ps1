@@ -14,6 +14,23 @@ $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $PSCommandPath
 $BuildDir = Join-Path $Repo "build\x64\Release"
 $OutputDir = Join-Path $Repo "bin\x64\Release"
+$Version = (Get-Content (Join-Path $Repo "VERSION") -Raw).Trim()
+$VcpkgConfiguration = Get-Content (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
+$VcpkgBaseline = $VcpkgConfiguration.'default-registry'.baseline
+$GitCommit = (git -C $Repo rev-parse HEAD).Trim()
+$GitDirty = [bool](git -C $Repo status --porcelain)
+try {
+    $GitTag = (git -C $Repo describe --tags --exact-match HEAD 2>$null).Trim()
+} catch {
+    $GitTag = ""
+}
+if ($GitDirty) {
+    $GitCommit += "-dirty"
+    $GitTag = ""
+}
+elseif ($GitTag -ne $Version) {
+    $GitTag = ""
+}
 
 if (-not $VcpkgRoot) {
     if ($env:VCPKG_ROOT) {
@@ -72,7 +89,7 @@ if ($StaticRuntime -and $DynamicRuntime) {
     throw "不能同时指定 -StaticRuntime 和 -DynamicRuntime。"
 }
 if ($SharedSlint) {
-    throw "Release 产物必须只包含 AWJ.exe、AWJ.com 和两个 sha256；请不要使用 -SharedSlint。"
+    throw "Release 产物必须静态链接 Slint；请不要使用 -SharedSlint。"
 }
 
 $UseStaticRuntime = -not [bool]$DynamicRuntime
@@ -94,6 +111,7 @@ Ensure-VcpkgManifestPackages $VcpkgRoot $VcpkgTriplet @(
     "tiff",
     "libraw",
     "aom",
+    "dav1d",
     "libyuv"
 ) $NoVcpkgInstall
 
@@ -120,7 +138,7 @@ $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { '
 $ConfigureArgs += "-DAWJ_ENABLE_ZENRAVIF=$(if ($DisableZenravif) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAWJ_ENABLE_SVTAV1HDR=$(if ($DisableSvtAv1Hdr) { 'OFF' } else { 'ON' })"
 
-$ReleaseFiles = @("AWJ.exe", "AWJ.com", "AWJ.exe.sha256", "AWJ.com.sha256", "LICENSE", "THIRD_PARTY_NOTICES.txt", "BUILD_INFO.txt")
+$ReleaseFiles = @("AWJ.exe", "AWJ.com", "AWJ.exe.sha256", "AWJ.com.sha256", "AWJ", "AWJ.sha256", "LICENSE", "THIRD_PARTY_NOTICES.txt", "BUILD_INFO.txt")
 if (Test-Path $OutputDir) {
     Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $ReleaseFiles -notcontains $_.Name } | Remove-Item -Recurse -Force
 }
@@ -136,14 +154,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --- Generate BUILD_INFO.txt ---
-$Version = (Get-Content (Join-Path $Repo "VERSION") -Raw).Trim()
 $BuildDate = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
-$GitCommit = (git -C $Repo rev-parse HEAD).Trim()
-try {
-    $GitTag = (git -C $Repo describe --tags --exact-match HEAD 2>$null).Trim()
-} catch {
-    $GitTag = ""
-}
 
 $BuildInfoContent = @"
 AWJimage $Version
@@ -153,11 +164,13 @@ Git Tag: $GitTag
 Architecture: x64
 Source: https://github.com/Dominic485649/AWJimage
 
+Vcpkg baseline: $VcpkgBaseline
+
 FetchContent Dependencies (pinned commits):
   svt-av1-hdr: cfb4e17693ae16945a7fe288d45437243d96c12e
-  libavif:     cc1ba78b3c37066e57f2879b2696d4d7fbc1244b
+  libavif:     c5240fc79fe5c2407e10afd35f5505ef6333ea49
   jpegli:      031a0077f5799a6041004267fc12b956c1f52a20
-  slint:       e9c1ca295f9356af71f1e251c287de18406b46f6
+  slint:       cf62c975c311e7036d599ed8ed0b7e6a8386a934
 "@
 
 $BuildInfoPath = Join-Path $OutputDir "BUILD_INFO.txt"

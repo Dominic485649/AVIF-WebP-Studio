@@ -321,6 +321,20 @@ int main() {
       selected->applied_bit_depth != 10 || !selected->experimental) {
     return fail("explicit zenrav1e request was not selected as experimental encoder.");
   }
+  const auto rejected_zen_alpha = awj::select_avif_encoder_from_capabilities(
+      awj::AvifEncoderSelectionRequest{
+          .requested_encoder = awj::AvifEncoderMode::zenrav1e,
+          .requested_chroma = awj::ChromaMode::yuv444,
+          .requested_bit_depth = 10,
+          .has_alpha = true,
+          .must_preserve_alpha = true,
+          .pixel_count = 1024,
+          .speed = awj::encoding_defaults::default_zenrav1e_preset},
+      experimental_capabilities);
+  if (rejected_zen_alpha ||
+      !contains_any(rejected_zen_alpha.error(), {"alpha", "aom"})) {
+    return fail("explicit zenrav1e alpha should require the lossless AOM path.");
+  }
   auto diagnostics = awj::diagnostics_from_avif_selection(*selected);
   if (diagnostics.encoder_id != "zenrav1e" ||
       diagnostics.speed_mapping.codec_key != "zenravif:speed" ||

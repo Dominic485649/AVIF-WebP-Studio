@@ -19,7 +19,7 @@ Windows (MSVC):
 
 ```powershell
 cmake --preset windows-msvc-x64-release
-cmake --build --preset windows-msvc-x64-release --target AWJ
+cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 ```
 
 Linux (WSL local tree, preferred `/home/dominic/Code/Cpp/AWJimage`; avoid building on `/mnt/d`):
@@ -41,11 +41,11 @@ Windows release script:
 Versioning is controlled by the root `VERSION` file. Release flow:
 
 ```powershell
-Set-Content VERSION "0.10.0"
+Set-Content VERSION "0.10.2"
 .\scripts\Update-VcpkgVersion.ps1
 git add VERSION vcpkg.json CHANGELOG.md
-git commit -m "release: 0.10.0"
-git tag 0.10.0
+git commit -m "release: 0.10.2"
+git tag 0.10.2
 .\release.ps1
 ```
 
@@ -66,7 +66,9 @@ AVIF inputs over the single-image limits (AOM 65536 edge / `2^30` pixels; SVT 16
 2. parameter page “large-image priority” can prefer `grid` first
 3. if both paths are unavailable/fail, or the input/runtime memory cap is hit, the job fails clearly
 
-Studio no longer has a separate large-image page; automatic large-image status stays in the main queue. Inputs above 10 MP but still under single-image limits stay in the ordinary queue tail. Grid supports smaller right/bottom edge cells for non-divisible dimensions while preserving the original output size.
+Studio no longer has a separate large-image page; automatic large-image status stays in the main queue. Inputs above 10 MP but still under single-image limits stay in the ordinary queue tail so one large memory estimate cannot throttle every small-file worker. They still use the ordinary encoder, and batches above 12 files keep one encoder thread per file in the ordinary, deferred, and large-image stages. Grid supports smaller right/bottom edge cells for non-divisible dimensions while preserving the original output size.
+
+When AVIF alpha must be preserved, both color and alpha automatically use full AOM q100/4:4:4 lossless encoding while the requested `speed` remains unchanged. `--alpha off` continues to use the requested quality and speed.
 
 CLI session unlock (not written to `AWJ.jsonc`):
 - `--large-image-priority zenrav1e|grid`

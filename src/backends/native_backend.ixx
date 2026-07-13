@@ -954,7 +954,7 @@ bool jxl_jpeg_bitstream_transcode_allowed(const AppConfig& cfg,
 }
 
 bool encoder_supports_alpha(AvifEncoderMode mode) noexcept {
-  return mode == AvifEncoderMode::aom || mode == AvifEncoderMode::zenrav1e;
+  return mode == AvifEncoderMode::aom;
 }
 
 bool encoder_supports_alpha(OutputFormat format) noexcept {
@@ -2139,24 +2139,32 @@ class NativeBackend final {
       }
       prepared.settings.has_non_opaque_alpha = *has_non_opaque_alpha;
 
-      const bool avif_lossless = native_backend_detail::avif_lossless_requested(cfg_);
       const auto source_chroma = native_backend_detail::lossless_source_chroma(decoded.image);
       const bool explicit_svt = requested_avif_encoder == AvifEncoderMode::svt;
       const bool must_preserve_alpha = native_backend_detail::alpha_must_be_preserved(
           cfg_.alpha_policy, prepared.settings.source_has_alpha_channel, *has_non_opaque_alpha);
+      const bool requested_avif_lossless =
+          native_backend_detail::avif_lossless_requested(cfg_);
+      const bool avif_lossless = requested_avif_lossless || must_preserve_alpha;
+      if (must_preserve_alpha) {
+        prepared.settings.quality = 100;
+        if (prepared.settings.visual_quality) {
+          prepared.settings.visual_quality = 100;
+        }
+      }
 
       if (explicit_svt) {
-        if (avif_lossless) {
-          return prepare_failed(
-              "svt-av1-hdr 不支持 AVIF 无损/q100；请改用 --avif-encoder auto/aom。",
-              prepared.settings);
-        }
         if (must_preserve_alpha) {
           prepared.settings.alpha_reason = cfg_.alpha_policy == AlphaModePolicy::force
                                                ? "force 请求保留 alpha，但 SVT 不支持 alpha"
                                                : "auto 需要保留非不透明 alpha，但 SVT 不支持 alpha";
           return prepare_failed(
               "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha off 或改用 AOM。",
+              prepared.settings);
+        }
+        if (requested_avif_lossless) {
+          return prepare_failed(
+              "svt-av1-hdr 不支持 AVIF 无损/q100；请改用 --avif-encoder auto/aom。",
               prepared.settings);
         }
       }
@@ -2181,6 +2189,10 @@ class NativeBackend final {
         prepared.settings.chroma_reason = cfg_.chroma_mode == ChromaMode::yuv420
                                              ? "显式选择 SVT 使用 420 chroma"
                                              : "显式选择 SVT 有损编码强制使用 420 chroma";
+      } else if (must_preserve_alpha) {
+        selection_requested_chroma = ChromaMode::yuv444;
+        prepared.settings.chroma_reason =
+            "保留 alpha 时使用 yuv444，确保 AVIF 整图无损";
       } else if (avif_lossless) {
         selection_requested_chroma = source_chroma == ChromaMode::auto_keep
                                          ? ChromaMode::yuv444
@@ -2301,6 +2313,9 @@ class NativeBackend final {
         prepared.settings.alpha_reason = "force 保留源图 alpha 通道";
       } else {
         prepared.settings.alpha_reason = "force 请求保留 alpha，但当前编码器不支持 alpha";
+      }
+      if (must_preserve_alpha && prepared.settings.applied_alpha == "kept") {
+        prepared.settings.alpha_reason += "；AVIF 整图使用 AOM 无损编码";
       }
       native_backend_detail::populate_applied_avif_color_diagnostics(prepared.settings,
                                                                      cfg_,
@@ -2447,6 +2462,12 @@ class NativeBackend final {
         effective_settings.color_reason = "目标格式不支持 HDR，已转换为 SDR sRGB";
       } else {
         effective_settings.bit_depth_reason = "目标格式只支持 8-bit，已按 SDR 缩减位深";
+        if (effective_settings.source_has_hdr_metadata) {
+          effective_settings.applied_hdr_metadata = "sdr-fallback";
+          effective_settings.encoder_fallback_reason = "HDR -> SDR fallback";
+          effective_settings.color_reason =
+              "目标格式不支持源 HDR 元数据，已按 SDR 缩减位深";
+        }
       }
     }
     const bool use_svtav1hdr = cfg_.output_format == OutputFormat::avif &&

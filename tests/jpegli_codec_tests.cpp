@@ -69,6 +69,8 @@ awj::NativeEncodeSettings jpegli_settings(int quality, bool strip_metadata) {
       .output_format = awj::OutputFormat::jpgli,
       .quality = quality,
       .speed = awj::default_speed_for(awj::OutputFormat::jpgli),
+      .source_has_icc = !strip_metadata,
+      .applied_icc = strip_metadata ? "stripped" : "kept",
       .strip_metadata = strip_metadata,
       .resources = awj::ResourcePlan{.file_parallelism = 1,
                                      .encoder_threads_per_file = 1,

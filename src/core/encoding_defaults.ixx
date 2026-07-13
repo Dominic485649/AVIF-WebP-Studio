@@ -85,12 +85,7 @@ inline constexpr bool default_experimental_clamped_grid_padding = true;
 inline constexpr std::uint64_t large_image_threshold_pixels =
     ordinary_large_safe_max_pixels;
 inline constexpr int default_grid_overlap_pixels = 0;
-inline constexpr int default_aom_thread_cap = 8;
-inline constexpr int default_av1_encoder_thread_cap = default_aom_thread_cap;
-inline constexpr int default_zenrav1e_thread_cap = default_aom_thread_cap;
-inline constexpr int default_svtav1hdr_thread_cap = 16;
-inline constexpr int default_jxl_thread_cap = 16;
-inline constexpr int default_other_encoder_thread_cap = 4;
+inline constexpr int max_automatic_thread_budget = 128;
 
 inline constexpr std::size_t codec_metadata_max_bytes = 64 * 1024 * 1024;
 inline constexpr std::size_t jpeg_max_saved_metadata_marker_count = 4096;

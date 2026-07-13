@@ -446,6 +446,7 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(AVIF_CODEC_AOM SYSTEM CACHE STRING "" FORCE)
 set(AVIF_CODEC_AOM_DECODE ON CACHE BOOL "" FORCE)
 set(AVIF_CODEC_AOM_ENCODE ON CACHE BOOL "" FORCE)
+set(AVIF_CODEC_DAV1D SYSTEM CACHE STRING "" FORCE)
 if(AWJ_SVTAV1HDR_AVAILABLE)
     set(AVIF_CODEC_SVT SYSTEM CACHE STRING "" FORCE)
 else()
@@ -528,7 +529,7 @@ set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
 FetchContent_Declare(Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG fdde7a535305d2ab2d4072dee637bad186a49723
+    GIT_TAG cf62c975c311e7036d599ed8ed0b7e6a8386a934
     SOURCE_SUBDIR api/cpp)
 FetchContent_MakeAvailable(Slint)
 if(NOT WIN32)
@@ -580,6 +581,8 @@ endfunction()
 
 add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
+target_compile_definitions(awj_base PRIVATE
+    AWJ_BUILD_VERSION="${PROJECT_VERSION}")
 add_dependencies(awj_base awj_visual_metric_shaders)
 target_link_libraries(awj_base PUBLIC scn::scn)
 if(WIN32)
@@ -802,6 +805,10 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_config_defaults_tests)
     target_link_libraries(awj_config_defaults_tests PRIVATE awj_base)
 
+    add_executable(awj_process_tests tests/process_tests.cpp)
+    avif_enable_common_options(awj_process_tests)
+    target_link_libraries(awj_process_tests PRIVATE awj_base)
+
     add_executable(awj_resource_planner_tests tests/resource_planner_tests.cpp)
     avif_enable_common_options(awj_resource_planner_tests)
     target_link_libraries(awj_resource_planner_tests PRIVATE awj_base)
@@ -881,6 +888,7 @@ if(BUILD_TESTING)
     set(AWJ_TEST_TARGETS
         awj_visual_quality_tests
         awj_config_defaults_tests
+        awj_process_tests
         awj_resource_planner_tests
         awj_visual_metrics_tests
         awj_webp_codec_tests
@@ -909,6 +917,7 @@ if(BUILD_TESTING)
 
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
     add_test(NAME config_defaults_core COMMAND awj_config_defaults_tests)
+    add_test(NAME process_core COMMAND awj_process_tests)
     add_test(NAME resource_planner_core COMMAND awj_resource_planner_tests)
     add_test(NAME visual_metrics_core COMMAND awj_visual_metrics_tests)
     add_test(NAME webp_codec_core COMMAND awj_webp_codec_tests)
@@ -957,10 +966,11 @@ if(BUILD_TESTING)
 
     add_test(NAME cli_native_avif_aom_converts_webp
         COMMAND awj_cli_native_avif_aom_tests)
+    set_tests_properties(cli_native_avif_aom_converts_webp PROPERTIES TIMEOUT 30)
 
     add_test(NAME cli_rejects_svt_444
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
-            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--avif-encoder' 'svt' '--chroma' '444' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('only supports 420')) { exit 1 }")
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--avif-encoder' 'svt' '--chroma' '444' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('420 chroma')) { exit 1 }")
 
     add_test(NAME cli_rejects_rav1e
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
@@ -991,6 +1001,7 @@ else()
         src/app/main.cpp
         src/cli/main.cpp
         src/ui/main.cpp)
+    set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
 target_sources(AWJ
     PRIVATE
