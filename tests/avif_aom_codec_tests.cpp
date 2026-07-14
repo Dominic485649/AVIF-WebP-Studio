@@ -10,6 +10,7 @@ import awj.avif_aom_codec;
 import awj.codec;
 import awj.config;
 import awj.image;
+import awj.large_image_plan;
 import awj.resource_planner;
 
 namespace {

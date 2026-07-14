@@ -2098,6 +2098,23 @@ int run_pipeline(const AppConfig& cfg,
           print_line(std::format("@AWJ-STUDIO/1 ITEM {} {} {} {}",
                                  event.result.index, status, event.completed,
                                  event.total));
+          if (event.kind == BatchEventKind::item_finished) {
+            const auto microseconds = [](double seconds) -> std::int64_t {
+              return seconds < 0.0
+                         ? -1
+                         : static_cast<std::int64_t>(seconds * 1'000'000.0 +
+                                                     0.5);
+            };
+            print_line(std::format(
+                "@AWJ-STUDIO/1 DETAIL {} {} {} {} {} {} {}",
+                event.result.index,
+                event.result.encoder_id.empty() ? "-" : event.result.encoder_id,
+                event.result.encoder_threads,
+                microseconds(event.result.decode_seconds),
+                microseconds(event.result.prepare_seconds),
+                microseconds(event.result.encode_seconds),
+                microseconds(event.result.write_seconds)));
+          }
         }
         if (event.kind == BatchEventKind::summary) {
           print_line("");

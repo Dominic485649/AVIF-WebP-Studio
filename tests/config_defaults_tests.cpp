@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <string>
@@ -30,8 +31,8 @@ int main() {
   }
 
   const auto defaults = awj::default_app_config();
-  if (defaults.input_path.native() !=
-      std::wstring{awj::encoding_defaults::default_input_path}) {
+  if (defaults.input_path.generic_string() !=
+      awj::encoding_defaults::default_input_path_text) {
     return fail("default input path does not come from encoding defaults.");
   }
   if (defaults.output_template !=
@@ -46,9 +47,15 @@ int main() {
       awj::encoding_defaults::default_jxl_quality != 85) {
     return fail("AVIF/JXL default quality literals mismatch.");
   }
+#ifdef _WIN32
   if (!defaults.allow_wic_fallback) {
-    return fail("default WIC fallback should be enabled.");
+    return fail("Windows should enable WIC fallback by default.");
   }
+#else
+  if (defaults.allow_wic_fallback) {
+    return fail("Non-Windows builds should disable WIC fallback by default.");
+  }
+#endif
   if (!defaults.enable_experimental_encoders) {
     return fail("experimental encoders should be enabled by default.");
   }
@@ -173,8 +180,8 @@ int main() {
                                  L"C:\\img\\a.webp"});
   if (!parsed || parsed->config.output_policy != awj::OutputPolicy::shell ||
       parsed->shell_inputs.size() != 2 ||
-      parsed->shell_inputs[0].native() != L"C:\\img\\a.webp" ||
-      parsed->shell_inputs[1].native() != L"C:\\img\\b.webp") {
+      parsed->shell_inputs[0] != std::filesystem::path{L"C:\\img\\a.webp"} ||
+      parsed->shell_inputs[1] != std::filesystem::path{L"C:\\img\\b.webp"}) {
     return fail("CLI shell conversion inputs were not parsed and de-duplicated.");
   }
 

@@ -116,6 +116,12 @@ struct QueueImageItem {
   std::filesystem::path locked_output_path{};
   std::string status_text{"等待编码"};
   std::string log_text{};
+  std::string encoder_id{};
+  int encoder_threads{};
+  double decode_seconds{-1.0};
+  double prepare_seconds{-1.0};
+  double encode_seconds{-1.0};
+  double write_seconds{-1.0};
   bool warning{};
 };
 
@@ -1326,6 +1332,40 @@ std::string queue_status_label(QueueItemStatus status) {
   }
 }
 
+int queue_status_code(QueueItemStatus status) noexcept {
+  switch (status) {
+    case QueueItemStatus::running:
+      return 1;
+    case QueueItemStatus::done:
+    case QueueItemStatus::skipped:
+      return 2;
+    case QueueItemStatus::failed:
+      return 3;
+    case QueueItemStatus::canceled:
+      return 4;
+    case QueueItemStatus::pending:
+    default:
+      return 0;
+  }
+}
+
+std::string stage_seconds_text(double seconds) {
+  return seconds < 0.0 ? std::string{"-"} : std::format("{:.3f}s", seconds);
+}
+
+std::string stage_timings_text(double decode_seconds, double prepare_seconds,
+                               double encode_seconds, double write_seconds) {
+  if (decode_seconds < 0.0 && prepare_seconds < 0.0 &&
+      encode_seconds < 0.0 && write_seconds < 0.0) {
+    return {};
+  }
+  return std::format("decode {} · prepare {} · encode {} · write {}",
+                     stage_seconds_text(decode_seconds),
+                     stage_seconds_text(prepare_seconds),
+                     stage_seconds_text(encode_seconds),
+                     stage_seconds_text(write_seconds));
+}
+
 bool queue_item_editable(const QueueImageItem& item) noexcept {
   return item.status == QueueItemStatus::pending;
 }
@@ -1336,12 +1376,21 @@ bool queue_item_runnable(const QueueImageItem& item) noexcept {
          item.status == QueueItemStatus::canceled;
 }
 
+bool queue_item_selected_for_run(const QueueImageItem& item,
+                                 bool failed_only) noexcept {
+  return failed_only ? item.status == QueueItemStatus::failed
+                     : queue_item_runnable(item);
+}
+
 TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
   const auto folder = item.path.parent_path();
   const auto output =
       item.locked_output_path.empty()
           ? std::string{}
           : awj::path_to_utf8(item.locked_output_path.filename());
+  const auto output_path = item.locked_output_path.empty()
+                               ? std::string{}
+                               : awj::path_to_utf8(item.locked_output_path);
   const auto status = item.status_text.empty()
                           ? queue_status_label(item.status)
                           : item.status_text;
@@ -1351,19 +1400,59 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
                  .size = to_shared(awj::format_size(item.bytes)),
                  .status = to_shared(status),
                  .output = to_shared(output),
-                 .log = to_shared(item.log_text),
-                 .warning = item.warning,
-                 .locked = !queue_item_editable(item)};
+                  .log = to_shared(item.log_text),
+                  .warning = item.warning,
+                  .locked = !queue_item_editable(item),
+                  .state = queue_status_code(item.status),
+                  .input_path = to_shared(awj::path_to_utf8(item.path)),
+                  .output_path = to_shared(output_path),
+                  .encoder = to_shared(item.encoder_id),
+                  .threads = item.encoder_threads > 0
+                                 ? to_shared(std::format("{}", item.encoder_threads))
+                                 : slint::SharedString{},
+                  .stage_timings = to_shared(stage_timings_text(
+                      item.decode_seconds, item.prepare_seconds,
+                      item.encode_seconds, item.write_seconds))};
 }
 
 void refresh_queue_rows(AwjStudio& app, UiState& state) {
   std::vector<TaskRow> rows;
   rows.reserve(state.queue_items.size());
+  int pending_count = 0;
+  int running_count = 0;
+  int success_count = 0;
+  int failed_count = 0;
   for (const auto i : std::views::iota(std::size_t{}, state.queue_items.size())) {
-    rows.push_back(make_queue_task_row(state.queue_items[i], i));
+    const auto& item = state.queue_items[i];
+    rows.push_back(make_queue_task_row(item, i));
+    switch (item.status) {
+      case QueueItemStatus::running:
+        ++running_count;
+        break;
+      case QueueItemStatus::done:
+      case QueueItemStatus::skipped:
+        ++success_count;
+        break;
+      case QueueItemStatus::failed:
+        ++failed_count;
+        break;
+      case QueueItemStatus::pending:
+      case QueueItemStatus::canceled:
+      default:
+        ++pending_count;
+        break;
+    }
   }
   state.task_rows->set_vector(std::move(rows));
   app.set_task_rows(state.task_rows);
+  app.set_queue_pending_count(pending_count);
+  app.set_queue_running_count(running_count);
+  app.set_queue_success_count(success_count);
+  app.set_queue_failed_count(failed_count);
+  if (app.get_selected_queue_index() >=
+      static_cast<int>(state.queue_items.size())) {
+    app.set_selected_queue_index(-1);
+  }
 }
 
 std::optional<std::size_t> queue_index_for_id(const UiState& state,
@@ -1985,16 +2074,27 @@ TaskRow task_row_from_result(const awj::EncodeResult& result) {
     }
     output_format = awj::output_format_name(inferred);
   }
+  const auto log_text = result.ok ? result_log_text(result) : result.message;
   return TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
                  .filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
                  .folder = to_shared(awj::path_to_utf8(result.input_path.parent_path())),
                  .size = to_shared(awj::format_size(result.original_bytes)),
                  .status = to_shared(result_status_text(result)),
                  .output = to_shared(awj::path_to_utf8(result.output_path.filename())),
-                 .log = to_shared(result_log_text(result)),
+                 .log = to_shared(log_text),
                  .warning = result.ok && result.requested_visual_quality.has_value() &&
-                            !result.visual_quality_target_met,
-                 .locked = result.processed};
+                             !result.visual_quality_target_met,
+                 .locked = result.processed,
+                 .state = result.ok ? 2 : (result.canceled ? 4 : 3),
+                 .input_path = to_shared(awj::path_to_utf8(result.input_path)),
+                 .output_path = to_shared(awj::path_to_utf8(result.output_path)),
+                 .encoder = to_shared(result.encoder_id),
+                 .threads = result.encoder_threads > 0
+                                ? to_shared(std::format("{}", result.encoder_threads))
+                                : slint::SharedString{},
+                 .stage_timings = to_shared(stage_timings_text(
+                     result.decode_seconds, result.prepare_seconds,
+                     result.encode_seconds, result.write_seconds))};
 }
 
 TaskRow pending_shell_task_row(const awj::AppConfig& cfg, const awj::ImageFile& image) {
@@ -2006,7 +2106,10 @@ TaskRow pending_shell_task_row(const awj::AppConfig& cfg, const awj::ImageFile& 
                  .output = to_shared(awj::path_to_utf8(awj::output_path_for(cfg, image).filename())),
                  .log = {},
                  .warning = false,
-                 .locked = true};
+                 .locked = true,
+                 .state = 0,
+                 .input_path = to_shared(awj::path_to_utf8(image.path)),
+                 .output_path = to_shared(awj::path_to_utf8(awj::output_path_for(cfg, image)))};
 }
 
 void mark_task_row_running(
@@ -2021,6 +2124,7 @@ void mark_task_row_running(
       if (row) {
         row->status = to_shared("正在转码");
         row->locked = true;
+        row->state = 1;
         rows->set_row_data(result.index, *row);
         return;
       }
@@ -2033,9 +2137,12 @@ void mark_task_row_running(
                               result.input_path.parent_path())),
                           .size = to_shared(awj::format_size(result.original_bytes)),
                           .status = to_shared("正在转码"),
-                          .output = to_shared(awj::path_to_utf8(
-                              result.output_path.filename())),
-                          .locked = true});
+                           .output = to_shared(awj::path_to_utf8(
+                               result.output_path.filename())),
+                           .locked = true,
+                           .state = 1,
+                           .input_path = to_shared(awj::path_to_utf8(result.input_path)),
+                           .output_path = to_shared(awj::path_to_utf8(result.output_path))});
   } catch (...) {
   }
 }
@@ -4111,10 +4218,14 @@ bool output_template_contains(std::wstring_view text,
 }
 
 std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
-    const awj::AppConfig& cfg, const std::vector<QueueImageItem>& queue) {
+    const awj::AppConfig& cfg, const std::vector<QueueImageItem>& queue,
+    bool failed_only) {
   try {
     std::vector<awj::ImageFile> files;
-    files.reserve(std::ranges::count_if(queue, queue_item_runnable));
+    files.reserve(std::ranges::count_if(
+        queue, [failed_only](const QueueImageItem& item) {
+          return queue_item_selected_for_run(item, failed_only);
+        }));
     std::random_device random_device;
     std::mt19937_64 rng{random_device()};
     const bool needs_hash =
@@ -4125,7 +4236,7 @@ std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
         output_template_contains(cfg.output_template, L"{sha2568}") ||
         output_template_contains(cfg.output_template, L"{sha256_8}");
     for (const auto& item : queue) {
-      if (!queue_item_runnable(item)) {
+      if (!queue_item_selected_for_run(item, failed_only)) {
         continue;
       }
       std::wstring hash;
@@ -4205,6 +4316,16 @@ struct StudioWorkerItemEvent {
   std::size_t total{};
 };
 
+struct StudioWorkerDetailEvent {
+  std::size_t index{};
+  std::string encoder_id{};
+  int encoder_threads{};
+  std::int64_t decode_microseconds{-1};
+  std::int64_t prepare_microseconds{-1};
+  std::int64_t encode_microseconds{-1};
+  std::int64_t write_microseconds{-1};
+};
+
 std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
     std::string_view line) {
   constexpr std::string_view prefix = "@AWJ-STUDIO/1 ITEM ";
@@ -4253,9 +4374,60 @@ std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
                                .total = *total};
 }
 
+std::optional<StudioWorkerDetailEvent> parse_studio_worker_detail_event(
+    std::string_view line) {
+  constexpr std::string_view prefix = "@AWJ-STUDIO/1 DETAIL ";
+  if (!line.starts_with(prefix)) {
+    return std::nullopt;
+  }
+  line.remove_prefix(prefix.size());
+  std::array<std::string_view, 7> fields;
+  for (auto& field : fields) {
+    const auto separator = line.find(' ');
+    if (separator == std::string_view::npos) {
+      field = line;
+      line = {};
+    } else {
+      field = line.substr(0, separator);
+      line.remove_prefix(separator + 1);
+    }
+    if (field.empty()) {
+      return std::nullopt;
+    }
+  }
+  if (!line.empty()) {
+    return std::nullopt;
+  }
+  const auto index = scn::scan_int<std::size_t>(fields[0]);
+  const auto threads = scn::scan_int<int>(fields[2]);
+  const auto decode = scn::scan_int<std::int64_t>(fields[3]);
+  const auto prepare = scn::scan_int<std::int64_t>(fields[4]);
+  const auto encode = scn::scan_int<std::int64_t>(fields[5]);
+  const auto write = scn::scan_int<std::int64_t>(fields[6]);
+  if (!index || index->begin() != index->end() || !threads ||
+      threads->begin() != threads->end() || !decode ||
+      decode->begin() != decode->end() || !prepare ||
+      prepare->begin() != prepare->end() || !encode ||
+      encode->begin() != encode->end() || !write ||
+      write->begin() != write->end() || threads->value() < 0 ||
+      decode->value() < -1 || prepare->value() < -1 ||
+      encode->value() < -1 || write->value() < -1) {
+    return std::nullopt;
+  }
+  return StudioWorkerDetailEvent{
+      .index = index->value(),
+      .encoder_id = fields[1] == "-" ? std::string{} : std::string{fields[1]},
+      .encoder_threads = threads->value(),
+      .decode_microseconds = decode->value(),
+      .prepare_microseconds = prepare->value(),
+      .encode_microseconds = encode->value(),
+      .write_microseconds = write->value()};
+}
+
 void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
-                                const std::shared_ptr<UiState>& state,
-                                awj::AppConfig cfg) {
+                                 const std::shared_ptr<UiState>& state,
+                                 awj::AppConfig cfg,
+                                 bool failed_only = false) {
   auto app = weak.lock();
   if (!app) {
     return;
@@ -4275,7 +4447,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     queue_snapshot = state->queue_items;
   }
 
-  auto files = build_run_files(cfg, queue_snapshot);
+  auto files = build_run_files(cfg, queue_snapshot, failed_only);
   if (!files) {
     (*app)->set_status_text(
         to_shared(std::format("队列准备失败：{}", files.error())));
@@ -4283,7 +4455,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
   }
   if (files->empty()) {
     (*app)->set_status_text(
-        to_shared("队列中没有待编码图片；请清空队列或添加新图片。"));
+        to_shared(failed_only
+                      ? "队列中没有失败项。"
+                      : "队列中没有待编码图片；请清空队列或添加新图片。"));
     return;
   }
 
@@ -4312,12 +4486,18 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     std::size_t run_index = 0;
     for (auto& item : state->queue_items) {
       item.run_index = std::numeric_limits<std::size_t>::max();
-      if (!queue_item_runnable(item)) {
+      if (!queue_item_selected_for_run(item, failed_only)) {
         continue;
       }
       item.status = QueueItemStatus::pending;
       item.status_text = "等待编码";
       item.log_text.clear();
+      item.encoder_id.clear();
+      item.encoder_threads = 0;
+      item.decode_seconds = -1.0;
+      item.prepare_seconds = -1.0;
+      item.encode_seconds = -1.0;
+      item.write_seconds = -1.0;
       item.warning = false;
       item.run_index = run_index;
       item.locked_output_path = awj::output_path_for(cfg, (*files)[run_index]);
@@ -4418,6 +4598,32 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
             pending_item = *event;
           }
           publish_item(*event);
+          return;
+        }
+        if (auto detail = parse_studio_worker_detail_event(line)) {
+          post_to_ui(weak, [state, run_id, detail = std::move(*detail)](
+                               AwjStudio& app) {
+            std::scoped_lock lock{state->mutex};
+            if (state->run_id != run_id) {
+              return;
+            }
+            if (auto queue_index =
+                    queue_index_for_run_index(*state, detail.index)) {
+              auto& item = state->queue_items[*queue_index];
+              const auto seconds = [](std::int64_t value) {
+                return value < 0 ? -1.0
+                                 : static_cast<double>(value) /
+                                       1'000'000.0;
+              };
+              item.encoder_id = std::move(detail.encoder_id);
+              item.encoder_threads = detail.encoder_threads;
+              item.decode_seconds = seconds(detail.decode_microseconds);
+              item.prepare_seconds = seconds(detail.prepare_microseconds);
+              item.encode_seconds = seconds(detail.encode_microseconds);
+              item.write_seconds = seconds(detail.write_microseconds);
+            }
+            refresh_queue_rows(app, *state);
+          });
           return;
         }
         if (pending_item) {
@@ -4620,6 +4826,7 @@ void handle_queue_menu_action(AwjStudio& app,
         return;
       }
       state->queue_items.erase(state->queue_items.begin() + index);
+      app.set_selected_queue_index(-1);
       status = "已从队列移除。";
     } else if (state->worker_active) {
       app.set_status_text(to_shared("运行中不能调整队列顺序。"));
@@ -5144,12 +5351,55 @@ int run_studio_ui() {
           return;
         }
         state->queue_items.clear();
-        state->task_rows->set_vector({});
+        refresh_queue_rows(**app, *state);
         state->large_image_rows->set_vector({});
         state->large_image_items.clear();
+        (*app)->set_selected_queue_index(-1);
         (*app)->set_selected_large_image_index(-1);
         (*app)->set_progress(0.0f);
         (*app)->set_status_text(to_shared("已清空全部队列文件。"));
+      });
+    });
+
+    app->on_retry_failed([weak, state] {
+      run_ui_callback(weak, "重试失败项失败", [&] {
+        auto app = weak.lock();
+        if (!app) {
+          return;
+        }
+        if (reject_when_worker_active(**app, state,
+                                      "当前任务正在运行，无法重试失败项")) {
+          return;
+        }
+        std::optional<std::filesystem::path> fallback_input;
+        {
+          std::scoped_lock lock{state->mutex};
+          const auto failed = std::ranges::find_if(
+              state->queue_items, [](const QueueImageItem& item) {
+                return item.status == QueueItemStatus::failed;
+              });
+          if (failed == state->queue_items.end()) {
+            (*app)->set_status_text(to_shared("队列中没有失败项。"));
+            return;
+          }
+          fallback_input = failed->source_root.empty() ? failed->path
+                                                       : failed->source_root;
+        }
+        if (trim_copy(shared_to_string((*app)->get_input_path())).empty()) {
+          (*app)->set_input_path(
+              to_shared(awj::path_to_utf8(*fallback_input)));
+          if (output_dir_is_empty(**app)) {
+            (*app)->set_output_dir(to_shared(awj::path_to_utf8(
+                awj::default_output_dir_for(*fallback_input))));
+          }
+        }
+        auto cfg = config_from_ui(**app);
+        if (!cfg) {
+          (*app)->set_status_text(
+              to_shared(std::format("配置错误：{}", cfg.error())));
+          return;
+        }
+        begin_queue_conversion_run(weak, state, std::move(*cfg), true);
       });
     });
 
@@ -5885,6 +6135,7 @@ struct LinuxUiState {
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
+  std::vector<fs::path> failed_paths{};
   std::array<LinuxMenuParams, 5> menu_params{};
   int menu_format_index{};
 };
@@ -6100,16 +6351,111 @@ void apply_linux_menu_preset(AwjStudio& app, int preset_index) {
 }
 
 
+std::string stage_seconds_text(double seconds) {
+  return seconds < 0.0 ? std::string{"-"} : std::format("{:.3f}s", seconds);
+}
+
+std::string stage_timings_text(double decode_seconds, double prepare_seconds,
+                               double encode_seconds, double write_seconds) {
+  if (decode_seconds < 0.0 && prepare_seconds < 0.0 &&
+      encode_seconds < 0.0 && write_seconds < 0.0) {
+    return {};
+  }
+  return std::format("decode {} · prepare {} · encode {} · write {}",
+                     stage_seconds_text(decode_seconds),
+                     stage_seconds_text(prepare_seconds),
+                     stage_seconds_text(encode_seconds),
+                     stage_seconds_text(write_seconds));
+}
+
+std::string linux_result_status_text(const awj::EncodeResult& result) {
+  if (result.ok) {
+    return result.skipped ? "已跳过" : "完成";
+  }
+  if (result.canceled) {
+    return "已取消";
+  }
+  return result.message.empty() ? "失败"
+                                : std::format("失败 · {}", result.message);
+}
+
 TaskRow task_row_from_result(const awj::EncodeResult& result) {
   return TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
                  .filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
                  .folder = to_shared(awj::path_to_utf8(result.input_path.parent_path())),
                  .size = to_shared(awj::format_size(result.original_bytes)),
-                 .status = to_shared(result.message),
+                 .status = to_shared(linux_result_status_text(result)),
                  .output = to_shared(awj::path_to_utf8(result.output_path.filename())),
-                 .log = {},
+                 .log = to_shared(result.ok ? std::string{} : result.message),
                  .warning = !result.ok,
-                 .locked = true};
+                 .locked = true,
+                 .state = result.ok ? 2 : (result.canceled ? 4 : 3),
+                 .input_path = to_shared(awj::path_to_utf8(result.input_path)),
+                 .output_path = to_shared(awj::path_to_utf8(result.output_path)),
+                 .encoder = to_shared(result.encoder_id),
+                 .threads = result.encoder_threads > 0
+                                ? to_shared(std::format("{}", result.encoder_threads))
+                                : slint::SharedString{},
+                 .stage_timings = to_shared(stage_timings_text(
+                     result.decode_seconds, result.prepare_seconds,
+                     result.encode_seconds, result.write_seconds))};
+}
+
+std::optional<std::size_t> linux_task_row_index_for_path(
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+    const fs::path& path) {
+  if (!rows) {
+    return std::nullopt;
+  }
+  const auto expected = awj::path_to_utf8(path);
+  for (std::size_t index = 0; index < rows->row_count(); ++index) {
+    if (auto row = rows->row_data(index);
+        row && shared_to_string(row->input_path) == expected) {
+      return index;
+    }
+  }
+  return std::nullopt;
+}
+
+void refresh_linux_queue_counts(
+    AwjStudio& app,
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows) {
+  int pending = 0;
+  int running = 0;
+  int success = 0;
+  int failed = 0;
+  if (rows) {
+    for (std::size_t index = 0; index < rows->row_count(); ++index) {
+      const auto row = rows->row_data(index);
+      if (!row) {
+        continue;
+      }
+      switch (row->state) {
+        case 1:
+          ++running;
+          break;
+        case 2:
+          ++success;
+          break;
+        case 3:
+          ++failed;
+          break;
+        case 0:
+        case 4:
+        default:
+          ++pending;
+          break;
+      }
+    }
+  }
+  app.set_queue_pending_count(pending);
+  app.set_queue_running_count(running);
+  app.set_queue_success_count(success);
+  app.set_queue_failed_count(failed);
+  if (!rows || app.get_selected_queue_index() >=
+                   static_cast<int>(rows->row_count())) {
+    app.set_selected_queue_index(-1);
+  }
 }
 
 void push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
@@ -6126,12 +6472,13 @@ void mark_task_row_running(
     const awj::EncodeResult& result) noexcept {
   if (!rows) return;
   try {
-    if (result.index < rows->row_count()) {
-      auto row = rows->row_data(result.index);
+    if (const auto index = linux_task_row_index_for_path(rows, result.input_path)) {
+      auto row = rows->row_data(*index);
       if (row) {
         row->status = to_shared("正在转码");
         row->locked = true;
-        rows->set_row_data(result.index, *row);
+        row->state = 1;
+        rows->set_row_data(*index, *row);
         return;
       }
     }
@@ -6143,10 +6490,24 @@ void mark_task_row_running(
                               result.input_path.parent_path())),
                           .size = to_shared(awj::format_size(result.original_bytes)),
                           .status = to_shared("正在转码"),
-                          .output = to_shared(awj::path_to_utf8(
-                              result.output_path.filename())),
-                          .locked = true});
+                           .output = to_shared(awj::path_to_utf8(
+                               result.output_path.filename())),
+                           .locked = true,
+                           .state = 1,
+                           .input_path = to_shared(awj::path_to_utf8(result.input_path)),
+                           .output_path = to_shared(awj::path_to_utf8(result.output_path))});
   } catch (...) {
+  }
+}
+
+void set_linux_task_row_result(
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+    const awj::EncodeResult& result) {
+  auto row = task_row_from_result(result);
+  if (const auto index = linux_task_row_index_for_path(rows, result.input_path)) {
+    rows->set_row_data(*index, row);
+  } else {
+    push_task_row(rows, std::move(row));
   }
 }
 
@@ -6764,8 +7125,16 @@ int run_studio_ui() {
         }
       }
     });
-    app->on_clear_tasks([weak] {
+    app->on_clear_tasks([weak, state] {
       if (auto app = weak.lock()) {
+        if ((*app)->get_running()) {
+          (*app)->set_status_text(to_shared("当前任务正在运行，无法清空状态。"));
+          return;
+        }
+        state->task_rows->set_vector({});
+        state->failed_paths.clear();
+        refresh_linux_queue_counts(**app, state->task_rows);
+        (*app)->set_selected_queue_index(-1);
         (*app)->set_progress(0.0f);
         (*app)->set_status_text(to_shared("已清空状态。"));
       }
@@ -6862,6 +7231,111 @@ int run_studio_ui() {
         state->worker.request_stop();
         (*app)->set_status_text(to_shared("正在停止当前任务…"));
       }
+    });
+    app->on_retry_failed([weak, state] {
+      auto app = weak.lock();
+      if (!app) {
+        return;
+      }
+      if ((*app)->get_running()) {
+        (*app)->set_status_text(to_shared("当前任务正在运行，无法重试失败项。"));
+        return;
+      }
+      if (state->failed_paths.empty()) {
+        (*app)->set_status_text(to_shared("队列中没有失败项。"));
+        return;
+      }
+      auto cfg = config_from_ui(**app);
+      if (!cfg) {
+        (*app)->set_status_text(
+            to_shared(std::format("配置错误：{}", cfg.error())));
+        return;
+      }
+      auto retry_paths = state->failed_paths;
+      for (std::size_t index = 0; index < state->task_rows->row_count();
+           ++index) {
+        auto row = state->task_rows->row_data(index);
+        if (row && row->state == 3) {
+          row->state = 0;
+          row->status = to_shared("等待重试");
+          row->warning = false;
+          state->task_rows->set_row_data(index, *row);
+        }
+      }
+      refresh_linux_queue_counts(**app, state->task_rows);
+      (*app)->set_running(true);
+      (*app)->set_progress(0.0f);
+      (*app)->set_status_text(to_shared(
+          std::format("正在重试 {} 个失败项…", retry_paths.size())));
+      auto rows = state->task_rows;
+      state->worker = std::jthread(
+          [weak, state, rows, cfg = std::move(*cfg),
+           retry_paths = std::move(retry_paths)](
+              std::stop_token token) mutable {
+            auto progress = [weak, state, rows](
+                                const awj::BatchProgress& event) {
+              slint::invoke_from_event_loop([weak, state, rows, event] {
+                if (auto app = weak.lock()) {
+                  if (event.kind == awj::BatchEventKind::item_started) {
+                    mark_task_row_running(rows, event.result);
+                  } else if (event.kind == awj::BatchEventKind::item_finished) {
+                    set_linux_task_row_result(rows, event.result);
+                    std::erase(state->failed_paths, event.result.input_path);
+                    if (!event.result.ok && !event.result.canceled) {
+                      state->failed_paths.push_back(event.result.input_path);
+                    }
+                  } else if (event.kind ==
+                             awj::BatchEventKind::large_image_queued) {
+                    add_large_image_task_row(rows, event.large_image);
+                    push_linux_large_image(*state, event.large_image);
+                  }
+                  refresh_linux_queue_counts(**app, rows);
+                  if (event.total > 0) {
+                    (*app)->set_progress(
+                        static_cast<float>(event.completed) /
+                        static_cast<float>(event.total));
+                  }
+                  if (!event.text.empty()) {
+                    (*app)->set_status_text(to_shared(event.text));
+                  }
+                }
+              });
+            };
+            auto summary =
+                awj::run_batch(cfg, progress, token, retry_paths);
+            slint::invoke_from_event_loop(
+                [weak, state, rows, summary = std::move(summary),
+                 retry_paths = std::move(retry_paths)]() mutable {
+                  if (auto app = weak.lock()) {
+                    (*app)->set_running(false);
+                    if (!summary) {
+                      state->failed_paths = retry_paths;
+                      for (const auto& path : retry_paths) {
+                        if (const auto index =
+                                linux_task_row_index_for_path(rows, path)) {
+                          auto row = rows->row_data(*index);
+                          if (row) {
+                            row->state = 3;
+                            row->status = to_shared("失败");
+                            row->log = to_shared(summary.error());
+                            row->warning = true;
+                            rows->set_row_data(*index, *row);
+                          }
+                        }
+                      }
+                      refresh_linux_queue_counts(**app, rows);
+                      (*app)->set_status_text(to_shared(
+                          std::format("重试失败：{}", summary.error())));
+                      return;
+                    }
+                    (*app)->set_progress(1.0f);
+                    (*app)->set_status_text(to_shared(std::format(
+                        "重试完成：成功 {}，失败 {}，取消 {}。",
+                        summary->ok_count, summary->failed_count,
+                        summary->canceled_count)));
+                  }
+                });
+          });
     });
     app->on_toggle_template_token([weak](slint::SharedString token) {
       if (auto app = weak.lock()) {
@@ -6963,6 +7437,7 @@ int run_studio_ui() {
       state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
       state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
       state->large_image_items.clear();
+      state->failed_paths.clear();
       (*app)->set_task_rows(state->task_rows);
       (*app)->set_large_image_rows(state->large_image_rows);
       (*app)->set_selected_large_image_index(-1);
@@ -6977,11 +7452,10 @@ int run_studio_ui() {
               if (event.kind == awj::BatchEventKind::item_started) {
                 mark_task_row_running(rows, event.result);
               } else if (event.kind == awj::BatchEventKind::item_finished) {
-                auto row = task_row_from_result(event.result);
-                if (event.result.index < rows->row_count()) {
-                  rows->set_row_data(event.result.index, row);
-                } else {
-                  push_task_row(rows, std::move(row));
+                set_linux_task_row_result(rows, event.result);
+                std::erase(state->failed_paths, event.result.input_path);
+                if (!event.result.ok && !event.result.canceled) {
+                  state->failed_paths.push_back(event.result.input_path);
                 }
               } else if (event.kind == awj::BatchEventKind::large_image_queued) {
                 add_large_image_task_row(rows, event.large_image);
@@ -6990,6 +7464,7 @@ int run_studio_ui() {
                   (*app)->set_selected_large_image_index(0);
                 }
               }
+              refresh_linux_queue_counts(**app, rows);
               if (event.total > 0) {
                 (*app)->set_progress(static_cast<float>(event.completed) / static_cast<float>(event.total));
               }

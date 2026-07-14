@@ -10,6 +10,12 @@ export struct TaskRow {
     log: string,
     warning: bool,
     locked: bool,
+    state: int,
+    input-path: string,
+    output-path: string,
+    encoder: string,
+    threads: string,
+    stage-timings: string,
 }
 
 export struct LargeImageRow {
@@ -31,7 +37,9 @@ component SoftComboBox inherits Rectangle {
     in property <[ComboOption]> model;
     in-out property <int> current-index;
     in property <bool> enabled: true;
+    in property <string> accessible-name: "选项";
     out property <bool> has-hover <=> touch.has-hover;
+    out property <bool> has-focus: combo-focus.has-focus || root.popup-had-focus;
     in property <color> normal-background: #fbfdff;
     in property <color> hover-background: #f3f8ff;
     in property <color> disabled-background: #eef2f7;
@@ -53,7 +61,7 @@ component SoftComboBox inherits Rectangle {
         : max(root.model.length, 1);
     property <length> popup-content-height: max(root.model.length, 1) * 36px + 8px;
     property <length> popup-height: root.popup-visible-items * 36px + 8px;
-    property <length> popup-scroll-y: -max(0, min(root.current-index, root.model.length - root.popup-visible-items)) * 36px;
+    property <length> popup-scroll-y: -max(0, min(root.bounded-highlight-index, root.model.length - root.popup-visible-items)) * 36px;
     property <bool> popup-upwards: touch.absolute-position.y + root.height + root.popup-gap + root.popup-height > root.viewport-height && touch.absolute-position.y >= root.popup-height + root.popup-gap;
     property <bool> popup-open: false;
     property <bool> popup-opening: false;
@@ -65,6 +73,68 @@ component SoftComboBox inherits Rectangle {
     callback selection-accepted(int, length, length);
     callback popup-requested();
     callback popup-finished();
+
+    function enabled-index(index: int, step: int) -> int {
+        if (index < 0 || index >= root.model.length) {
+            return root.current-index;
+        }
+        if (root.model[index].enabled) {
+            return index;
+        }
+        let adjacent = index + step;
+        if (adjacent >= 0 && adjacent < root.model.length && root.model[adjacent].enabled) {
+            return adjacent;
+        }
+        return root.current-index;
+    }
+
+    function open-popup() {
+        if (!root.enabled || root.model.length == 0) {
+            return;
+        }
+        root.hover-index = root.enabled-index(root.current-index, 1);
+        root.popup-opening = false;
+        root.popup-open = true;
+        root.popup-animate-open = false;
+        popup.show();
+        root.popup-opening = true;
+    }
+
+    function finish-popup(restore-focus: bool) {
+        if (root.popup-open) {
+            root.popup-finished();
+        }
+        root.popup-open = false;
+        root.popup-opening = false;
+        root.popup-animate-open = false;
+        root.popup-had-focus = false;
+        root.hover-index = -1;
+        popup.close();
+        if (restore-focus && root.enabled) {
+            combo-focus.focus();
+        }
+    }
+
+    function accept-index(index: int, x: length, y: length) {
+        if (index < 0 || index >= root.model.length || !root.model[index].enabled) {
+            return;
+        }
+        root.selection-accepted(index, x, y);
+        if (!root.defer-current-index) {
+            root.current-index = index;
+        }
+        root.finish-popup(true);
+    }
+
+    function select-closed(index: int, step: int) {
+        let target = root.enabled-index(index, step);
+        if (target != root.current-index && target >= 0 && target < root.model.length) {
+            root.selection-accepted(target, touch.absolute-position.x + root.width / 2, touch.absolute-position.y + root.height / 2);
+            if (!root.defer-current-index) {
+                root.current-index = target;
+            }
+        }
+    }
 
     open-animation-timer := Timer {
         interval: 50ms;
@@ -80,9 +150,16 @@ component SoftComboBox inherits Rectangle {
 
     horizontal-stretch: 1;
     vertical-stretch: 0;
+    forward-focus: combo-focus;
+    accessible-role: combobox;
+    accessible-enabled: root.enabled;
+    accessible-label: root.accessible-name;
+    accessible-value: root.model.length > 0 ? root.model[root.current-index].text : "";
+    accessible-expanded: root.popup-open;
+    accessible-action-default => { root.open-popup(); }
     border-radius: 6px;
-    border-width: 1px;
-    border-color: root.has-hover ? root.hover-border : root.normal-border;
+    border-width: root.has-focus ? 2px : 1px;
+    border-color: root.has-focus ? #0d6efd : (root.has-hover ? root.hover-border : root.normal-border);
     background: root.enabled ? (root.has-hover ? root.hover-background : root.normal-background) : root.disabled-background;
     clip: true;
     animate background, border-color { duration: 150ms; easing: ease-out; }
@@ -136,28 +213,63 @@ component SoftComboBox inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => {
             if (root.enabled) {
-                root.hover-index = -1;
-                root.popup-opening = false;
-                root.popup-open = true;
-                root.popup-animate-open = false;
-                popup.show();
-                root.popup-opening = true;
+                combo-focus.focus();
+                root.open-popup();
             }
+        }
+        scroll-event(event) => {
+            if (!root.enabled || !root.has-focus || root.popup-open) {
+                return reject;
+            }
+            if (event.delta-y < -2px) {
+                root.select-closed(root.current-index + 1, 1);
+                return accept;
+            }
+            if (event.delta-y > 2px) {
+                root.select-closed(root.current-index - 1, -1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    combo-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (!root.enabled) {
+                return reject;
+            }
+            if (event.text == Key.UpArrow) {
+                root.select-closed(root.current-index - 1, -1);
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.select-closed(root.current-index + 1, 1);
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                root.select-closed(0, 1);
+                return accept;
+            }
+            if (event.text == Key.End) {
+                root.select-closed(root.model.length - 1, -1);
+                return accept;
+            }
+            if (event.text == Key.Return || event.text == " ") {
+                root.open-popup();
+                return accept;
+            }
+            return reject;
         }
     }
 
     changed close-generation => {
-        if (root.popup-open) {
-            root.popup-finished();
-        }
-        root.popup-open = false;
-        root.popup-opening = false;
-        root.popup-animate-open = false;
-        root.popup-had-focus = false;
-        root.hover-index = -1;
-        popup.close();
+        root.finish-popup(false);
     }
 
     popup := PopupWindow {
@@ -181,13 +293,35 @@ component SoftComboBox inherits Rectangle {
                     root.popup-had-focus = true;
                     root.popup-open = true;
                 } else if (root.popup-had-focus && root.popup-open) {
-                    root.popup-open = false;
-                    root.popup-opening = false;
-                    root.popup-animate-open = false;
-                    root.popup-had-focus = false;
-                    root.hover-index = -1;
-                    root.popup-finished();
+                    root.finish-popup(false);
                 }
+            }
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    root.hover-index = root.enabled-index(root.bounded-highlight-index - 1, -1);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    root.hover-index = root.enabled-index(root.bounded-highlight-index + 1, 1);
+                    return accept;
+                }
+                if (event.text == Key.Home) {
+                    root.hover-index = root.enabled-index(0, 1);
+                    return accept;
+                }
+                if (event.text == Key.End) {
+                    root.hover-index = root.enabled-index(root.model.length - 1, -1);
+                    return accept;
+                }
+                if (event.text == Key.Return || event.text == " ") {
+                    root.accept-index(root.bounded-highlight-index, touch.absolute-position.x + root.width / 2, touch.absolute-position.y + root.height / 2);
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    root.finish-popup(true);
+                    return accept;
+                }
+                return reject;
             }
 
             popup-container := Rectangle {
@@ -251,17 +385,7 @@ component SoftComboBox inherits Rectangle {
                                     }
                                     clicked => {
                                         if (option.enabled) {
-                                            root.selection-accepted(index, item-touch.absolute-position.x + item-touch.mouse-x, item-touch.absolute-position.y + item-touch.mouse-y);
-                                            if (!root.defer-current-index) {
-                                                root.current-index = index;
-                                            }
-                                            root.popup-open = false;
-                                            root.popup-opening = false;
-                                            root.popup-animate-open = false;
-                                            root.popup-had-focus = false;
-                                            root.hover-index = -1;
-                                            root.popup-finished();
-                                            popup.close();
+                                            root.accept-index(index, item-touch.absolute-position.x + item-touch.mouse-x, item-touch.absolute-position.y + item-touch.mouse-y);
                                         }
                                     }
                                 }
@@ -276,8 +400,10 @@ component SoftComboBox inherits Rectangle {
 
 component SoftButton inherits Rectangle {
     in property <string> text;
+    in property <string> accessible-name: root.text;
     in property <bool> enabled: true;
     in property <bool> checked: false;
+    in property <bool> checkable: false;
     in property <string> variant: "outline"; // "outline" | "primary" | "danger" | "action"
     in property <bool> dark-mode: false;
 
@@ -292,11 +418,20 @@ component SoftButton inherits Rectangle {
     property <color> accent-strong: root.dark-mode ? #5aa2ff : #0d6efd;
 
     out property <bool> has-hover <=> touch.has-hover;
-    out property <bool> pressed <=> touch.pressed;
+    out property <bool> has-focus <=> button-focus.has-focus;
+    out property <bool> pressed: touch.pressed || root.keyboard-pressed;
+    property <bool> keyboard-pressed: false;
     callback clicked();
 
     min-height: 32px;
     vertical-stretch: 0;
+    forward-focus: button-focus;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-label: root.accessible-name;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
     border-radius: 6px;
     border-width: root.variant == "outline" ? 1px : 0px;
     border-color: root.enabled ? (root.has-hover ? root.combo-border-hover : root.combo-border) : root.combo-border;
@@ -308,7 +443,7 @@ component SoftButton inherits Rectangle {
             (root.variant == "danger" ?
                 (root.has-hover ? #b91c1c : #dc2626) :
                 (root.variant == "action" ?
-                    (root.has-hover ? #0a707e : #0f7c8c) :
+                    (root.has-hover ? #0b5ed7 : #0d6efd) :
                     (root.checked ?
                         root.combo-selected-bg :
                         (root.has-hover ? root.combo-bg-hover : root.combo-bg)
@@ -341,26 +476,70 @@ component SoftButton inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => {
             if (root.enabled) {
+                button-focus.focus();
                 root.clicked();
             }
         }
+    }
+
+    button-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.keyboard-pressed = true;
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+        key-released(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.keyboard-pressed = false;
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if root.has-focus && root.enabled: Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: 4px;
+        border-width: 2px;
+        border-color: root.variant == "primary" || root.variant == "danger" || root.variant == "action" ? #ffffff : #0d6efd;
+        background: transparent;
     }
 }
 
 component NavItem inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
+    in property <int> tab-index: 0;
     in property <brush> normal-background: transparent;
     in property <brush> hover-background: #eef6ff;
     in property <brush> selected-background: #0f7c8c;
     in property <color> normal-text: #334155;
     in property <color> selected-text: #ffffff;
     out property <bool> has-hover <=> touch.has-hover;
+    out property <bool> has-focus <=> nav-focus.has-focus;
     callback clicked();
+    callback navigate(string);
 
     height: 46px;
+    forward-focus: nav-focus;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-index: root.tab-index;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
     border-radius: 6px;
     background: root.selected ? root.selected-background : (root.has-hover ? root.hover-background : root.normal-background);
     animate background { duration: 150ms; easing: ease-out; }
@@ -387,7 +566,34 @@ component NavItem inherits Rectangle {
     }
 
     touch := TouchArea {
-        clicked => { root.clicked(); }
+        clicked => { nav-focus.focus(); root.clicked(); }
+    }
+
+    nav-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
+            if (event.text == Key.UpArrow) { root.navigate("up"); return accept; }
+            if (event.text == Key.DownArrow) { root.navigate("down"); return accept; }
+            if (event.text == Key.Home) { root.navigate("home"); return accept; }
+            if (event.text == Key.End) { root.navigate("end"); return accept; }
+            return reject;
+        }
+    }
+
+    if root.has-focus: Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: 4px;
+        border-width: 2px;
+        border-color: root.selected ? #ffffff : #0d6efd;
+        background: transparent;
     }
 }
 
@@ -396,11 +602,19 @@ component QueueMenuItem inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> danger: false;
     in property <bool> dark-mode: false;
+    out property <bool> has-focus <=> menu-focus.has-focus;
     callback clicked();
+    callback navigate(string);
+    callback dismiss();
 
     height: 38px;
+    forward-focus: menu-focus;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
     border-radius: 6px;
-    background: root.enabled && touch.has-hover ? (root.dark-mode ? #243248 : #e7f1ff) : transparent;
+    background: root.enabled && (touch.has-hover || root.has-focus) ? (root.dark-mode ? #243248 : #e7f1ff) : transparent;
     animate background { duration: 120ms; easing: ease-out; }
 
     Text {
@@ -415,9 +629,135 @@ component QueueMenuItem inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => {
             if (root.enabled) {
+                menu-focus.focus();
                 root.clicked();
+            }
+        }
+    }
+
+    menu-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
+            if (event.text == Key.UpArrow) { root.navigate("up"); return accept; }
+            if (event.text == Key.DownArrow) { root.navigate("down"); return accept; }
+            if (event.text == Key.Home) { root.navigate("home"); return accept; }
+            if (event.text == Key.End) { root.navigate("end"); return accept; }
+            if (event.text == Key.Escape) { root.dismiss(); return accept; }
+            return reject;
+        }
+    }
+
+    if root.has-focus && root.enabled: Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: 4px;
+        border-width: 2px;
+        border-color: #0d6efd;
+        background: transparent;
+    }
+}
+
+component HelpHint inherits Rectangle {
+    in property <string> text;
+    in property <bool> dark-mode: false;
+    property <bool> pinned: false;
+    out property <bool> has-focus <=> hint-focus.has-focus;
+
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: root.has-focus ? #0d6efd : (root.dark-mode ? #53647c : #b7c7da);
+    background: touch.has-hover || root.has-focus ? (root.dark-mode ? #243248 : #e7f1ff) : transparent;
+    forward-focus: hint-focus;
+    accessible-role: button;
+    accessible-label: "参数帮助";
+    accessible-description: root.text;
+    accessible-action-default => { root.pinned = !root.pinned; if (root.pinned) { tip.show(); } else { tip.close(); } }
+
+    Text {
+        text: "?";
+        color: root.dark-mode ? #b8c7da : #52657c;
+        font-size: 12px;
+        font-weight: 800;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        changed has-hover => {
+            if (self.has-hover) {
+                tip.show();
+            } else if (!root.has-focus && !root.pinned) {
+                tip.close();
+            }
+        }
+        clicked => {
+            hint-focus.focus();
+            root.pinned = !root.pinned;
+            if (root.pinned) { tip.show(); } else { tip.close(); }
+        }
+    }
+
+    hint-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        focus-changed-event => {
+            if (self.has-focus) {
+                tip.show();
+            } else if (!touch.has-hover && !root.pinned) {
+                tip.close();
+            }
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.pinned = !root.pinned;
+                if (root.pinned) { tip.show(); } else { tip.close(); }
+                return accept;
+            }
+            if (event.text == Key.Escape) {
+                root.pinned = false;
+                tip.close();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    tip := PopupWindow {
+        x: -326px;
+        y: root.height + 5px;
+        width: 320px;
+        height: min(160px, max(44px, tip-text.preferred-height + 20px));
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.dark-mode ? #46566d : #c9d6e5;
+            background: root.dark-mode ? #182231 : #ffffff;
+
+            tip-text := Text {
+                x: 10px;
+                y: 10px;
+                width: parent.width - 20px;
+                text: root.text;
+                color: root.dark-mode ? #dce5f1 : #334155;
+                font-size: 12px;
+                wrap: word-wrap;
             }
         }
     }
@@ -512,6 +852,12 @@ export component AwjStudio inherits Window {
     in-out property <float> progress: 0.0;
     in-out property <string> status-text: "就绪";
     in property <[TaskRow]> task-rows;
+    in-out property <int> queue-pending-count: 0;
+    in-out property <int> queue-running-count: 0;
+    in-out property <int> queue-success-count: 0;
+    in-out property <int> queue-failed-count: 0;
+    in-out property <bool> queue-failed-only: false;
+    in-out property <int> selected-queue-index: -1;
     in property <[LargeImageRow]> large-image-rows;
     in-out property <int> selected-large-image-index: -1;
     in-out property <int> selected-large-image-action-index: 0;
@@ -567,6 +913,7 @@ export component AwjStudio inherits Window {
     property <bool> queue-menu-valid: root.queue-menu-index >= 0 && root.queue-menu-index < root.task-rows.length;
     property <bool> queue-menu-editable: root.queue-menu-valid && !root.task-rows[root.queue-menu-index].locked;
     property <bool> queue-menu-removable: root.queue-menu-valid && !root.running;
+    property <bool> selected-queue-valid: root.selected-queue-index >= 0 && root.selected-queue-index < root.task-rows.length;
 
     property <color> combo-bg: root.dark-mode ? #222c3b : #fbfdff;
     property <color> combo-bg-hover: root.dark-mode ? #293548 : #f3f8ff;
@@ -575,6 +922,20 @@ export component AwjStudio inherits Window {
     property <color> combo-border: root.dark-mode ? #3a4658 : #dfe8f3;
     property <color> combo-border-hover: root.dark-mode ? #4d6684 : #b9d6f7;
 
+    public function open-queue-menu(index: int, x: length, y: length) {
+        if index >= 0 && index < root.task-rows.length {
+            root.queue-menu-index = index;
+            root.queue-menu-x = max(0px, min(root.width - root.queue-menu-width - 10px, x));
+            root.queue-menu-y = max(0px, min(root.height - root.queue-menu-height - 10px, y));
+            root.queue-menu-origin-x = max(0px, x - root.queue-menu-x);
+            root.queue-menu-origin-y = max(0px, y - root.queue-menu-y);
+            root.queue-menu-opening = false;
+            root.queue-menu-visible = false;
+            queue-menu-popup.show();
+            root.queue-menu-opening = true;
+        }
+    }
+
     callback browse-input();
     callback input-path-accepted(string);
     callback browse-output();
@@ -582,6 +943,7 @@ export component AwjStudio inherits Window {
     callback start-conversion();
     callback cancel-conversion();
     callback clear-tasks();
+    callback retry-failed();
     callback queue-row-pointer-event(int, int, int, float);
     pure callback queue-drag-data(int) -> data-transfer;
     callback queue-drag-can-drop(DropEvent, int) -> DragAction;
@@ -745,6 +1107,8 @@ export component AwjStudio inherits Window {
                 VerticalLayout {
                     padding: root.page-gap;
                     spacing: 10px;
+                    accessible-role: navigation;
+                    accessible-label: "主导航";
 
                     Rectangle {
                         height: 52px;
@@ -763,8 +1127,9 @@ export component AwjStudio inherits Window {
 
                     Rectangle { height: 8px; background: transparent; }
 
-                    NavItem {
+                    queue-nav := NavItem {
                         label: "编码队列";
+                        tab-index: 0;
                         selected: root.selected-page == 1;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -772,9 +1137,15 @@ export component AwjStudio inherits Window {
                         normal-text: root.text-body;
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 1; }
+                        navigate(action) => {
+                            if (action == "down") { params-nav.focus(); }
+                            if (action == "home" || action == "up") { queue-nav.focus(); }
+                            if (action == "end") { settings-nav.focus(); }
+                        }
                     }
-                    NavItem {
+                    params-nav := NavItem {
                         label: "参数设置";
+                        tab-index: 1;
                         selected: root.selected-page == 0;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -782,9 +1153,16 @@ export component AwjStudio inherits Window {
                         normal-text: root.text-body;
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 0; }
+                        navigate(action) => {
+                            if (action == "up") { queue-nav.focus(); }
+                            if (action == "down") { menu-nav.focus(); }
+                            if (action == "home") { queue-nav.focus(); }
+                            if (action == "end") { settings-nav.focus(); }
+                        }
                     }
-                    NavItem {
+                    menu-nav := NavItem {
                         label: "菜单参数";
+                        tab-index: 2;
                         selected: root.selected-page == 3;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -792,11 +1170,17 @@ export component AwjStudio inherits Window {
                         normal-text: root.text-body;
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 3; }
+                        navigate(action) => {
+                            if (action == "up") { params-nav.focus(); }
+                            if (action == "down" || action == "end") { settings-nav.focus(); }
+                            if (action == "home") { queue-nav.focus(); }
+                        }
                     }
                     Rectangle { vertical-stretch: 1; background: transparent; }
 
-                    NavItem {
+                    settings-nav := NavItem {
                         label: "设置";
+                        tab-index: 3;
                         selected: root.selected-page == 2;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -804,6 +1188,11 @@ export component AwjStudio inherits Window {
                         normal-text: root.text-body;
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 2; }
+                        navigate(action) => {
+                            if (action == "up") { menu-nav.focus(); }
+                            if (action == "home") { queue-nav.focus(); }
+                            if (action == "down" || action == "end") { settings-nav.focus(); }
+                        }
                     }
                 }
             }
@@ -837,110 +1226,116 @@ export component AwjStudio inherits Window {
                                     VerticalLayout {
                                         spacing: 10px;
 
+                                        Text { text: "常用参数"; height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
+
                                         HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "预设"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "视觉无损", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: "自定义不改质量字段；无损=q100；视觉无损=vq75；平衡=vq50；快速=vq25；急速=vq17。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: "编码预设"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "视觉无损", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "自定义不改质量字段；无损=q100；视觉无损=vq75；平衡=vq50；快速=vq25；急速=vq17。"; }
                                         }
 
                                         HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "格式"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: "输出格式：AVIF 体积优先；WebP 兼容网页；JXL 高保真；JPGLI 使用 Jpegli 生成 JPEG 兼容 bitstream。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: "输出格式"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "AVIF 体积优先；WebP 兼容网页；JXL 高保真；JPGLI 使用 Jpegli 生成 JPEG 兼容 bitstream。"; }
                                         }
 
                                         if root.format-index == 0: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "编码器"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: "自动按资源选择；svt-av1-hdr 偏高吞吐；aom 支持 grid；zenrav1e 为实验项，需在设置中启用。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                                        }
-
-                                        HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            Text { text: "线程"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { text <=> root.threads-text; placeholder-text: "自动/线程数"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            Text { text: "自动或正整数；留空等同自动。线程越多不一定越快，程序会结合任务数与内存预算规划并发。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                                        }
-
-                                        HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            Text { text: "内存"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { text <=> root.memory-limit-text; placeholder-text: "例如 4（单位 GiB）"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            Text { text: "只能填写数字，单位固定 GiB；例如 4 表示 4 GiB。留空时按系统可用内存自动规划，避免过量并发。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                                        }
-
-                                        HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            Text { text: "尺寸限制"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "无限制", enabled: true }, { text: "手动", enabled: true }]; current-index <=> root.size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: "自动按格式常用最大边长限制；手动会取宽、高、长边、短边中最严格的缩小比例。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                                        }
-
-                                        if root.size-limit-index == 2: HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            Text { text: "手动尺寸"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { text <=> root.max-width-text; placeholder-text: "最大宽"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                            LineEdit { text <=> root.max-height-text; placeholder-text: "最大高"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                            LineEdit { text <=> root.max-long-edge-text; placeholder-text: "最大长边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                            LineEdit { text <=> root.max-short-edge-text; placeholder-text: "最大短边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                            SoftComboBox { accessible-name: "AVIF 编码器"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "自动按资源选择；svt-av1-hdr 偏高吞吐；aom 支持 grid；zenrav1e 为实验项，需在设置中启用。"; }
                                         }
 
                                         HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { text <=> root.quality-text; placeholder-text: root.visual-quality-text.is-empty ? "1-100/q90/0.9" : "由视觉质量自动控制"; enabled: !root.running && root.visual-quality-text.is-empty; width: root.parameter-control-width; opacity: root.visual-quality-text.is-empty ? 1.0 : 0.56; height: root.parameter-control-height; }
-                                            Text { text: "数值越高质量越好、体积越大。填写视觉质量后，此项会由搜索流程接管。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            LineEdit { accessible-label: "质量"; text <=> root.quality-text; placeholder-text: root.visual-quality-text.is-empty ? "1-100/q90/0.9" : "由视觉质量自动控制"; enabled: !root.running && root.visual-quality-text.is-empty; width: root.parameter-control-width; opacity: root.visual-quality-text.is-empty ? 1.0 : 0.56; height: root.parameter-control-height; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "数值越高质量越好、体积越大。填写视觉质量后，此项会由搜索流程接管。"; }
                                         }
 
                                         HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "视觉质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { text <=> root.visual-quality-text; placeholder-text: "空由质量决定，1-100"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            Text { text: "留空关闭；填写 1-100 后会搜索多个候选，并以 GMSD/MS-SSIM 等指标判断是否达到目标质量。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            LineEdit { accessible-label: "视觉质量"; text <=> root.visual-quality-text; placeholder-text: "空由质量决定，1-100"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "留空关闭；填写 1-100 后会搜索多个候选，并以 GMSD/MS-SSIM 等指标判断是否达到目标质量。"; }
                                         }
 
                                         if root.format-index != 3: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "速度"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { text <=> root.speed-text; placeholder-text: "默认/可选0-10"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            Text { text: "数值越低通常越慢但压缩率更高。留空使用当前预设与编码器默认速度。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            LineEdit { accessible-label: "速度"; text <=> root.speed-text; placeholder-text: "默认/可选0-10"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "数值越低通常越慢但压缩率更高。留空使用当前预设与编码器默认速度。"; }
                                         }
+
+                                        Text { text: "资源限制"; height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "线程"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { accessible-label: "线程"; text <=> root.threads-text; placeholder-text: "自动/线程数"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "自动或正整数；留空等同自动。线程越多不一定越快，程序会结合任务数与内存预算规划并发。"; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "内存"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { accessible-label: "内存限制"; text <=> root.memory-limit-text; placeholder-text: "例如 4（单位 GiB）"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "只能填写数字，单位固定 GiB；例如 4 表示 4 GiB。留空时按系统可用内存自动规划，避免过量并发。"; }
+                                        }
+
+                                        HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "尺寸限制"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: "图片尺寸限制"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "无限制", enabled: true }, { text: "手动", enabled: true }]; current-index <=> root.size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "自动按格式常用最大边长限制；手动会取宽、高、长边、短边中最严格的缩小比例。"; }
+                                        }
+
+                                        if root.size-limit-index == 2: HorizontalLayout {
+                                            height: 48px;
+                                            spacing: 10px;
+                                            Text { text: "手动尺寸"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            LineEdit { accessible-label: "最大宽度"; text <=> root.max-width-text; placeholder-text: "最大宽"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                            LineEdit { accessible-label: "最大高度"; text <=> root.max-height-text; placeholder-text: "最大高"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                            LineEdit { accessible-label: "最大长边"; text <=> root.max-long-edge-text; placeholder-text: "最大长边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                            LineEdit { accessible-label: "最大短边"; text <=> root.max-short-edge-text; placeholder-text: "最大短边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                        }
+
+                                        Text { text: "格式高级选项"; height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
 
                                         if root.format-index == 0: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "位深"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { text <=> root.bit-depth-text; placeholder-text: "保持原片"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            Text { text: "支持 8/10/12-bit；留空会按源图与编码器能力自动选择。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            LineEdit { accessible-label: "位深"; text <=> root.bit-depth-text; placeholder-text: "保持原片"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "支持 8/10/12-bit；留空会按源图与编码器能力自动选择。"; }
                                         }
 
                                         if (root.format-index == 0 && root.avif-encoder-index != 1) || root.format-index == 3: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "色度采样"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: root.format-index == 3 ? "JPGLI 支持 444/422/420；自动使用 Jpegli 默认采样，XYB 开启时使用 XYB 默认采样。" : "444 保留更多颜色细节；420 体积更小但色彩采样更强。AVIF aom/自动可用。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: "色度采样"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: root.format-index == 3 ? "JPGLI 支持 444/422/420；自动使用 Jpegli 默认采样，XYB 开启时使用 XYB 默认采样。" : "444 保留更多颜色细节；420 体积更小但色彩采样更强。AVIF aom/自动可用。"; }
                                         }
 
                                         if root.format-index == 3: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "渐进"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "关闭", enabled: true }, { text: "普通", enabled: true }, { text: "更细", enabled: true }]; current-index <=> root.jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: "关闭为顺序 JPEG；普通/更细会使用多扫描渐进编码，默认更细。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: "JPGLI 渐进级别"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "关闭", enabled: true }, { text: "普通", enabled: true }, { text: "更细", enabled: true }]; current-index <=> root.jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "关闭为顺序 JPEG；普通/更细会使用多扫描渐进编码，默认更细。"; }
                                         }
 
                                         if root.format-index == 3 && root.jpegli-progressive-index == 0: HorizontalLayout {
@@ -948,7 +1343,7 @@ export component AwjStudio inherits Window {
                                             spacing: 10px;
                                             Text { text: "哈夫曼"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             CheckBox { text: "优化哈夫曼表"; checked <=> root.jpegli-optimize-huffman; enabled: !root.running; width: root.parameter-control-width; }
-                                            Text { text: "关闭优化可使用固定表，编码更直接但体积通常更大。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "关闭优化可使用固定表，编码更直接但体积通常更大。"; }
                                         }
 
                                         if root.format-index == 3: HorizontalLayout {
@@ -956,23 +1351,23 @@ export component AwjStudio inherits Window {
                                             spacing: 10px;
                                             Text { text: "XYB"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             CheckBox { text: "启用 XYB"; checked <=> root.jpegli-xyb; enabled: !root.running; width: root.parameter-control-width; }
-                                            Text { text: "实验模式；开启后不写入源 ICC，适合单独测试体积与兼容性。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "实验模式；开启后不写入源 ICC，适合单独测试体积与兼容性。"; }
                                         }
 
                                         if root.format-index == 0: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "透明通道"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "强制开启", enabled: true }, { text: "自动", enabled: true }, { text: "关闭", enabled: true }]; current-index <=> root.alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: "关闭会丢弃透明信息；自动会按源图是否含透明决定；强制开启保留 alpha 通道。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: "透明通道"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "强制开启", enabled: true }, { text: "自动", enabled: true }, { text: "关闭", enabled: true }]; current-index <=> root.alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: "关闭会丢弃透明信息；自动会按源图是否含透明决定；强制开启保留 alpha 通道。"; }
                                         }
 
                                         if root.format-index == 0: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
                                             Text { text: "大图优先"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e 优先", enabled: true }, { text: "grid 优先", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            Text { text: ">1000万像素排到普通队列末尾；超过 AOM 单图上限后自动走大图链路：默认 zenrav1e 优先并回退 grid，也可改为 grid 优先并回退 zenrav1e；两者都失败则报错。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: "大图优先路径"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "zenrav1e 优先", enabled: true }, { text: "grid 优先", enabled: true }]; current-index <=> root.selected-large-image-action-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            HelpHint { dark-mode: root.dark-mode; text: ">1000万像素排到普通队列末尾；超过 AOM 单图上限后自动走大图链路：默认 zenrav1e 优先并回退 grid，也可改为 grid 优先并回退 zenrav1e；两者都失败则报错。"; }
                                         }
 
                                     }
@@ -1021,46 +1416,46 @@ export component AwjStudio inherits Window {
 
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "编辑格式"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.menu-format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            SoftComboBox { accessible-name: "右键输出格式"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.menu-format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                 Text { text: "此格式只决定正在编辑哪组右键参数；右键子菜单决定最终输出格式。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "预设"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "高质量", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.menu-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            SoftComboBox { accessible-name: "右键编码预设"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "高质量", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.menu-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                 Text { text: "保存到右键菜单专用参数，不影响左侧普通参数设置。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 0: HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "编码器"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.menu-avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            SoftComboBox { accessible-name: "右键 AVIF 编码器"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.menu-avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "质量"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { text <=> root.menu-quality-text; placeholder-text: "1-100/q90/0.9"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                LineEdit { accessible-label: "右键质量"; text <=> root.menu-quality-text; placeholder-text: "1-100/q90/0.9"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                 Text { text: "右键转换固定使用编码质量；PNG 始终无损。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "位深"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { text <=> root.menu-bit-depth-text; placeholder-text: "留空保持原片"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                LineEdit { accessible-label: "右键位深"; text <=> root.menu-bit-depth-text; placeholder-text: "留空保持原片"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                 Text { text: "不适用的格式会在保存/转换时忽略或按格式规则校验。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "速度"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { text <=> root.menu-speed-text; placeholder-text: "0-10，留空默认"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+                                LineEdit { accessible-label: "右键速度"; text <=> root.menu-speed-text; placeholder-text: "0-10，留空默认"; input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                 Text { text: "AVIF/WebP/JXL 可用；其他格式会忽略。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "色度采样"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.menu-chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            SoftComboBox { accessible-name: "右键色度采样"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.menu-chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                 Text { text: "AVIF/JPGLI 可用；其他格式会忽略。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "透明通道"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "强制", enabled: true }, { text: "自动", enabled: true }, { text: "关闭", enabled: true }]; current-index <=> root.menu-alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            SoftComboBox { accessible-name: "右键透明通道"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "强制", enabled: true }, { text: "自动", enabled: true }, { text: "关闭", enabled: true }]; current-index <=> root.menu-alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                 Text { text: "仅 AVIF 可用；JPGLI 不支持强制保留透明通道。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "渐进"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "关闭", enabled: true }, { text: "普通", enabled: true }, { text: "更细", enabled: true }]; current-index <=> root.menu-jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            SoftComboBox { accessible-name: "右键 JPGLI 渐进级别"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "关闭", enabled: true }, { text: "普通", enabled: true }, { text: "更细", enabled: true }]; current-index <=> root.menu-jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                 Text { text: "关闭为顺序 JPEG；普通和更细使用渐进编码。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
@@ -1075,15 +1470,15 @@ export component AwjStudio inherits Window {
                             }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "尺寸限制"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "无限制", enabled: true }, { text: "手动", enabled: true }]; current-index <=> root.menu-size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            SoftComboBox { accessible-name: "右键图片尺寸限制"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自动", enabled: true }, { text: "无限制", enabled: true }, { text: "手动", enabled: true }]; current-index <=> root.menu-size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                 Text { text: "手动限制会取宽、高、长边、短边中最严格的缩小比例。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-size-limit-index == 2: HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "手动尺寸"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { text <=> root.menu-max-width-text; placeholder-text: "最大宽"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                LineEdit { text <=> root.menu-max-height-text; placeholder-text: "最大高"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                LineEdit { text <=> root.menu-max-long-edge-text; placeholder-text: "最大长边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                LineEdit { text <=> root.menu-max-short-edge-text; placeholder-text: "最大短边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                LineEdit { accessible-label: "右键最大宽度"; text <=> root.menu-max-width-text; placeholder-text: "最大宽"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                LineEdit { accessible-label: "右键最大高度"; text <=> root.menu-max-height-text; placeholder-text: "最大高"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                LineEdit { accessible-label: "右键最大长边"; text <=> root.menu-max-long-edge-text; placeholder-text: "最大长边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+                                LineEdit { accessible-label: "右键最大短边"; text <=> root.menu-max-short-edge-text; placeholder-text: "最大短边"; input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
                             }
                             HorizontalLayout { spacing: root.page-gap;
                                 CheckBox { text: "移除元数据"; checked <=> root.menu-strip-metadata; enabled: !root.running; }
@@ -1096,7 +1491,7 @@ export component AwjStudio inherits Window {
                 }
 
                 if root.selected-page == 1: VerticalLayout {
-                    spacing: root.page-gap;
+                    spacing: 8px;
 
                     Rectangle {
                         border-radius: 8px;
@@ -1106,24 +1501,24 @@ export component AwjStudio inherits Window {
                         animate background, border-color { duration: 180ms; easing: ease-out; }
 
                         VerticalLayout {
-                            padding: 22px;
-                            spacing: root.page-gap;
+                            padding: 16px;
+                            spacing: 8px;
 
                             VerticalLayout {
-                                spacing: root.page-gap;
+                                spacing: 8px;
                                 horizontal-stretch: 1;
 
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "输入路径"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.input-path; placeholder-text: "输入图片文件或文件夹路径，回车加入队列"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: root.control-button-height; accepted(text) => { root.input-path-accepted(text); } }
+                                    LineEdit { accessible-label: "输入路径"; text <=> root.input-path; placeholder-text: "输入图片文件或文件夹路径，回车加入队列"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: root.control-button-height; accepted(text) => { root.input-path-accepted(text); } }
                                     Rectangle {
                                         width: root.control-button-width * 2 + 10px;
                                         height: root.control-button-height;
                                         background: transparent;
                                         HorizontalLayout {
                                             spacing: 10px;
-                                            SoftComboBox { viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "文件", enabled: true }, { text: "文件夹", enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: root.control-button-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                            SoftComboBox { accessible-name: "输入类型"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "文件", enabled: true }, { text: "文件夹", enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: root.control-button-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
                                             SoftButton { dark-mode: root.dark-mode; text: "选择"; width: root.control-button-width; height: root.control-button-height; enabled: !root.running; clicked => { root.browse-input(); } }
                                         }
                                     }
@@ -1132,7 +1527,7 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "输出目录"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.output-dir; placeholder-text: "默认与输入同目录"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: root.control-button-height; }
+                                    LineEdit { accessible-label: "输出目录"; text <=> root.output-dir; placeholder-text: "默认与输入同目录"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: root.control-button-height; }
                                     Rectangle {
                                         width: root.control-button-width * 2 + 10px;
                                         height: root.control-button-height;
@@ -1148,7 +1543,7 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: "命名规则"; width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { text <=> root.template-text; placeholder-text: "例：{name}_{date}"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: 38px; }
+                                    LineEdit { accessible-label: "命名规则"; text <=> root.template-text; placeholder-text: "例：{name}_{date}"; enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: 38px; }
                                     Rectangle {
                                         width: 302px;
                                         height: 38px;
@@ -1158,6 +1553,7 @@ export component AwjStudio inherits Window {
                                             Rectangle { horizontal-stretch: 1; background: transparent; }
                                             Text { text: "重复处理"; width: 68px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                                             SoftComboBox {
+                                                accessible-name: "重复处理";
                                                 viewport-height: root.height;
                                                 close-generation: root.combo-close-generation;
                                                 popup-requested => { root.combo-popup-requested(); }
@@ -1184,12 +1580,12 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 8px;
                                     Rectangle { width: 88px; background: transparent; }
-                                    SoftButton { dark-mode: root.dark-mode; text: "参数"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "日期"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "时间"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "随机"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "哈希"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: 58px; height: 38px; enabled: !root.running; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "参数"; width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "日期"; width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "时间"; width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "随机"; width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "哈希"; width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
                             }
@@ -1220,15 +1616,45 @@ export component AwjStudio inherits Window {
                         animate background, border-color { duration: 180ms; easing: ease-out; }
 
                         VerticalLayout {
-                            padding: 18px;
-                            spacing: 10px;
+                            padding: 10px;
+                            spacing: 6px;
+
+                            HorizontalLayout {
+                                height: 34px;
+                                spacing: 10px;
+                                Text {
+                                    text: "待处理 " + root.queue-pending-count + "  ·  处理中 " + root.queue-running-count + "  ·  成功 " + root.queue-success-count + "  ·  失败 " + root.queue-failed-count;
+                                    color: root.text-muted;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                CheckBox {
+                                    text: "仅看失败";
+                                    checked <=> root.queue-failed-only;
+                                    enabled: root.task-rows.length > 0;
+                                    toggled => {
+                                        if (root.queue-failed-only && root.selected-queue-valid && root.task-rows[root.selected-queue-index].state != 3) {
+                                            root.selected-queue-index = -1;
+                                        }
+                                    }
+                                }
+                                SoftButton {
+                                    dark-mode: root.dark-mode;
+                                    text: "重试失败";
+                                    height: 32px;
+                                    width: 86px;
+                                    enabled: !root.running && root.queue-failed-count > 0;
+                                    clicked => { root.retry-failed(); }
+                                }
+                            }
 
                             Rectangle {
                                 vertical-stretch: 1;
-                                border-radius: 6px;
+                                border-radius: 4px;
                                 background: root.dark-mode ? #151b25 : #ffffff;
-                                border-color: root.panel-border;
-                                border-width: 1px;
+                                border-width: 0px;
                                 clip: true;
                                 animate background, border-color { duration: 180ms; easing: ease-out; }
 
@@ -1258,16 +1684,21 @@ export component AwjStudio inherits Window {
                                         vertical-stretch: 1;
                                         background: root.dark-mode ? #151b25 : #ffffff;
 
-                                        if root.task-rows.length == 0: Text {
-                                            text: "队列为空";
+                                        if root.task-rows.length == 0 || (root.queue-failed-only && root.queue-failed-count == 0): Text {
+                                            text: root.task-rows.length == 0 ? "队列为空" : "没有失败项";
                                             color: root.text-muted;
                                             font-size: 13px;
                                             horizontal-alignment: center;
                                             vertical-alignment: center;
                                         }
 
-                                        if root.task-rows.length > 0: ListView {
-                                     for row[index] in root.task-rows: drop-row := DropArea {
+                                        if root.task-rows.length > 0 && (!root.queue-failed-only || root.queue-failed-count > 0): ListView {
+                                     accessible-role: list;
+                                     accessible-label: "编码任务";
+                                     accessible-item-count: root.queue-failed-only ? root.queue-failed-count : root.task-rows.length;
+                                     for row[index] in root.task-rows: Rectangle {
+                                         height: (!root.queue-failed-only || row.state == 3) ? 34px : 0px;
+                                         if !root.queue-failed-only || row.state == 3: drop-row := DropArea {
                                          property <length> hover-y: 0px;
                                          property <int> drop-index: index + (drop-row.hover-y > drop-row.height / 2 ? 1 : 0);
                                          width: parent.width;
@@ -1287,8 +1718,12 @@ export component AwjStudio inherits Window {
                                              Rectangle {
                                                  width: parent.width;
                                                  height: parent.height;
-                                                 background: drop-row.has-drag ? (root.dark-mode ? #24324a : #e7f1ff) : (row-touch.has-hover ? (root.dark-mode ? #222d3c : #edf5ff) : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent));
-                                                 border-radius: 6px;
+                                                 background: root.selected-queue-index == index ? root.accent-soft : (drop-row.has-drag ? (root.dark-mode ? #24324a : #e7f1ff) : (row-touch.has-hover ? (root.dark-mode ? #222d3c : #edf5ff) : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent)));
+                                                 border-radius: 3px;
+                                                 accessible-role: list-item;
+                                                 accessible-label: row.filename + "，" + row.status;
+                                                 accessible-item-selectable: true;
+                                                 accessible-item-selected: root.selected-queue-index == index;
                                                  animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                                                  HorizontalLayout {
                                                      padding-left: 10px;
@@ -1305,16 +1740,11 @@ export component AwjStudio inherits Window {
                                                      width: parent.width;
                                                      height: parent.height;
                                                      pointer-event(event) => {
+                                                         if ((event.button == PointerEventButton.left || event.button == PointerEventButton.right) && event.kind == PointerEventKind.down) {
+                                                             root.selected-queue-index = index;
+                                                         }
                                                          if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
-                                                             root.queue-menu-index = index;
-                                                             root.queue-menu-x = max(0px, min(root.width - root.queue-menu-width - 10px, row-touch.absolute-position.x + row-touch.mouse-x));
-                                                             root.queue-menu-y = max(0px, min(root.height - root.queue-menu-height - 10px, row-touch.absolute-position.y + row-touch.mouse-y));
-                                                             root.queue-menu-origin-x = max(0px, row-touch.absolute-position.x + row-touch.mouse-x - root.queue-menu-x);
-                                                             root.queue-menu-origin-y = max(0px, row-touch.absolute-position.y + row-touch.mouse-y - root.queue-menu-y);
-                                                             root.queue-menu-opening = false;
-                                                             root.queue-menu-visible = false;
-                                                             queue-menu-popup.show();
-                                                             root.queue-menu-opening = true;
+                                                             root.open-queue-menu(index, row-touch.absolute-position.x + row-touch.mouse-x, row-touch.absolute-position.y + row-touch.mouse-y);
                                                          }
                                                          root.queue-row-pointer-event(
                                                              index,
@@ -1332,6 +1762,7 @@ export component AwjStudio inherits Window {
                                              height: 2px;
                                              background: root.accent-strong;
                                              border-radius: 1px;
+                                         }
                                          }
                                      }
                                         }
@@ -1357,6 +1788,57 @@ export component AwjStudio inherits Window {
 
                             Text { text: "总进度：" + root.status-text; color: root.text-muted; font-size: 12px; overflow: elide; }
                         }
+
+                        if root.selected-queue-valid: Rectangle {
+                            x: 10px;
+                            y: 50px;
+                            width: parent.width - 20px;
+                            height: min(154px, max(96px, parent.height - 94px));
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.panel-border;
+                            background: root.panel-bg-soft;
+                            clip: true;
+
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 6px;
+
+                                HorizontalLayout {
+                                    height: 28px;
+                                    spacing: 8px;
+                                    Text {
+                                        text: root.task-rows[root.selected-queue-index].filename + " · " + root.task-rows[root.selected-queue-index].status;
+                                        color: root.text-strong;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                    }
+                                    SoftButton {
+                                        dark-mode: root.dark-mode;
+                                        text: "×";
+                                        accessible-name: "关闭详情";
+                                        width: 30px;
+                                        height: 28px;
+                                        clicked => { root.selected-queue-index = -1; }
+                                    }
+                                }
+
+                                ScrollView {
+                                    vertical-stretch: 1;
+                                    VerticalLayout {
+                                        spacing: 4px;
+                                        Text { text: "输入：" + root.task-rows[root.selected-queue-index].input-path; color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                                        Text { text: "输出：" + (root.task-rows[root.selected-queue-index].output-path.is-empty ? "尚未生成" : root.task-rows[root.selected-queue-index].output-path); color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                                        Text { text: "编码器：" + (root.task-rows[root.selected-queue-index].encoder.is-empty ? "尚未确定" : root.task-rows[root.selected-queue-index].encoder) + "  ·  线程：" + (root.task-rows[root.selected-queue-index].threads.is-empty ? "-" : root.task-rows[root.selected-queue-index].threads); color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                                        Text { text: "阶段：" + (root.task-rows[root.selected-queue-index].stage-timings.is-empty ? "尚无数据" : root.task-rows[root.selected-queue-index].stage-timings); color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                                        Text { text: "错误/日志：" + (root.task-rows[root.selected-queue-index].log.is-empty ? "无" : root.task-rows[root.selected-queue-index].log); color: root.task-rows[root.selected-queue-index].state == 3 ? root.warning : root.text-muted; font-size: 12px; wrap: word-wrap; }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1378,6 +1860,7 @@ if root.selected-page == 2: ScrollView {
                                     spacing: root.page-gap;
                                     Text { text: "主题"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                     SoftComboBox {
+                                        accessible-name: "主题";
                                                 viewport-height: root.height;
                                         close-generation: root.combo-close-generation;
                                         popup-requested => { root.combo-popup-requested(); }
@@ -1404,6 +1887,7 @@ if root.selected-page == 2: ScrollView {
                                     spacing: root.page-gap;
                                     Text { text: "字体"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                     SoftComboBox {
+                                        accessible-name: "字体";
                                         viewport-height: root.height;
                                         max-visible-items: 10;
                                         close-generation: root.combo-close-generation;
@@ -1496,6 +1980,7 @@ if root.selected-page == 2: ScrollView {
             width: root.queue-menu-width;
             height: root.queue-menu-height;
             close-policy: close-on-click-outside;
+            forward-focus: open-folder-menu;
 
             menu-open-timer := Timer {
                 interval: 20ms;
@@ -1526,19 +2011,61 @@ if root.selected-page == 2: ScrollView {
                 border-color: root.panel-border;
                 background: root.dark-mode ? #17202c : #ffffff;
                 clip: true;
+                accessible-role: list;
+                accessible-label: "队列操作";
                 animate x, y, width, height { duration: 220ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
 
                 VerticalLayout {
                     padding: 6px;
                     spacing: 2px;
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "打开所在位置"; enabled: root.queue-menu-valid; clicked => { root.queue-menu-action(root.queue-menu-index, "open-folder"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "默认方式打开图片"; enabled: root.queue-menu-valid; clicked => { root.queue-menu-action(root.queue-menu-index, "open-image"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "优先编码"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "priority"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "最后编码"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "last"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "上移"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "move-up"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "下移"; enabled: root.queue-menu-editable && !root.running; clicked => { root.queue-menu-action(root.queue-menu-index, "move-down"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "复制完整路径"; enabled: root.queue-menu-valid; clicked => { root.queue-menu-action(root.queue-menu-index, "copy-path"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
-                    QueueMenuItem { dark-mode: root.dark-mode; text: "从队列移除"; enabled: root.queue-menu-removable && !root.running; danger: true; clicked => { root.queue-menu-action(root.queue-menu-index, "remove"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); } }
+                    open-folder-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "打开所在位置"; enabled: root.queue-menu-valid;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "open-folder"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "down") { open-image-menu.focus(); } if (action == "home" || action == "up") { open-folder-menu.focus(); } if (action == "end") { if (root.queue-menu-removable && !root.running) { remove-menu.focus(); } else { copy-menu.focus(); } } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
+                    open-image-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "默认方式打开图片"; enabled: root.queue-menu-valid;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "open-image"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "up" || action == "home") { open-folder-menu.focus(); } if (action == "down") { if (root.queue-menu-editable && !root.running) { priority-menu.focus(); } else { copy-menu.focus(); } } if (action == "end") { if (root.queue-menu-removable && !root.running) { remove-menu.focus(); } else { copy-menu.focus(); } } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
+                    priority-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "优先编码"; enabled: root.queue-menu-editable && !root.running;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "priority"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "up") { open-image-menu.focus(); } if (action == "down") { last-menu.focus(); } if (action == "home") { open-folder-menu.focus(); } if (action == "end") { if (root.queue-menu-removable) { remove-menu.focus(); } else { copy-menu.focus(); } } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
+                    last-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "最后编码"; enabled: root.queue-menu-editable && !root.running;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "last"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "up") { priority-menu.focus(); } if (action == "down") { move-up-menu.focus(); } if (action == "home") { open-folder-menu.focus(); } if (action == "end") { if (root.queue-menu-removable) { remove-menu.focus(); } else { copy-menu.focus(); } } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
+                    move-up-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "上移"; enabled: root.queue-menu-editable && !root.running;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "move-up"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "up") { last-menu.focus(); } if (action == "down") { move-down-menu.focus(); } if (action == "home") { open-folder-menu.focus(); } if (action == "end") { if (root.queue-menu-removable) { remove-menu.focus(); } else { copy-menu.focus(); } } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
+                    move-down-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "下移"; enabled: root.queue-menu-editable && !root.running;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "move-down"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "up") { move-up-menu.focus(); } if (action == "down") { copy-menu.focus(); } if (action == "home") { open-folder-menu.focus(); } if (action == "end") { if (root.queue-menu-removable) { remove-menu.focus(); } else { copy-menu.focus(); } } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
+                    copy-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "复制完整路径"; enabled: root.queue-menu-valid;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "copy-path"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "up") { if (root.queue-menu-editable && !root.running) { move-down-menu.focus(); } else { open-image-menu.focus(); } } if (action == "down" || action == "end") { if (root.queue-menu-removable && !root.running) { remove-menu.focus(); } else { copy-menu.focus(); } } if (action == "home") { open-folder-menu.focus(); } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
+                    remove-menu := QueueMenuItem {
+                        dark-mode: root.dark-mode; text: "从队列移除"; enabled: root.queue-menu-removable && !root.running; danger: true;
+                        clicked => { root.queue-menu-action(root.queue-menu-index, "remove"); root.queue-menu-opening = false; root.queue-menu-visible = false; menu-close-timer.restart(); }
+                        navigate(action) => { if (action == "up") { copy-menu.focus(); } if (action == "home") { open-folder-menu.focus(); } if (action == "down" || action == "end") { remove-menu.focus(); } }
+                        dismiss => { root.queue-menu-opening = false; root.queue-menu-visible = false; queue-menu-popup.close(); }
+                    }
                 }
             }
         }

@@ -548,18 +548,28 @@ if(NOT WIN32)
 endif()
 
 function(avif_add_slint_sources target slint_file)
+    set(options DEBUG_INFO)
+    set(one_value_args OUTPUT_SUFFIX)
+    cmake_parse_arguments(AWJ_SLINT "${options}" "${one_value_args}" "" ${ARGN})
+
     get_filename_component(slint_absolute "${slint_file}" REALPATH BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     get_filename_component(slint_base "${slint_absolute}" NAME_WE)
 
-    set(generated_header "${CMAKE_CURRENT_BINARY_DIR}/${slint_base}.h")
-    set(generated_cpp "${CMAKE_CURRENT_BINARY_DIR}/slint_generated_${slint_base}_1.cpp")
+    set(generated_header "${CMAKE_CURRENT_BINARY_DIR}/${slint_base}${AWJ_SLINT_OUTPUT_SUFFIX}.h")
+    set(generated_cpp "${CMAKE_CURRENT_BINARY_DIR}/slint_generated_${slint_base}${AWJ_SLINT_OUTPUT_SUFFIX}_1.cpp")
+    set(slint_compiler_command "$<TARGET_FILE:Slint::slint-compiler>")
+    if(AWJ_SLINT_DEBUG_INFO)
+        set(slint_compiler_command
+            "${CMAKE_COMMAND}" -E env SLINT_EMIT_DEBUG_INFO=1
+            "$<TARGET_FILE:Slint::slint-compiler>")
+    endif()
 
     # Slint's depfile currently produces noisy MSBuild warnings when the repo path
     # contains spaces. The UI has a single .slint file, so a direct dependency is
     # enough and keeps Windows paths intact.
     add_custom_command(
         OUTPUT "${generated_header}" "${generated_cpp}"
-        COMMAND "$<TARGET_FILE:Slint::slint-compiler>" "${slint_absolute}"
+        COMMAND ${slint_compiler_command} "${slint_absolute}"
                 -f cpp
                 --embed-resources embed-files
                 -o "${generated_header}"
@@ -1038,6 +1048,38 @@ endif()
 avif_add_slint_sources(AWJ ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
+
+if(BUILD_TESTING)
+    add_executable(awj_ui_smoke_tests
+        tests/ui_smoke_tests.cpp)
+    avif_enable_common_options(awj_ui_smoke_tests)
+    avif_add_slint_sources(awj_ui_smoke_tests ui/awj_studio.slint
+        DEBUG_INFO
+        OUTPUT_SUFFIX _ui_smoke)
+    target_include_directories(awj_ui_smoke_tests PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_definitions(awj_ui_smoke_tests PRIVATE
+        SLINT_FEATURE_EXPERIMENTAL=1)
+    target_link_libraries(awj_ui_smoke_tests PRIVATE Slint::Slint)
+    if(WIN32)
+        target_link_libraries(awj_ui_smoke_tests PRIVATE
+            dwmapi
+            gdi32
+            ole32
+            shell32
+            uxtheme
+            imm32
+            opengl32)
+    endif()
+    if(MSVC)
+        set_source_files_properties(
+            "${CMAKE_CURRENT_BINARY_DIR}/slint_generated_awj_studio_ui_smoke_1.cpp"
+            PROPERTIES COMPILE_OPTIONS
+                "/wd4060;/wd4099;/wd4201;/wd4244;/wd4267;/wd4305;/wd4458;/wd4624")
+    endif()
+    add_test(NAME ui_smoke COMMAND awj_ui_smoke_tests)
+    set_tests_properties(ui_smoke PROPERTIES TIMEOUT 30)
+endif()
 
 if(WIN32)
     add_executable(AWJ-com src/cli/shim_main.cpp)

@@ -3,6 +3,7 @@
 #include <string_view>
 
 import awj.codec;
+import awj.config;
 import awj.encoding_defaults;
 import awj.resource_planner;
 

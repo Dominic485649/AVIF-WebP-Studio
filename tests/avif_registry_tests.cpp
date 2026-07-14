@@ -5,6 +5,7 @@
 #include <string_view>
 
 import awj.avif_registry;
+import awj.codec;
 import awj.config;
 import awj.encoding_defaults;
 import awj.large_image_plan;

@@ -46,9 +46,15 @@ int main() {
 
   for (const char* path : {"sample.jxr", "sample.wdp", "sample.hdp"}) {
     auto jxr = awj::select_decoder_for_path(path, {.allow_wic_fallback = false});
+#if AWJ_HAS_WINDOWS_CODECS
     if (!jxr || jxr->fallback || jxr->decoder->id() != "windows-jxr") {
       return fail("JXR series did not select the Windows native JXR decoder.");
     }
+#else
+    if (jxr) {
+      return fail("Linux unexpectedly registered the Windows JXR decoder.");
+    }
+#endif
   }
 
   auto gif = awj::select_decoder_for_path("sample.gif", {.allow_wic_fallback = true});
@@ -62,9 +68,15 @@ int main() {
   }
 
   auto raw = awj::select_decoder_for_path("sample.awsraw", {.allow_wic_fallback = true});
+#if AWJ_HAS_AWJ_RAW_CODEC
   if (!raw || raw->fallback || raw->decoder->id() != "awj-raw") {
     return fail("AWJ raw did not select internal raw decoder.");
   }
+#else
+  if (raw) {
+    return fail("Build without AWJ raw support unexpectedly registered its decoder.");
+  }
+#endif
 
   auto camera_raw = awj::select_decoder_for_path("sample.dng", {.allow_wic_fallback = true});
   if (!camera_raw || camera_raw->fallback || camera_raw->decoder->id() != "libraw") {
@@ -72,14 +84,26 @@ int main() {
   }
 
   auto heif = awj::select_decoder_for_path("sample.heif", {.allow_wic_fallback = true});
+#if AWJ_HAS_WINDOWS_CODECS
   if (!heif || !heif->fallback || heif->decoder->id() != "wic") {
     return fail("HEIF did not route to WIC fallback when enabled.");
   }
+#else
+  if (heif) {
+    return fail("Linux unexpectedly accepted HEIF through WIC fallback.");
+  }
+#endif
 
   auto ico = awj::select_decoder_for_path("sample.ico", {.allow_wic_fallback = true});
+#if AWJ_HAS_WINDOWS_CODECS
   if (!ico || !ico->fallback || ico->decoder->id() != "wic") {
     return fail("ICO did not route to WIC fallback when enabled.");
   }
+#else
+  if (ico) {
+    return fail("Linux unexpectedly accepted ICO through WIC fallback.");
+  }
+#endif
 
   auto disabled = awj::select_decoder_for_path("sample.heif", {.allow_wic_fallback = false});
   if (disabled) {
