@@ -11,6 +11,7 @@
 - 队列新增待处理、处理中、成功、失败计数、仅看失败、重试失败项和选中项详情；详情显示完整错误、输入/输出路径、编码器、线程数及四阶段耗时，避免表格省略关键信息。
 - Studio CLI worker 协议新增版本化 `DETAIL` 记录；新增纯 CLI Windows smoke，验证成功/失败 manifest、普通命名事件取消返回 130、Job Object 强制终止和进程清理，不启动 Studio 或 UI Automation。
 - 修复测试对 MSVC 间接模块可见性、Windows 路径字符类型、WIC/JXR 和 AWJ RAW 平台能力的隐式假设。Windows MSVC Release 31/31、Linux GCC 16.1 Release 16/16 通过；Linux ELF 同时验证 `-O3`、LTO、`x86-64-v3` 和静态 `libstdc++`/`libgcc`。
+- 发布 GitHub Release `0.10.3`：`AWJ_Linux.7z` 只含 Linux `AWJ`，`AWJ_Win.7z` 只含 `AWJ.exe` 与 `AWJ.com`。两包均用单线程、最高级别 LZMA2（`-m0=lzma2 -mx=9 -mmt=1 -mf=off`）打包并通过 `7z t`；归档 SHA-256 见 README 与 `RELEASE_NOTES_0.10.3.md`。
 
 ## 0.10.2 - 2026-07-13
 

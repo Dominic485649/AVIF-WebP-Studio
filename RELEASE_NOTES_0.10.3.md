@@ -58,6 +58,17 @@
 - UI smoke 是无窗口组件测试，不替代屏幕阅读器兼容性认证；它验证可访问树、键盘路径和最小布局几何。
 - `DETAIL` 是同版本 Studio 与其自举 CLI worker 的内部协议；不支持跨版本混用可执行文件。
 
+## GitHub 发行归档
+
+GitHub Release 标签为 [`0.10.3`](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3)。归档按平台严格拆分，不携带未指定的附属文件：
+
+| 归档 | 精确内容 | 大小 | SHA-256 |
+|---|---|---:|---|
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Linux.7z) | `AWJ`（Linux ELF） | 16,338,056 bytes | `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c` |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Win.7z) | `AWJ.exe`、`AWJ.com`（Windows） | 11,717,484 bytes | `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae` |
+
+两份文件均使用 7-Zip `-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off` 打包：LZMA2、最高压缩级别、单压缩线程，并关闭 `.exe` 的自动 BCJ2 过滤以保持 LZMA2 方法。上传前 `7z t` 已通过；Linux 包只列出 `AWJ`，Windows 包只列出 `AWJ.exe` 和 `AWJ.com`。
+
 ## SHA-256
 
 ```text

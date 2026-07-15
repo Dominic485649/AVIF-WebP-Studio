@@ -50,6 +50,12 @@ Studio uses the same CLI pipeline in a child process. Its versioned ITEM/DETAIL 
 
 Windows MSVC Release passes 31/31 tests. Linux GCC 16.1 Release passes 16/16; its 53.1 MiB ELF retains `-O3`, LTO, `x86-64-v3`, static `libstdc++`/`libgcc`, and no dynamic `libstdc++.so.6` or `libgcc_s.so.1` dependency.
 
+## GitHub release archives (0.10.3)
+
+Create the archives from `bin/x64/Release` with the platform files kept separate: `AWJ_Linux.7z` contains only the ELF `AWJ`, while `AWJ_Win.7z` contains only `AWJ.exe` and `AWJ.com`. Use 7-Zip with `-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`; `-mf=off` prevents the automatic BCJ2 filter for `.exe` files, keeping every data block LZMA2. Before upload, validate the exact listing and method with `7z l -slt`, then test integrity with `7z t`.
+
+0.10.3 is published at the [GitHub Release](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3). `AWJ_Linux.7z` SHA-256: `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c`; `AWJ_Win.7z` SHA-256: `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae`.
+
 ## Large-image handling (0.10.1)
 
 - Oversized AVIF inputs use an automatic chain: preferred path then one fallback (`zenrav1e` default priority, or `grid` first).

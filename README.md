@@ -15,6 +15,17 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
+## 0.10.3 GitHub 发行包
+
+从 [GitHub Release 0.10.3](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3) 下载与系统匹配的归档；两个包不混装跨平台文件：
+
+| 归档 | 精确内容 | SHA-256 |
+|---|---|---|
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Linux.7z) | Linux ELF：`AWJ` | `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c` |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae` |
+
+归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。
+
 如需使用ffmpeg作为后端可用参考下面两个仓库
 
 [AVIF-Console](https://github.com/CialloKing/AVIF-Console)
@@ -72,6 +83,12 @@ git tag 0.10.3
 
 # 3. 构建
 .\release.ps1
+
+# 4. 从 bin\x64\Release 打包；Linux 和 Windows 归档分别只收录下列文件
+7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ -m0=lzma2 -mx=9 -mmt=1 -mf=off
+7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com -m0=lzma2 -mx=9 -mmt=1 -mf=off
+7z t ..\..\..\build\release\AWJ_Linux.7z
+7z t ..\..\..\build\release\AWJ_Win.7z
 ```
 
 `svt-av1-hdr` 与实验 `zenrav1e` 均静态链接进主程序，不需要 sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。

@@ -15,6 +15,17 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
+## 0.10.3 GitHub release archives
+
+Download the platform-matched archive from [GitHub Release 0.10.3](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3). The archives deliberately do not mix platform files:
+
+| Archive | Exact contents | SHA-256 |
+|---|---|---|
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Linux.7z) | Linux ELF: `AWJ` | `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c` |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae` |
+
+Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2.
+
 ## Build
 
 Windows (MSVC):
@@ -49,6 +60,12 @@ git add VERSION vcpkg.json CHANGELOG.md
 git commit -m "release: 0.10.3"
 git tag 0.10.3
 .\release.ps1
+
+# Run from bin\x64\Release. Each archive must contain only these files.
+7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ -m0=lzma2 -mx=9 -mmt=1 -mf=off
+7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com -m0=lzma2 -mx=9 -mmt=1 -mf=off
+7z t ..\..\..\build\release\AWJ_Linux.7z
+7z t ..\..\..\build\release\AWJ_Win.7z
 ```
 
 ## visual_quality GPU metrics

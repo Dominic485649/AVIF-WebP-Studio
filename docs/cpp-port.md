@@ -122,6 +122,12 @@ Debug 使用 `linux-gcc-x64-debug`。Release 验证应确认 `bin/x64/Release/AW
 
 测试可执行文件只在明确需要测试验证时单独构建，不能混入普通构建步骤。0.10.3 的 Windows MSVC Release 为 31/31，Linux GCC Release 为 16/16；Linux 测试配置需显式传 `-DBUILD_TESTING=ON`。Slint component smoke 使用 testing backend，不打开窗口；Windows 取消/强制终止由 `scripts/cli-worker-smoke.ps1` 直接测试 CLI worker、命名事件与 Job Object，不依赖 UI Automation。
 
+## GitHub 发行归档（0.10.3）
+
+从 `bin/x64/Release` 生成归档时，Linux 与 Windows 文件必须分开：`AWJ_Linux.7z` 只含 ELF `AWJ`，`AWJ_Win.7z` 只含 `AWJ.exe` 与 `AWJ.com`。使用 7-Zip `-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`；其中 `-mf=off` 禁用 `.exe` 自动 BCJ2 过滤，使所有数据块保持 LZMA2。上传前必须以 `7z l -slt` 核验精确清单和方法，并以 `7z t` 测试归档完整性。
+
+0.10.3 已发布到 [GitHub Release](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3)：`AWJ_Linux.7z` 的 SHA-256 为 `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c`，`AWJ_Win.7z` 的 SHA-256 为 `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae`。
+
 
 ## Linux UI 与文件管理器
 
