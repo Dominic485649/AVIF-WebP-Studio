@@ -180,13 +180,14 @@ if ($LASTEXITCODE -ne 0) {
 $BuildDate = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
 $AomVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "aom"
 $Dav1dVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "dav1d"
+$GitTagLine = if ($GitTag) { "Git Tag: $GitTag" } else { "Git Tag:" }
 
 $BuildInfoContent = @"
 AWJimage $Version
 Build Date: $BuildDate
 Build Type: Release
 Git Commit: $GitCommit
-Git Tag: $GitTag
+$GitTagLine
 Architecture: x64
 Source: https://github.com/Dominic485649/AWJimage
 

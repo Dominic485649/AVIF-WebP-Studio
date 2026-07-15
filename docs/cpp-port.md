@@ -92,6 +92,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 
 - CLI 文本输出使用 C++23 `std::println`，避免继续扩散 `cout`/`printf` 风格输出。
 - 批处理由统一 AWJ 可执行程序以 worker 模式执行；Studio 与 CLI 共用同一套参数解析与批处理服务。Windows 命令行入口由 `AWJ.com` shim 转发到 `AWJ.exe`，保留终端等待、stdout/stderr 和退出码；Linux 直接运行单个 ELF `AWJ`，没有 `AWJ.com`。Windows UI worker 继续用 Job Object 管理生命周期。
+- Windows Studio worker 使用版本化 ITEM/DETAIL 文本协议回传状态、编码器、线程数和 decode/prepare/encode/write 耗时；队列运行索引与原始队列索引分离，因此“仅重试失败项”仍能把结果映射回原条目。
 - C API 与平台 API 交界处统一用 `std::unique_ptr` 自定义 deleter 或局部 RAII 类型表达拥有关系，Windows 覆盖 Win32/COM 的 `Release`、`CoTaskMemFree`、`LocalFree`，通用路径覆盖 libavif/libjxl/libwebp/libraw 等资源释放。
 - 参数解析、文件系统、decoder/encoder 入口和重要分配路径使用 `std::expected<T, std::string>` 表达错误。
 - 索引型循环优先使用 `std::views::iota`，只有依赖迭代器失效、外部 C API 或更清晰的资源生命周期时才保留传统循环。
@@ -117,14 +118,21 @@ cmake --preset linux-gcc-x64-release
 cmake --build --preset linux-gcc-x64-release --target AWJ
 ```
 
-Debug 使用 `linux-gcc-x64-debug`。Release 验证应确认 `bin/x64/Release/AWJ` 是 ELF、目录中没有 `AWJ.com`，`readelf -d` 不包含 `libstdc++.so.6` / `libgcc_s.so.1`，`build.ninja` 中可见 `-O3`、`-flto`、`-march=x86-64-v3`、`-static-libstdc++` 和 `-static-libgcc`。当前 GCC 16.1 Release 实测约 47 MiB。
+Debug 使用 `linux-gcc-x64-debug`。Release 验证应确认 `bin/x64/Release/AWJ` 是 ELF、目录中没有 `AWJ.com`，`readelf -d` 不包含 `libstdc++.so.6` / `libgcc_s.so.1`，`build.ninja` 中可见 `-O3`、`-flto`、`-march=x86-64-v3`、`-static-libstdc++` 和 `-static-libgcc`。0.10.3 GCC 16.1 Release 实测约 53.1 MiB。
 
-测试可执行文件只在明确需要测试验证时单独构建，不能混入普通构建步骤。
+测试可执行文件只在明确需要测试验证时单独构建，不能混入普通构建步骤。0.10.3 的 Windows MSVC Release 为 31/31，Linux GCC Release 为 16/16；Linux 测试配置需显式传 `-DBUILD_TESTING=ON`。Slint component smoke 使用 testing backend，不打开窗口；Windows 取消/强制终止由 `scripts/cli-worker-smoke.ps1` 直接测试 CLI worker、命名事件与 Job Object，不依赖 UI Automation。
 
 
 ## Linux UI 与文件管理器
 
 Linux Studio 继续使用 `ui/awj_studio.slint`，不重做 UI。Win32 DWM、COM picker、注册表 shell 菜单和 `AWJ.com` 只在 Windows 构建；Linux 使用系统工具做最小平台适配：文件选择器依次尝试 `zenity`、`yad`、`kdialog`，打开输出目录依次尝试 `gio`、`xdg-open`、`thunar`。Ubuntu 默认 Nautilus 通过用户脚本目录支持右键入口，Thunar 通过 `~/.config/Thunar/uca.xml` 支持用户级自定义动作。
+
+## Studio 可访问性与队列诊断（0.10.3）
+
+- 自绘 combo、button、导航和队列菜单显式提供焦点、键盘操作、可访问角色/名称/状态；生产 Slint 输出不启用 experimental debug metadata，只有测试目标使用独立 `_ui_smoke` 生成文件。
+- 字体列表最多显示 10 行并保留滚轮/滚动条；参数页按常用、资源、高级格式分组，危险说明常驻，其余说明使用帮助提示。
+- 队列模型保留 pending/running/success/failed 计数、失败过滤、失败重试和详情字段。完整错误与路径不再依赖表格列宽展示。
+- 820×560、100%/150%/200% scale 和长文本几何由无窗口 smoke 覆盖；这不是屏幕阅读器认证，仍需在平台可访问工具发生兼容问题时补充针对性验证。
 ## 后续可扩展点
 
 - 如果未来需要更精确的目标体积，可以在 native 视觉质量搜索之外增加体积约束策略。

@@ -336,11 +336,17 @@ function Invoke-Awj([string[]]$Arguments) {
     $stderrTask = $process.StandardError.ReadToEndAsync()
     [long]$peak = 0
     while (-not $process.WaitForExit(100)) {
-        try { $peak = [Math]::Max($peak, $process.PeakWorkingSet64) } catch { }
+        try {
+            $process.Refresh()
+            $peak = [Math]::Max($peak, $process.PeakWorkingSet64)
+        } catch { }
     }
     $process.WaitForExit()
     $clock.Stop()
-    try { $peak = [Math]::Max($peak, $process.PeakWorkingSet64) } catch { }
+    try {
+        $process.Refresh()
+        $peak = [Math]::Max($peak, $process.PeakWorkingSet64)
+    } catch { }
     try { $cpuSeconds = $process.TotalProcessorTime.TotalSeconds } catch { $cpuSeconds = [double]::NaN }
     if ([double]::IsNaN($cpuSeconds) -or $peak -le 0) { throw 'Windows process CPU or peak-memory accounting failed.' }
     return [pscustomobject]@{

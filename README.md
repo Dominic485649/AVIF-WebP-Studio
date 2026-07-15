@@ -2,6 +2,8 @@
 
 English: [README.en.md](README.en.md)
 
+0.10.3 发布说明：[RELEASE_NOTES_0.10.3.md](RELEASE_NOTES_0.10.3.md)
+
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
 - AVIF：libavif/AOM、实验 `zenrav1e` 与 `svt-av1-hdr`；Windows 和 Linux GCC Release 均静态链接
@@ -36,7 +38,7 @@ cmake --preset linux-gcc-x64-release
 cmake --build --preset linux-gcc-x64-release --target AWJ
 ```
 
-`linux-gcc-x64-debug` 用于 Debug；`linux-gcc-x64-release` 使用 `-O3`、IPO/LTO、`-march=x86-64-v3`、section GC/strip，并静态链接 `libstdc++` / `libgcc`；只生成单个 `AWJ` ELF，没有 `AWJ.com`。当前实测 Release 约 47 MiB，主要来自静态 Slint、SVT-AV1-HDR、JPGLI/libjxl/libavif 等 native codec 依赖；`readelf -d bin/x64/Release/AWJ` 不应出现 `libstdc++.so.6` 或 `libgcc_s.so.1`。
+`linux-gcc-x64-debug` 用于 Debug；`linux-gcc-x64-release` 使用 `-O3`、IPO/LTO、`-march=x86-64-v3`、section GC/strip，并静态链接 `libstdc++` / `libgcc`；只生成单个 `AWJ` ELF，没有 `AWJ.com`。0.10.3 GCC 16.1 Release 实测约 53.1 MiB，主要来自静态 Slint、SVT-AV1-HDR、JPGLI/libjxl/libavif 等 native codec 依赖；`readelf -d bin/x64/Release/AWJ` 不应出现 `libstdc++.so.6` 或 `libgcc_s.so.1`。
 
 Windows 也可使用脚本：
 
@@ -60,13 +62,13 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 
 ```powershell
 # 1. 更新版本号
-Set-Content VERSION "0.10.2"
+Set-Content VERSION "0.10.3"
 .\scripts\Update-VcpkgVersion.ps1
 
 # 2. 提交并打 tag
 git add VERSION vcpkg.json
-git commit -m "release: 0.10.2"
-git tag 0.10.2
+git commit -m "release: 0.10.3"
+git tag 0.10.3
 
 # 3. 构建
 .\release.ps1
@@ -121,7 +123,9 @@ Studio 不再提供独立大图页；自动处理状态直接显示在主队列�
 
 多帧 WebP/GIF/APNG/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高。
 
-Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。
+Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。0.10.3 增加待处理、处理中、成功和失败计数、仅看失败、重试失败项及选中项详情；详情保留完整错误、输入/输出路径、编码器、线程数和 decode/prepare/encode/write 阶段耗时。
+
+SoftComboBox、SoftButton、左侧导航与队列右键菜单提供 Tab 焦点、可见焦点环、Enter/Space、方向键、Home/End、Esc 以及可访问角色/名称。字体下拉框仍最多显示 10 行，支持滚轮和滚动条，不提供搜索或手动输入。参数页按常用参数、资源限制、格式高级选项分组，危险警告常驻，其余长说明收进帮助提示。
 
 Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时，启动请求会合并到一个右键窗口和同一队列。右键窗口提供普通取消与强制终止；本体和右键窗口点击右上角关闭时会先终止活动任务。
 
@@ -130,12 +134,27 @@ Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时�
 Windows Release 的 canonical 基准使用固定 AVIF/AOM `quality=80`、`speed=6`、`chroma=420`、8-bit 和当前电源方案：
 
 ```powershell
-pwsh .\scripts\benchmark.ps1 -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e
+& .\scripts\benchmark.ps1 -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e -Surface cli
 ```
 
-脚本先预热一次，再运行五次（P95 使用 nearest-rank）；混合输入覆盖 1、4、12、13、613 张，透明与不透明输入分别覆盖 1、13 张，并测试 CLI、Studio manifest worker、右键 `shell` policy。`report.md`、`summary.csv`、`runs.csv`、`metadata.json` 和输入 SHA-256 清单写入 `build/benchmarks/`。canonical 运行要求源码工作树干净（允许 `release.ps1` 重建的已跟踪 Release 产物变化）、匹配当前 commit 的 `BUILD_INFO.txt`、Release 构建和显式电源方案；`-Smoke` 只用于验证基准工具，不可作为性能结论。
+脚本先预热一次，再运行五次（P95 使用 nearest-rank）；混合输入覆盖 1、4、12、13、613 张，透明与不透明输入分别覆盖 1、13 张。0.10.3 按当前测试约定只运行 CLI；`studio` 仍只是同一个 CLI worker 的 manifest policy，`shell` 也是 CLI policy，不需要窗口自动化。`report.md`、`summary.csv`、`runs.csv`、`metadata.json` 和输入 SHA-256 清单写入 `build/benchmarks/`。canonical 运行要求源码工作树干净（允许 `release.ps1` 重建的已跟踪 Release 产物变化）、匹配当前 commit 的 `BUILD_INFO.txt`、Release 构建和显式电源方案；`-Smoke` 只用于验证基准工具，不可作为性能结论。
 
 报告中的 `Process CPU` 是 Windows 进程 CPU 时间；`Item seconds sum` 是 `summary.csv` 逐图 `seconds` 之和，仅用于和下方历史数据比较。两者以及整批墙钟时间不得混用。
+
+### 0.10.3 canonical CLI 结果
+
+固定输入清单 SHA-256 为 `4CDFC310837192A7BDAC149C1C212ECD8F720AEE6EECB954D218D66D1E424628`。0.10.2 与 0.10.3 使用相同输入、AOM 3.13.3、libavif commit、电源方案、Release 构建、q80、speed6、4:2:0、8-bit 和 12 线程总预算；613 张均为 612 成功、1 个已知空 WebP 失败。
+
+| 613 张 CLI | 0.10.2 `ec61551` | 0.10.3 `5732b2b` |
+|---|---:|---:|
+| 墙钟中位数 / P95 | 214.361 / 226.493 s | 146.235 / 215.123 s |
+| 进程 CPU 中位数 / P95 | 1613.906 / 1624.469 s | 1332.266 / 1392.453 s |
+| 峰值内存中位数 / P95 | 13.1 / 13.1 MiB | 12.9 / 12.9 MiB |
+| 吞吐量中位数 | 2.860 img/s | 4.192 img/s |
+| decode / prepare / encode / write 中位数 | 51.107 / 0.346 / 2189.732 / 15.396 s | 35.994 / 0.242 / 1499.948 / 7.606 s |
+| encode 阶段占比 | 97.0% | 97.0% |
+
+0.10.3 五轮墙钟为 139.402..215.123 s，P95 仍接近旧版；小批次的峰值内存也有升有降。本版没有修改 CLI 编码路径、AOM 参数、quality、speed、色度、位深或线程规则，因此表中更快的中位数只作为本机观测结果，不归因于 UI 改动，也不据此实施 libaom 微优化。严格回归未复现，未启动 ETW/perf。
 
 以下为历史基准，AWJ 使用固定 `quality=80`、`speed=6`，不是当前 AVIF `quality=70` 的默认参数。612 张成功项中 610 张使用 AOM/libavif，2 张超过普通单图路径后使用 zenrav1e；另有 1 张空 WebP 按预期失败。AWJ 自动多核并行，ffmpeg 为单线程每实例。
 
@@ -169,11 +188,17 @@ AWJ 的 `--visual-quality` 选项通过 IQA 算法自动搜索最优编码参数
 
 ```powershell
 ctest --test-dir build/x64/Release -C Release --output-on-failure
+pwsh -NoProfile -File .\scripts\cli-worker-smoke.ps1
 ```
 
-Linux smoke test：
+`cli-worker-smoke.ps1` 不启动 Studio 窗口：它通过真实 CLI manifest 验证 ITEM/DETAIL、失败项重试输入、命名事件普通取消和 Job Object 强制终止进程树。Slint 的小型 component smoke 使用 testing backend，无窗口验证页面切换、键盘、字体滚动、深浅色、820×560 与 100%/150%/200% scale。0.10.3 Windows MSVC Release 为 31/31 通过。
+
+Linux GCC Release 测试：
 
 ```bash
-./bin/x64/Release/AWJ --help
-./bin/x64/Release/AWJ -i ui/logo.png -o /tmp/awj-vq --format webp --visual-quality 50 --visual-quality-gpu --visual-quality-fallback --summary
+cmake --preset linux-gcc-x64-release -DBUILD_TESTING=ON
+cmake --build --preset linux-gcc-x64-release
+ctest --test-dir build/linux-gcc-x64-release --output-on-failure
 ```
+
+0.10.3 Linux GCC 16.1 Release 为 16/16 通过；ELF 不依赖动态 `libstdc++.so.6` / `libgcc_s.so.1`，并确认 `-O3`、LTO、`x86-64-v3` 与静态 C++/GCC runtime 标志。

@@ -30,6 +30,8 @@ Native codecs only:
 9. Outputs go through temp files and collision policy before the final path.
 10. Logs and `summary.csv` record backend, quality, fallback, and GPU metric path.
 
+Studio uses the same CLI pipeline in a child process. Its versioned ITEM/DETAIL stream reports item state, encoder, thread count, and decode/prepare/encode/write timing; retry runs use a compact run index that maps back to the original queue row.
+
 ## Linux first-class support
 
 - One ELF `AWJ` for UI and CLI
@@ -37,6 +39,16 @@ Native codecs only:
 - No `AWJ.com`, no WIC UI, no JXR
 - File picker via zenity/yad/kdialog when available
 - User-level Nautilus Scripts and Thunar UCA context actions
+
+## Studio accessibility and queue diagnostics (0.10.3)
+
+- Custom combos, buttons, navigation, help controls, and queue menus expose focus, keyboard behavior, accessible roles, names, values, and states.
+- The font popup keeps at most ten visible rows with wheel and scrollbar support, without search or manual input.
+- Parameters are grouped into common, resource, and advanced-format sections. Dangerous warnings remain visible; long routine help moves to tooltips.
+- Queue counts, failed-only filtering, retry, and item details expose complete errors, paths, encoder threads, and stage timings outside the elided table.
+- A headless Slint component smoke covers 820x560, 100%/150%/200% scale, long text, navigation, keyboard, scrolling, and theme state. Windows worker cancellation and Job Object force termination are tested directly through the CLI, without UI Automation.
+
+Windows MSVC Release passes 31/31 tests. Linux GCC 16.1 Release passes 16/16; its 53.1 MiB ELF retains `-O3`, LTO, `x86-64-v3`, static `libstdc++`/`libgcc`, and no dynamic `libstdc++.so.6` or `libgcc_s.so.1` dependency.
 
 ## Large-image handling (0.10.1)
 
