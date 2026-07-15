@@ -90,15 +90,28 @@ The fixed AVIF/AOM profile is quality 80, speed 6, 4:2:0, and 8-bit. Each case h
 
 The fixed 613-file CLI case used the same input fingerprint, AOM 3.13.3, build profile, power scheme, and parameters in both versions:
 
-| Metric | 0.10.2 `ec61551` | 0.10.3 `5732b2b` |
-| --- | ---: | ---: |
-| Wall median / P95 | 214.361 / 226.493 s | 146.235 / 215.123 s |
-| Process CPU median / P95 | 1613.906 / 1624.469 s | 1332.266 / 1392.453 s |
-| Peak memory median / P95 | 13.1 / 13.1 MiB | 12.9 / 12.9 MiB |
-| Median throughput | 2.860 img/s | 4.192 img/s |
-| decode / prepare / encode / write median | 51.107 / 0.346 / 2189.732 / 15.396 s | 35.994 / 0.242 / 1499.948 / 7.606 s |
+The earlier 1367.171 and 1660.888 core-second records used different chroma/protocol settings, so they are neither directly comparable nor the baseline for this table.
 
-The five 0.10.3 wall runs range from 139.402 to 215.123 seconds, and small-case memory moved in both directions. No CLI encoder code, AOM tuning, quality, speed, chroma, bit-depth, or thread rule changed in 0.10.3, so the faster median is an observation, not a claimed UI optimization. The strict regression did not reproduce; ETW/perf was not run.
+| Metric | 0.10.2 `ec61551` | 0.10.3 `2798db2` |
+| --- | ---: | ---: |
+| Wall median / P95 | 214.361 / 226.493 s | 162.660 / 166.395 s |
+| Process CPU median / P95 | 1613.906 / 1624.469 s | 1381.844 / 1399.391 s |
+| Peak memory median / P95 | invalid (stale cached sample) | 2807.7 / 2822.4 MiB |
+| Median throughput | 2.860 img/s | 3.769 img/s |
+| decode / prepare / encode / write median | 51.107 / 0.346 / 2189.732 / 15.396 s | 40.749 / 0.314 / 1668.552 / 10.198 s |
+
+The five 0.10.3 wall runs are 158.326, 166.395, 162.366, 162.660, and 163.967 seconds. The old 0.10.2 peak-memory value came from the first cached `Process` sample and is not comparable; 0.10.3 refreshes the process data before each sample. Wall, CPU, and stage timings were unaffected. No CLI encoder code, AOM tuning, quality, speed, chroma, bit-depth, or thread rule changed in 0.10.3, so the faster median is an observation, not a claimed UI optimization. The strict regression did not reproduce; ETW/perf was not run.
+
+| 0.10.3 CLI case | Wall median / P95 (s) | CPU median / P95 (s) | Peak median / P95 (MiB) | Median throughput (img/s) |
+| --- | ---: | ---: | ---: | ---: |
+| mixed-1 | 1.577 / 3.648 | 2.656 / 3.703 | 104.7 / 105.0 | 0.634 |
+| mixed-4 | 1.804 / 2.447 | 8.094 / 8.625 | 317.2 / 321.5 | 2.217 |
+| mixed-12 | 6.295 / 6.600 | 25.406 / 26.031 | 826.1 / 860.8 | 1.906 |
+| mixed-13 | 11.004 / 12.692 | 30.312 / 33.734 | 786.6 / 801.8 | 1.181 |
+| opaque-1 | 0.605 / 0.635 | 1.875 / 2.000 | 119.9 / 120.3 | 1.653 |
+| transparent-1 | 1.150 / 1.249 | 1.969 / 2.141 | 121.7 / 121.8 | 0.870 |
+| opaque-13 | 5.887 / 6.433 | 26.500 / 27.531 | 897.0 / 918.3 | 2.208 |
+| transparent-13 | 6.733 / 7.040 | 27.734 / 28.250 | 882.9 / 902.0 | 1.931 |
 
 ## Studio and verification
 
