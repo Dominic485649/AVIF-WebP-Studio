@@ -30,6 +30,13 @@ Native codecs only:
 9. Outputs go through temp files and collision policy before the final path.
 10. Logs and `summary.csv` record backend, quality, fallback, and GPU metric path.
 
+## AVIF defaults (0.10.4)
+
+- `auto` always writes YUV 4:2:0; 4:2:2 and 4:4:4 require explicit chroma settings, and AVIF output never switches to RGB.
+- Non-opaque alpha is retained by `--alpha auto`; color and alpha both follow the requested quality or visual-quality result rather than forcing q100.
+- Source CICP range is preserved as PC/full or TV/limited unless overridden. Unknown range uses full.
+- q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite. All other inputs use lossless AOM quantization and default 4:2:0, which can still change pixels during RGB/YUV or chroma conversion; use explicit 4:4:4 when chroma subsampling is unacceptable.
+
 Studio uses the same CLI pipeline in a child process. Its versioned ITEM/DETAIL stream reports item state, encoder, thread count, and decode/prepare/encode/write timing; retry runs use a compact run index that maps back to the original queue row.
 
 ## Linux first-class support
@@ -42,23 +49,23 @@ Studio uses the same CLI pipeline in a child process. Its versioned ITEM/DETAIL 
 
 ## Studio accessibility and queue diagnostics (0.10.3)
 
-- Custom combos, buttons, navigation, help controls, and queue menus expose focus, keyboard behavior, accessible roles, names, values, and states.
+- Custom combos, buttons, navigation, and queue menus expose focus, keyboard behavior, accessible roles, names, values, and states.
 - The font popup keeps at most ten visible rows with wheel and scrollbar support, without search or manual input.
-- Parameters are grouped into common, resource, and advanced-format sections. Dangerous warnings remain visible; long routine help moves to tooltips.
+- Parameters are grouped into common, resource, and advanced-format sections. Dangerous warnings remain visible.
 - Queue counts, failed-only filtering, retry, and item details expose complete errors, paths, encoder threads, and stage timings outside the elided table.
 - A headless Slint component smoke covers 820x560, 100%/150%/200% scale, long text, navigation, keyboard, scrolling, and theme state. Windows worker cancellation and Job Object force termination are tested directly through the CLI, without UI Automation.
 
-Windows MSVC Release passes 31/31 tests. Linux GCC 16.1 Release passes 16/16; its 53.1 MiB ELF retains `-O3`, LTO, `x86-64-v3`, static `libstdc++`/`libgcc`, and no dynamic `libstdc++.so.6` or `libgcc_s.so.1` dependency.
+0.10.4 Windows MSVC Release passes 31/31 tests. The 55,614,152-byte Linux GCC 16.1 Release passes 16/16; its ELF retains `-O3`, LTO, `x86-64-v3`, static `libstdc++`/`libgcc`, and no dynamic `libstdc++.so.6` or `libgcc_s.so.1` dependency.
 
-## GitHub release archives (0.10.3)
+## GitHub release archives (0.10.4)
 
 Create the archives from `bin/x64/Release` with the platform files kept separate: `AWJ_Linux.7z` contains only the ELF `AWJ`, while `AWJ_Win.7z` contains only `AWJ.exe` and `AWJ.com`. Use 7-Zip with `-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`; `-mf=off` prevents the automatic BCJ2 filter for `.exe` files, keeping every data block LZMA2. Before upload, validate the exact listing and method with `7z l -slt`, then test integrity with `7z t`.
 
-0.10.3 is published at the [GitHub Release](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3). `AWJ_Linux.7z` SHA-256: `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c`; `AWJ_Win.7z` SHA-256: `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae`.
+0.10.4 is published at the [GitHub Release](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.4). The exact archive SHA-256 values are recorded in the Release body.
 
 ## Large-image handling (0.10.1)
 
 - Oversized AVIF inputs use an automatic chain: preferred path then one fallback (`zenrav1e` default priority, or `grid` first).
 - Studio has no separate large-image page; automatic handling remains visible in the main queue.
 - Session-only unlock removes the default 20 GiB input/runtime cap; it is never written to `AWJ.jsonc`.
-- Non-divisible grids use smaller right/bottom edge cells and preserve the original dimensions; incompatible explicit 420/422 requests fail clearly.
+- Non-divisible grids use smaller right/bottom edge cells and preserve the original dimensions; an incompatible default 420 grid fails clearly instead of silently changing to 444.

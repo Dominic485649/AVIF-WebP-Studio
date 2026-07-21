@@ -189,6 +189,10 @@ struct EncodeResult {
   double decode_seconds{-1.0};
   double prepare_seconds{-1.0};
   double encode_seconds{-1.0};
+  double avif_rgb_to_yuv_seconds{-1.0};
+  double avif_add_image_seconds{-1.0};
+  double avif_finish_seconds{-1.0};
+  double avif_output_copy_seconds{-1.0};
   double write_seconds{-1.0};
   double visual_quality_search_seconds{-1.0};
   double visual_quality_candidate_encode_seconds{-1.0};
@@ -2497,7 +2501,9 @@ std::expected<void, std::string> write_csv(
          "fallback_reason,speed_parameter_kind,applied_speed,encoder_threads,"
          "memory_budget_bytes,"
          "quality_overridden_by_visual_quality,lossless,"
-         "seconds,decode_seconds,prepare_seconds,encode_seconds,write_seconds,"
+         "seconds,decode_seconds,prepare_seconds,encode_seconds,avif_rgb_to_yuv_"
+         "seconds,avif_add_image_seconds,avif_finish_seconds,avif_output_copy_"
+         "seconds,write_seconds,"
          "visual_quality_search_seconds,visual_quality_candidate_encode_"
          "seconds,visual_quality_candidate_decode_seconds,"
          "visual_quality_candidate_io_seconds,visual_quality_luma_seconds,gmsd_"
@@ -2624,6 +2630,10 @@ std::expected<void, std::string> write_csv(
         << duration(result.decode_seconds) << ','
         << duration(result.prepare_seconds) << ','
         << duration(result.encode_seconds) << ','
+        << duration(result.avif_rgb_to_yuv_seconds) << ','
+        << duration(result.avif_add_image_seconds) << ','
+        << duration(result.avif_finish_seconds) << ','
+        << duration(result.avif_output_copy_seconds) << ','
         << duration(result.write_seconds) << ','
         << duration(result.visual_quality_search_seconds) << ','
         << duration(result.visual_quality_candidate_encode_seconds) << ','

@@ -3,23 +3,15 @@
 [CmdletBinding()]
 param(
     [string]$InputRoot = 'D:\图片\benchmark\test',
-    [string]$Executable = '',
+    [string]$AwjExecutable = '',
+    [string]$LegacyAwjExecutable = '',
+    [string]$DependencyBaselineAwjExecutable = '',
+    [string]$FfmpegExecutable = '',
+    [string]$MagickExecutable = '',
     [string]$ResultsRoot = '',
-    [ValidateSet('cli', 'studio', 'shell')]
-    [string[]]$Surface = @('cli', 'studio', 'shell'),
-    [ValidateSet(1, 4, 12, 13, 613)]
-    [int[]]$Count = @(1, 4, 12, 13, 613),
-    [ValidateRange(0, 613)]
-    [int[]]$AlphaCoverageCount = @(1, 13),
-    [ValidateRange(1, 100)]
-    [int]$Quality = 80,
-    [ValidateRange(0, 10)]
-    [int]$Speed = 6,
-    [ValidateSet('420', '444')]
-    [string]$Chroma = '420',
-    [ValidateSet(8, 10, 12)]
-    [int]$BitDepth = 8,
-    [ValidateRange(0, 3600)]
+    [ValidateSet('All', 'Regression', 'Strict')]
+    [string]$Mode = 'All',
+    [ValidateRange(0, 300)]
     [int]$CooldownSeconds = 30,
     [string]$PowerSchemeGuid = '',
     [switch]$Smoke,
@@ -28,9 +20,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Invariant = [Globalization.CultureInfo]::InvariantCulture
+$AwjQuality = 70
+$AwjSpeed = 6
+$FfmpegAomQuantizer = 23
+$WarmupRuns = if ($Smoke) { 0 } else { 1 }
+$MeasuredRuns = if ($Smoke) { 1 } else { 5 }
+$StrictCount = if ($Smoke) { 2 } else { 210 }
 
 function Get-Median([double[]]$Values) {
-    if ($Values.Count -eq 0) { throw 'Median requires at least one value.' }
+    if ($Values.Count -eq 0) { throw 'Median requires values.' }
     $sorted = [double[]]$Values.Clone()
     [Array]::Sort($sorted)
     $middle = [int]($sorted.Count / 2)
@@ -39,34 +37,63 @@ function Get-Median([double[]]$Values) {
 }
 
 function Get-P95([double[]]$Values) {
-    if ($Values.Count -eq 0) { throw 'P95 requires at least one value.' }
+    if ($Values.Count -eq 0) { throw 'P95 requires values.' }
     $sorted = [double[]]$Values.Clone()
     [Array]::Sort($sorted)
     return $sorted[[Math]::Ceiling(0.95 * $sorted.Count) - 1]
 }
 
-function Select-Evenly([object[]]$Items, [int]$Take) {
-    if ($Take -lt 1 -or $Take -gt $Items.Count) {
-        throw "Cannot select $Take items from $($Items.Count)."
-    }
-    if ($Take -eq $Items.Count) { return @($Items) }
-    if ($Take -eq 1) { return @($Items[[Math]::Floor(($Items.Count - 1) / 2)]) }
-    return @(for ($i = 0; $i -lt $Take; $i++) {
-        $index = [Math]::Floor($i * ($Items.Count - 1) / ($Take - 1))
-        $Items[$index]
-    })
+function Get-AutomaticThreadBudget([int]$HardwareThreads) {
+    if ($HardwareThreads -ge 12) { return $HardwareThreads - 4 }
+    if ($HardwareThreads -ge 5) { return $HardwareThreads - 2 }
+    if ($HardwareThreads -ge 2) { return $HardwareThreads - 1 }
+    return 1
 }
 
-function Get-GitStatusPath([string]$Line) {
-    return $Line.Substring(3).Trim('"').Replace('\', '/')
+function Get-ExpectedEncoderThreads([int]$Budget, [int]$FileCount) {
+    if ($FileCount -gt 12) { return 1 }
+    $desired = [Math]::Min([Math]::Max(1, $FileCount), $Budget)
+    for ($files = $desired; $files -ge 1; --$files) {
+        if (($Budget % $files) -eq 0) { return [int]($Budget / $files) }
+    }
+    return $Budget
+}
+
+function New-AwjArguments([string]$InputDirectory, [string]$OutputDirectory,
+                          [bool]$LegacyTenBit) {
+    $arguments = @('--input', $InputDirectory, '--output', $OutputDirectory,
+                   '--summary', '--no-log')
+    if ($LegacyTenBit) { $arguments += @('--bit-depth', '10') }
+    return $arguments
 }
 
 function Invoke-SelfTest {
     if ((Get-Median @(5, 1, 3, 2, 4)) -ne 3) { throw 'Median self-test failed.' }
     if ((Get-P95 @(5, 1, 3, 2, 4)) -ne 5) { throw 'P95 self-test failed.' }
-    $sample = @(Select-Evenly @(0, 1, 2, 3, 4, 5, 6) 4)
-    if (($sample -join ',') -ne '0,2,4,6') { throw 'Selection self-test failed.' }
-    if ((Get-GitStatusPath ' M bin/x64/Release/AWJ.exe') -ne 'bin/x64/Release/AWJ.exe') { throw 'Git status self-test failed.' }
+    $hardware = @(1, 2, 4, 5, 11, 12, 16)
+    $expected = @(1, 1, 3, 3, 9, 8, 12)
+    for ($index = 0; $index -lt $hardware.Count; ++$index) {
+        if ((Get-AutomaticThreadBudget $hardware[$index]) -ne $expected[$index]) {
+            throw "Thread budget self-test failed for $($hardware[$index])."
+        }
+    }
+    if ((Get-ExpectedEncoderThreads 12 1) -ne 12 -or
+        (Get-ExpectedEncoderThreads 12 4) -ne 3 -or
+        (Get-ExpectedEncoderThreads 12 12) -ne 1 -or
+        (Get-ExpectedEncoderThreads 12 13) -ne 1) {
+        throw 'Resource plan self-test failed.'
+    }
+    if (((New-AwjArguments 'in' 'out' $false) -join '|') -ne
+        '--input|in|--output|out|--summary|--no-log') {
+        throw 'Default argument self-test failed.'
+    }
+    if (((New-AwjArguments 'in' 'out' $true) -join '|') -ne
+        '--input|in|--output|out|--summary|--no-log|--bit-depth|10') {
+        throw 'Legacy argument self-test failed.'
+    }
+    if ($AwjQuality -ne 70 -or $AwjSpeed -ne 6 -or $FfmpegAomQuantizer -ne 23) {
+        throw 'Profile self-test failed.'
+    }
     Write-Host 'benchmark.ps1 self-test passed.'
 }
 
@@ -75,541 +102,814 @@ if ($SelfTest) {
     return
 }
 
-if (-not $IsWindows) { throw 'This benchmark runner currently requires Windows.' }
+if (-not $IsWindows) { throw 'This benchmark requires Windows.' }
 
-$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-if (-not $Executable) { $Executable = Join-Path $Repo 'bin\x64\Release\AWJ.exe' }
-$Executable = (Resolve-Path -LiteralPath $Executable).Path
-$InputRoot = (Resolve-Path -LiteralPath $InputRoot).Path
-if (-not $ResultsRoot) {
-    $ResultsRoot = Join-Path $Repo ('build\benchmarks\' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-}
-$ResultsRoot = [IO.Path]::GetFullPath($ResultsRoot)
-New-Item -ItemType Directory -Path $ResultsRoot -Force | Out-Null
-
-function Invoke-Git([string[]]$Arguments) {
-    $text = & git -C $Repo @Arguments 2>$null
-    if ($LASTEXITCODE -ne 0) { throw "git failed: git $($Arguments -join ' ')" }
-    return ($text -join "`n").Trim()
-}
-
-function Get-BuildInfoValue([string]$Path, [string]$Name) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
-    $line = Get-Content -LiteralPath $Path | Where-Object { $_ -match "^$([Regex]::Escape($Name)):\s*" } | Select-Object -First 1
-    return ($line -replace "^$([Regex]::Escape($Name)):\s*", '').Trim()
-}
-
-function Get-VcpkgPortVersion([string]$Port) {
-    $infoDirs = @(
-        (Join-Path $Repo 'build\x64\Release\vcpkg_installed\vcpkg\info'),
-        (Join-Path $Repo 'vcpkg_installed\vcpkg\info')
-    )
-    foreach ($dir in $infoDirs) {
-        $file = Get-ChildItem -LiteralPath $dir -Filter "${Port}_*.list" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($file.Name -match "^$([Regex]::Escape($Port))_(.+)_x64-") { return $Matches[1] }
-    }
-    return 'unknown'
+function Resolve-Executable([string]$Value, [string]$Command, [string]$Default = '') {
+    if ($Value) { return (Resolve-Path -LiteralPath $Value).Path }
+    if ($Default) { return (Resolve-Path -LiteralPath $Default).Path }
+    return (Get-Command $Command -ErrorAction Stop).Source
 }
 
 function Get-PowerScheme {
     $text = (powercfg /getactivescheme 2>&1) -join ' '
-    if ($LASTEXITCODE -ne 0 -or $text -notmatch '([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})') {
-        throw "Cannot read the active Windows power scheme: $text"
+    if ($LASTEXITCODE -ne 0 -or
+        $text -notmatch '([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})') {
+        throw "Cannot read active Windows power scheme: $text"
     }
     return [pscustomobject]@{ Guid = $Matches[1].ToLowerInvariant(); Text = $text.Trim() }
 }
 
-function Get-AutomaticThreadBudget([int]$HardwareThreads) {
-    if ($HardwareThreads -le 1) { return 1 }
-    if ($HardwareThreads -ge 12) { return [Math]::Min($HardwareThreads - 4, 128) }
-    if ($HardwareThreads -ge 5) { return $HardwareThreads - 2 }
-    return $HardwareThreads - 1
+function Get-BuildInfoValue([string]$Path, [string]$Key) {
+    $prefix = $Key + ':'
+    $line = Get-Content -LiteralPath $Path | Where-Object {
+        $_.StartsWith($prefix, [StringComparison]::Ordinal)
+    } | Select-Object -First 1
+    if (-not $line) { return '' }
+    return ([string]$line).Substring($prefix.Length).Trim()
 }
 
-function Get-ExpectedEncoderThreads([int]$Budget, [int]$FileCount) {
-    if ($FileCount -gt 12) { return 1 }
-    $desired = [Math]::Min($FileCount, $Budget)
-    for ($parallel = $desired; $parallel -ge 1; $parallel--) {
-        if (($Budget % $parallel) -eq 0) { return [int]($Budget / $parallel) }
+function Get-AwjDescriptor([string]$Role, [string]$Path, [bool]$LegacyTenBit) {
+    $infoPath = Join-Path (Split-Path -Parent $Path) 'BUILD_INFO.txt'
+    if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) {
+        throw "$Role has no BUILD_INFO.txt next to its executable."
     }
-    return $Budget
+    $version = ((Get-Content -LiteralPath $infoPath -First 1) -replace '^AWJimage\s+', '').Trim()
+    $type = Get-BuildInfoValue $infoPath 'Build Type'
+    $commit = Get-BuildInfoValue $infoPath 'Git Commit'
+    $aom = Get-BuildInfoValue $infoPath 'AOM'
+    if (-not $version -or $type -ne 'Release' -or -not $commit -or -not $aom) {
+        throw "$Role BUILD_INFO must identify version, Release, Git Commit, and AOM."
+    }
+    if (-not $Smoke -and $commit.EndsWith('-dirty', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Role is a dirty build. Canonical data requires a clean build."
+    }
+    return [pscustomobject]@{
+        Role = $Role
+        Path = $Path
+        SHA256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        Version = $version
+        BuildType = $type
+        Commit = $commit
+        Aom = $aom
+        Dav1d = Get-BuildInfoValue $infoPath 'dav1d'
+        Libyuv = Get-BuildInfoValue $infoPath 'libyuv'
+        VcpkgBaseline = Get-BuildInfoValue $infoPath 'Vcpkg baseline'
+        LegacyTenBit = $LegacyTenBit
+        BuildInfo = (Get-Content -LiteralPath $infoPath -Raw).TrimEnd()
+    }
 }
 
-$Version = (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()
-$GitCommit = Invoke-Git @('rev-parse', 'HEAD')
-$GitStatus = @(& git -C $Repo status --porcelain=v1 --untracked-files=all)
-if ($LASTEXITCODE -ne 0) { throw 'git status failed.' }
-$GeneratedReleaseFiles = @(
-    'bin/x64/Release/AWJ',
-    'bin/x64/Release/AWJ.com',
-    'bin/x64/Release/AWJ.exe',
-    'bin/x64/Release/AWJ.sha256',
-    'bin/x64/Release/AWJ.com.sha256',
-    'bin/x64/Release/AWJ.exe.sha256',
-    'bin/x64/Release/BUILD_INFO.txt',
-    'bin/x64/Release/LICENSE',
-    'bin/x64/Release/THIRD_PARTY_NOTICES.txt'
-)
-$SourceChanges = @($GitStatus | Where-Object {
-    $path = Get-GitStatusPath $_
-    $path -notin $GeneratedReleaseFiles
-})
-$GeneratedReleaseChanges = @($GitStatus | Where-Object {
-    $path = Get-GitStatusPath $_
-    $path -in $GeneratedReleaseFiles
-})
-$GitDirty = $SourceChanges.Count -gt 0
-$BuildInfoPath = Join-Path (Split-Path -Parent $Executable) 'BUILD_INFO.txt'
-$BuildCommit = Get-BuildInfoValue $BuildInfoPath 'Git Commit'
-$BuildVersion = if (Test-Path -LiteralPath $BuildInfoPath) {
-    ((Get-Content -LiteralPath $BuildInfoPath -First 1) -replace '^AWJimage\s+', '').Trim()
-} else { '' }
+function Add-BenchmarkJobType {
+    if ('AwjBenchmarkJob' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
 
-if (-not $Smoke) {
-    if (-not $PowerSchemeGuid) { throw 'Canonical benchmarks require -PowerSchemeGuid.' }
-    if ($GitDirty) { throw 'Canonical benchmarks require a clean worktree.' }
-    if (-not $BuildCommit -or $BuildCommit -ne $GitCommit) {
-        throw "BUILD_INFO commit '$BuildCommit' does not match workspace commit '$GitCommit'. Rebuild Release first."
+public sealed class AwjBenchmarkChild : IDisposable
+{
+    const uint WAIT_OBJECT_0 = 0;
+    const uint WAIT_TIMEOUT = 258;
+    const uint INFINITE = 0xffffffff;
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    IntPtr process;
+    IntPtr thread;
+    readonly int id;
+    internal AwjBenchmarkChild(IntPtr p, IntPtr t, uint processId) { process = p; thread = t; id = checked((int)processId); }
+    public bool HasExited {
+        get {
+            if (process == IntPtr.Zero) return true;
+            uint value = WaitForSingleObject(process, 0);
+            if (value == WAIT_OBJECT_0) return true;
+            if (value == WAIT_TIMEOUT) return false;
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
     }
-    if ($BuildVersion -ne $Version) {
-        throw "BUILD_INFO version '$BuildVersion' does not match VERSION '$Version'."
+    public int ProcessId { get { return id; } }
+    public int ExitCode {
+        get {
+            uint code;
+            if (process == IntPtr.Zero || !GetExitCodeProcess(process, out code)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return unchecked((int)code);
+        }
     }
-    if ((Get-BuildInfoValue $BuildInfoPath 'Build Type') -ne 'Release') {
-        throw 'BUILD_INFO does not identify a Release build. Rebuild with release.ps1.'
+    public void Wait() {
+        if (process == IntPtr.Zero) return;
+        if (WaitForSingleObject(process, INFINITE) != WAIT_OBJECT_0) throw new Win32Exception(Marshal.GetLastWin32Error());
     }
-} elseif ($BuildCommit -and $BuildCommit -ne $GitCommit) {
-    Write-Warning "Smoke run uses build commit '$BuildCommit', workspace is '$GitCommit'."
+    public void Dispose() {
+        if (thread != IntPtr.Zero) CloseHandle(thread);
+        if (process != IntPtr.Zero) CloseHandle(process);
+        thread = IntPtr.Zero;
+        process = IntPtr.Zero;
+    }
 }
+
+public sealed class AwjBenchmarkJob : IDisposable
+{
+    const uint CREATE_SUSPENDED = 0x00000004;
+    const uint CREATE_NO_WINDOW = 0x08000000;
+    const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    const int JobObjectBasicAccountingInformation = 1;
+    const int JobObjectExtendedLimitInformation = 9;
+    [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount, ReadTransferCount, WriteTransferCount, OtherTransferCount; }
+    [StructLayout(LayoutKind.Sequential)] struct BASIC_LIMIT { public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize; public uint ActiveProcessLimit; public UIntPtr Affinity; public uint PriorityClass, SchedulingClass; }
+    [StructLayout(LayoutKind.Sequential)] struct EXTENDED_LIMIT { public BASIC_LIMIT BasicLimitInformation; public IO_COUNTERS IoInfo; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
+    [StructLayout(LayoutKind.Sequential)] struct ACCOUNTING { public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime; public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct STARTUPINFO { public uint cb; public string lpReserved, lpDesktop, lpTitle; public uint dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags; public ushort wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+    [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public uint dwProcessId, dwThreadId; }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateJobObject(IntPtr a, string n);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr h, int c, ref EXTENDED_LIMIT i, uint s);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr h, int c, out EXTENDED_LIMIT i, uint s, IntPtr r);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr h, int c, out ACCOUNTING i, uint s, IntPtr r);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr h, IntPtr p);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr h, uint c);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcess(string app, StringBuilder command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO startup, out PROCESS_INFORMATION created);
+    IntPtr job;
+    public AwjBenchmarkJob() {
+        job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var info = new EXTENDED_LIMIT();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref info, checked((uint)Marshal.SizeOf(info)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public AwjBenchmarkChild Start(string executable, string[] arguments, string cwd) {
+        var startup = new STARTUPINFO();
+        startup.cb = checked((uint)Marshal.SizeOf(startup));
+        PROCESS_INFORMATION created;
+        var command = new StringBuilder(BuildCommandLine(executable, arguments));
+        if (!CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, IntPtr.Zero, cwd, ref startup, out created)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            if (!AssignProcessToJobObject(job, created.hProcess)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (ResumeThread(created.hThread) == UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return new AwjBenchmarkChild(created.hProcess, created.hThread, created.dwProcessId);
+        } catch {
+            CloseHandle(created.hThread);
+            CloseHandle(created.hProcess);
+            throw;
+        }
+    }
+    public double CpuSeconds {
+        get {
+            ACCOUNTING info;
+            if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, out info, checked((uint)Marshal.SizeOf(typeof(ACCOUNTING))), IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return (info.TotalUserTime + info.TotalKernelTime) / 10000000.0;
+        }
+    }
+    public long PeakMemoryBytes {
+        get {
+            EXTENDED_LIMIT info;
+            if (!QueryInformationJobObject(job, JobObjectExtendedLimitInformation, out info, checked((uint)Marshal.SizeOf(typeof(EXTENDED_LIMIT))), IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            ulong bytes = info.PeakJobMemoryUsed.ToUInt64();
+            return bytes > Int64.MaxValue ? Int64.MaxValue : checked((long)bytes);
+        }
+    }
+    static string BuildCommandLine(string executable, string[] arguments) {
+        var result = new StringBuilder(Quote(executable));
+        foreach (string argument in arguments) result.Append(' ').Append(Quote(argument));
+        return result.ToString();
+    }
+    static string Quote(string value) {
+        if (value.Length > 0 && value.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0) return value;
+        var result = new StringBuilder("\"");
+        int slashCount = 0;
+        foreach (char c in value) {
+            if (c == '\\') { ++slashCount; continue; }
+            if (c == '"') { result.Append('\\', slashCount * 2 + 1).Append('"'); slashCount = 0; continue; }
+            result.Append('\\', slashCount).Append(c);
+            slashCount = 0;
+        }
+        result.Append('\\', slashCount * 2).Append('"');
+        return result.ToString();
+    }
+    public void Dispose() {
+        if (job != IntPtr.Zero) CloseHandle(job);
+        job = IntPtr.Zero;
+    }
+}
+'@
+}
+
+$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$InputRoot = (Resolve-Path -LiteralPath $InputRoot).Path
+$AwjExecutable = Resolve-Executable $AwjExecutable '' (Join-Path $Repo 'bin\x64\Release\AWJ.exe')
+$MagickExecutable = Resolve-Executable $MagickExecutable 'magick'
+$RunRegression = $Mode -in @('All', 'Regression')
+$RunStrict = $Mode -in @('All', 'Strict')
+if ($RunStrict) {
+    $FfmpegExecutable = Resolve-Executable $FfmpegExecutable 'ffmpeg'
+    $FfprobeExecutable = Join-Path (Split-Path -Parent $FfmpegExecutable) 'ffprobe.exe'
+    if (-not (Test-Path -LiteralPath $FfprobeExecutable -PathType Leaf)) {
+        $FfprobeExecutable = (Get-Command ffprobe -ErrorAction Stop).Source
+    }
+}
+if (-not $ResultsRoot) {
+    $ResultsRoot = Join-Path $Repo ('build\benchmarks\awj-0.10.4-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+}
+$ResultsRoot = [IO.Path]::GetFullPath($ResultsRoot)
+if (Test-Path -LiteralPath $ResultsRoot) {
+    if (@(Get-ChildItem -LiteralPath $ResultsRoot -Force).Count) {
+        throw "Results root must be new or empty: $ResultsRoot"
+    }
+} else {
+    New-Item -ItemType Directory -Path $ResultsRoot | Out-Null
+}
+$StageRoot = Join-Path $ResultsRoot 'staged-inputs'
+$WorkRoot = Join-Path $ResultsRoot 'work'
+New-Item -ItemType Directory -Path $StageRoot, $WorkRoot -Force | Out-Null
 
 $Power = Get-PowerScheme
-if ($PowerSchemeGuid) {
-    $expectedPower = $PowerSchemeGuid.Trim('{}').ToLowerInvariant()
-    if ($Power.Guid -ne $expectedPower) {
-        throw "Active power scheme is $($Power.Guid), expected $expectedPower."
-    }
+if (-not $Smoke -and -not $PowerSchemeGuid) { throw 'Canonical runs require -PowerSchemeGuid.' }
+if ($PowerSchemeGuid -and $Power.Guid -ne $PowerSchemeGuid.Trim('{}').ToLowerInvariant()) {
+    throw "Power scheme is $($Power.Guid), expected $PowerSchemeGuid."
 }
-$LockedPowerGuid = $Power.Guid
 $HardwareThreads = [Environment]::ProcessorCount
 $ThreadBudget = Get-AutomaticThreadBudget $HardwareThreads
-$AomVersion = Get-BuildInfoValue $BuildInfoPath 'AOM'
-if (-not $AomVersion) { $AomVersion = Get-VcpkgPortVersion 'aom' }
-$Dav1dVersion = Get-BuildInfoValue $BuildInfoPath 'dav1d'
-if (-not $Dav1dVersion) { $Dav1dVersion = Get-VcpkgPortVersion 'dav1d' }
-$LibavifCommit = if ((Get-Content -LiteralPath (Join-Path $Repo 'CMakeLists.txt') -Raw) -match 'set\(AWJ_LIBAVIF_GIT_TAG\s+"?([^"\s\)]+)') { $Matches[1] } else { 'unknown' }
-$ExecutableSha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
-
-$SupportedExtensions = @('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp', '.bmp', '.dib', '.rle', '.tif', '.tiff', '.gif', '.jxl', '.avif')
-$Magick = (Get-Command magick -ErrorAction Stop).Source
-
-function Get-AlphaClass([IO.FileInfo]$File) {
-    if ($File.Length -eq 0) { return 'invalid' }
-    if ($File.Extension.ToLowerInvariant() -in @('.jpg', '.jpeg', '.jpe', '.jfif')) { return 'opaque' }
-    $frame = $File.FullName + '[0]'
-    $text = (& $Magick $frame -alpha extract -format '%[fx:minima]' 'info:' 2>$null) -join ''
-    if ($LASTEXITCODE -ne 0) { return 'unknown' }
-    [double]$minimum = 0
-    if (-not [double]::TryParse($text.Trim(), [Globalization.NumberStyles]::Float, $Invariant, [ref]$minimum)) {
-        return 'unknown'
+$Target = Get-AwjDescriptor 'AWJ 0.10.4' $AwjExecutable $false
+$ExpectedVersion = (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()
+if ($Target.Version -ne $ExpectedVersion) { throw "Target BUILD_INFO version is $($Target.Version), expected $ExpectedVersion." }
+$Legacy = $null
+if ($LegacyAwjExecutable) {
+    $LegacyAwjExecutable = Resolve-Executable $LegacyAwjExecutable '' ''
+    $Legacy = Get-AwjDescriptor 'AWJ 0.10.3 baseline' $LegacyAwjExecutable $true
+    if (-not $Smoke -and $Legacy.Version -ne '0.10.3') { throw "Legacy baseline is $($Legacy.Version), expected 0.10.3." }
+}
+$DependencyBaseline = $null
+if ($DependencyBaselineAwjExecutable) {
+    $DependencyBaselineAwjExecutable = Resolve-Executable $DependencyBaselineAwjExecutable '' ''
+    $DependencyBaseline = Get-AwjDescriptor 'AWJ 0.10.4 dependency baseline' $DependencyBaselineAwjExecutable $false
+}
+$Ffmpeg = $null
+if ($RunStrict) {
+    $versionOutput = @(& $FfmpegExecutable -version 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw 'ffmpeg -version failed.' }
+    $probe = @(& $FfmpegExecutable -nostdin -hide_banner -loglevel verbose -f lavfi -i 'color=c=black:s=16x16:r=1' -frames:v 1 -c:v libaom-av1 -usage allintra -still-picture 1 -cpu-used $AwjSpeed -crf $FfmpegAomQuantizer -b:v 0 -pix_fmt yuv420p10le -threads 1 -row-mt 1 -aom-params 'tune=iq' -f null - 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw 'ffmpeg libaom probe failed.' }
+    $probeText = $probe -join [Environment]::NewLine
+    if ($probeText -notmatch '\[libaom-av1[^\]]*\]\s+(\d+\.\d+\.\d+)') { throw 'Cannot identify ffmpeg libaom version.' }
+    $Ffmpeg = [pscustomobject]@{
+        Role = 'ffmpeg'
+        Path = $FfmpegExecutable
+        SHA256 = (Get-FileHash -LiteralPath $FfmpegExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+        Version = [string]$versionOutput[0]
+        Configuration = [string]($versionOutput | Where-Object { $_ -like 'configuration:*' } | Select-Object -First 1)
+        Aom = $Matches[1]
     }
-    return $(if ($minimum -lt 0.999999) { 'transparent' } else { 'opaque' })
 }
 
-function New-InputInventory {
-    $paths = [string[]]@(Get-ChildItem -LiteralPath $InputRoot -File -Recurse |
-        Where-Object { $_.Extension.ToLowerInvariant() -in $SupportedExtensions } |
-        ForEach-Object FullName)
-    [Array]::Sort($paths, [StringComparer]::OrdinalIgnoreCase)
-    $items = [Collections.Generic.List[object]]::new()
-    for ($i = 0; $i -lt $paths.Count; $i++) {
-        Write-Progress -Activity 'Fingerprinting benchmark input' -Status "$($i + 1) / $($paths.Count)" -PercentComplete (100 * ($i + 1) / $paths.Count)
-        $file = Get-Item -LiteralPath $paths[$i]
-        $items.Add([pscustomobject]@{
-            Index = $i
-            FullPath = $file.FullName
-            RelativePath = [IO.Path]::GetRelativePath($InputRoot, $file.FullName)
-            Bytes = $file.Length
-            LastWriteTimeUtc = $file.LastWriteTimeUtc.ToString('o', $Invariant)
-            SHA256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-            AlphaClass = Get-AlphaClass $file
+function Test-ActuallyOpaque([string]$Path) {
+    $value = @(& $MagickExecutable ($Path + '[0]') -alpha extract -format '%[fx:minima]' info: 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw "Alpha probe failed for $Path." }
+    [double]$minimum = 0
+    if (-not [double]::TryParse(($value -join '').Trim(),
+                                [Globalization.NumberStyles]::Float,
+                                $Invariant, [ref]$minimum)) {
+        throw "Alpha probe returned an invalid value for $Path."
+    }
+    return $minimum -ge 0.999999
+}
+
+function Get-ImageInventory([IO.FileInfo[]]$Files) {
+    $byPath = @{}
+    foreach ($file in $Files) { $byPath[$file.FullName.ToLowerInvariant()] = $file }
+    $result = [Collections.Generic.List[object]]::new()
+    foreach ($file in $Files | Where-Object Length -eq 0) {
+        $result.Add([pscustomobject]@{
+            Path = $file.FullName; Width = 0; Height = 0; Pixels = [long]0; Bytes = [long]0
+            BitDepth = 0; Opaque = $false; HasStrictMetadata = $false
+            SHA256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         })
     }
-    Write-Progress -Activity 'Fingerprinting benchmark input' -Completed
-    return @($items)
-}
-
-$Inventory = @(New-InputInventory)
-if ($Inventory.Count -eq 0) { throw "No supported images found in '$InputRoot'." }
-if (-not $Smoke -and 613 -in $Count -and $Inventory.Count -ne 613) {
-    throw "Canonical 613-image benchmark requires exactly 613 inputs; found $($Inventory.Count)."
-}
-$InventoryPath = Join-Path $ResultsRoot 'input-manifest.csv'
-$Inventory | Select-Object Index, RelativePath, Bytes, LastWriteTimeUtc, SHA256, AlphaClass |
-    Export-Csv -LiteralPath $InventoryPath -NoTypeInformation -Encoding utf8NoBOM
-$FingerprintPath = Join-Path $ResultsRoot 'input-files.sha256'
-$Inventory | ForEach-Object { "$($_.SHA256) *$($_.RelativePath)" } |
-    Set-Content -LiteralPath $FingerprintPath -Encoding utf8NoBOM
-$InventorySha256 = (Get-FileHash -LiteralPath $FingerprintPath -Algorithm SHA256).Hash
-
-$InputCache = @{}
-$SelectionRoot = Join-Path $ResultsRoot 'selections'
-New-Item -ItemType Directory -Path $SelectionRoot -Force | Out-Null
-
-function Get-StagedSelection([string]$AlphaClass, [int]$FileCount) {
-    $key = "$AlphaClass-$FileCount"
-    if ($InputCache.ContainsKey($key)) { return @($InputCache[$key]) }
-    $pool = switch ($AlphaClass) {
-        'transparent' { @($Inventory | Where-Object AlphaClass -eq 'transparent') }
-        'opaque' { @($Inventory | Where-Object AlphaClass -eq 'opaque') }
-        default {
-            if ($FileCount -eq $Inventory.Count) { @($Inventory) }
-            else { @($Inventory | Where-Object AlphaClass -ne 'invalid') }
+    $nonEmpty = @($Files | Where-Object Length -gt 0)
+    for ($offset = 0; $offset -lt $nonEmpty.Count; $offset += 32) {
+        $last = [Math]::Min($offset + 31, $nonEmpty.Count - 1)
+        $paths = @($nonEmpty[$offset..$last] | ForEach-Object { $_.FullName + '[0]' })
+        $lines = @(& $MagickExecutable identify -ping -format '%i|%w|%h|%z|%[opaque]\n' @paths 2>&1)
+        if ($LASTEXITCODE -ne 0) { throw "Image probe failed: $($lines -join [Environment]::NewLine)" }
+        foreach ($line in $lines) {
+            $parts = [string]$line -split '\|', 5
+            if ($parts.Count -ne 5) { throw "Unexpected identify output: $line" }
+            $path = [IO.Path]::GetFullPath(($parts[0] -replace '\[0\]$', ''))
+            $key = $path.ToLowerInvariant()
+            if (-not $byPath.ContainsKey($key)) { throw "Unexpected identified path: $path" }
+            $result.Add([pscustomobject]@{
+                Path = $path
+                Width = [int]$parts[1]
+                Height = [int]$parts[2]
+                Pixels = [long]$parts[1] * [long]$parts[2]
+                Bytes = [long]$byPath[$key].Length
+                BitDepth = [int]$parts[3]
+                Opaque = Test-ActuallyOpaque $path
+                HasStrictMetadata = $false
+                SHA256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            })
         }
     }
-    $selected = @(Select-Evenly $pool $FileCount)
-    $inputDir = Join-Path $SelectionRoot "$key-input"
-    New-Item -ItemType Directory -Path $inputDir -Force | Out-Null
-    $staged = [Collections.Generic.List[object]]::new()
-    for ($i = 0; $i -lt $selected.Count; $i++) {
-        $extension = [IO.Path]::GetExtension($selected[$i].FullPath).ToLowerInvariant()
-        $target = Join-Path $inputDir ('{0:D6}{1}' -f ($i + 1), $extension)
-        try { [IO.File]::CreateHardLink($target, $selected[$i].FullPath) }
-        catch { Copy-Item -LiteralPath $selected[$i].FullPath -Destination $target }
-        $staged.Add([pscustomobject]@{
-            Index = $i
-            SourcePath = $selected[$i].FullPath
-            RelativePath = $selected[$i].RelativePath
-            StagedPath = $target
-            Bytes = $selected[$i].Bytes
-            SHA256 = $selected[$i].SHA256
-            AlphaClass = $selected[$i].AlphaClass
+    if ($result.Count -ne $Files.Count) { throw "Identified $($result.Count) files, expected $($Files.Count)." }
+    return @($result | Sort-Object Pixels, Bytes, Path)
+}
+
+function Test-HasStrictMetadata([string]$Path) {
+    $text = @(& $MagickExecutable identify -ping -verbose ($Path + '[0]') 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "Metadata probe failed for $Path." }
+    return (($text -join [Environment]::NewLine) -match '(?im)^\s*(?:profile-)?(?:icc|exif|xmp)(?:-|:)')
+}
+
+function Take-First([object[]]$Items, [int]$Count, [string]$Name) {
+    if ($Items.Count -lt $Count) { throw "$Name needs $Count images, found $($Items.Count)." }
+    if ($Count -eq 1) { return @($Items[0]) }
+    return @($Items[0..($Count - 1)])
+}
+
+function New-Records([object[]]$Items, [string]$Scenario) {
+    $records = [Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $Items.Count; ++$index) {
+        $item = $Items[$index]
+        $records.Add([pscustomobject]@{
+            Scenario = $Scenario; Order = $index + 1; OriginalPath = $item.Path
+            StagedName = ('{0:D4}{1}' -f ($index + 1), [IO.Path]::GetExtension($item.Path).ToLowerInvariant())
+            StagedPath = ''; Width = $item.Width; Height = $item.Height; Pixels = $item.Pixels
+            Bytes = $item.Bytes; BitDepth = $item.BitDepth; Opaque = $item.Opaque
+            HasStrictMetadata = $item.HasStrictMetadata; ExpectedFailure = $item.Bytes -eq 0
+            SHA256 = $item.SHA256
         })
     }
-    $selectionCsv = Join-Path $SelectionRoot "$key.csv"
-    $staged | Export-Csv -LiteralPath $selectionCsv -NoTypeInformation -Encoding utf8NoBOM
-    $InputCache[$key] = @($staged)
-    return @($staged)
+    return @($records)
 }
 
-function Write-ManifestText([IO.BinaryWriter]$Writer, [string]$Text) {
-    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($Text)
-    $Writer.Write([uint32]$bytes.Length)
-    $Writer.Write($bytes)
+function Stage-Records([object[]]$Records, [string]$Id) {
+    $directory = Join-Path $StageRoot $Id
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $mode = 'hardlink'
+    foreach ($record in $Records) {
+        $destination = Join-Path $directory $record.StagedName
+        try {
+            New-Item -ItemType HardLink -Path $destination -Target $record.OriginalPath -ErrorAction Stop | Out-Null
+        } catch {
+            Copy-Item -LiteralPath $record.OriginalPath -Destination $destination -Force
+            $mode = 'copy fallback'
+        }
+        $record.StagedPath = $destination
+    }
+    return [pscustomobject]@{ Directory = $directory; LinkMode = $mode }
 }
 
-function Write-StudioManifest([string]$Path, [object[]]$Selection, [string]$OutputDir) {
-    $stream = [IO.File]::Open($Path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    $writer = [IO.BinaryWriter]::new($stream, [Text.UTF8Encoding]::new($false), $false)
+function Reset-RunDirectory([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe work path: $full" }
+    if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+    New-Item -ItemType Directory -Path $full -Force | Out-Null
+    return $full
+}
+
+function Remove-RunDirectory([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe work path: $full" }
+    if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+}
+
+function Invoke-JobBatch([object[]]$Jobs, [int]$Concurrency) {
+    $active = [Collections.Generic.List[object]]::new()
+    $next = 0
+    $tree = [AwjBenchmarkJob]::new()
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $writer.Write([byte[]](65, 87, 74, 83, 81, 77, 70, 0))
-        $writer.Write([uint32]1)
-        $writer.Write([uint64]$Selection.Count)
-        for ($i = 0; $i -lt $Selection.Count; $i++) {
-            $writer.Write([uint64]$i)
-            $writer.Write([uint64]$Selection[$i].Bytes)
-            $writer.Write([uint32]2)
-            $outputPath = Join-Path $OutputDir (([IO.Path]::GetFileNameWithoutExtension($Selection[$i].StagedPath)) + '.avif')
-            $fields = @($Selection[$i].StagedPath, '', '', '', '', '', '', '', '', '', $outputPath)
-            foreach ($field in $fields) { Write-ManifestText $writer $field }
+        while ($next -lt $Jobs.Count -or $active.Count -gt 0) {
+            while ($next -lt $Jobs.Count -and $active.Count -lt $Concurrency) {
+                $job = $Jobs[$next]
+                $child = $tree.Start($job.Executable, [string[]]$job.Arguments,
+                                     (Split-Path -Parent $job.Executable))
+                $active.Add([pscustomobject]@{ Job = $job; Child = $child })
+                ++$next
+            }
+            for ($index = $active.Count - 1; $index -ge 0; --$index) {
+                $entry = $active[$index]
+                if (-not $entry.Child.HasExited) { continue }
+                $entry.Child.Wait()
+                $exitCode = $entry.Child.ExitCode
+                $entry.Child.Dispose()
+                $active.RemoveAt($index)
+                if ($exitCode -notin @($entry.Job.AllowedExitCodes)) {
+                    throw "$($entry.Job.Label) exited $exitCode."
+                }
+            }
+            if ($active.Count) { Start-Sleep -Milliseconds 20 }
+        }
+        $clock.Stop()
+        return [pscustomobject]@{
+            WallSeconds = $clock.Elapsed.TotalSeconds
+            CpuSeconds = $tree.CpuSeconds
+            PeakMemoryBytes = $tree.PeakMemoryBytes
         }
     } finally {
-        $writer.Dispose()
-    }
-}
-
-function Invoke-Awj([string[]]$Arguments) {
-    $psi = [Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = $Executable
-    $psi.WorkingDirectory = Split-Path -Parent $Executable
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
-    $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
-    foreach ($argument in $Arguments) { [void]$psi.ArgumentList.Add($argument) }
-
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $psi
-    $clock = [Diagnostics.Stopwatch]::StartNew()
-    if (-not $process.Start()) { throw 'Failed to start AWJ.exe.' }
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
-    [long]$peak = 0
-    while (-not $process.WaitForExit(100)) {
-        try {
-            $process.Refresh()
-            $peak = [Math]::Max($peak, $process.PeakWorkingSet64)
-        } catch { }
-    }
-    $process.WaitForExit()
-    $clock.Stop()
-    try {
-        $process.Refresh()
-        $peak = [Math]::Max($peak, $process.PeakWorkingSet64)
-    } catch { }
-    try { $cpuSeconds = $process.TotalProcessorTime.TotalSeconds } catch { $cpuSeconds = [double]::NaN }
-    if ([double]::IsNaN($cpuSeconds) -or $peak -le 0) { throw 'Windows process CPU or peak-memory accounting failed.' }
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        WallSeconds = $clock.Elapsed.TotalSeconds
-        CpuSeconds = $cpuSeconds
-        PeakWorkingSetBytes = $peak
-        Stdout = $stdoutTask.GetAwaiter().GetResult()
-        Stderr = $stderrTask.GetAwaiter().GetResult()
+        $clock.Stop()
+        foreach ($entry in $active) {
+            try { $entry.Child.Dispose() } catch { }
+        }
+        $tree.Dispose()
     }
 }
 
 function Get-CsvSum([object[]]$Rows, [string]$Property) {
     [double]$sum = 0
     foreach ($row in $Rows) {
-        $text = [string]$row.$Property
         [double]$value = 0
-        if ($text -and [double]::TryParse($text, [Globalization.NumberStyles]::Float, $Invariant, [ref]$value)) { $sum += $value }
+        if ([double]::TryParse([string]$row.$Property, [Globalization.NumberStyles]::Float,
+                               $Invariant, [ref]$value) -and $value -ge 0) { $sum += $value }
     }
     return $sum
 }
 
-function Assert-RunSummary([object[]]$Rows, [object[]]$Selection, [int]$ExitCode) {
-    if ($Rows.Count -ne $Selection.Count) { throw "summary.csv has $($Rows.Count) rows, expected $($Selection.Count)." }
-    $failed = @($Rows | Where-Object status -eq 'failed').Count
-    $expectedFailed = @($Selection | Where-Object AlphaClass -eq 'invalid').Count
-    if ($failed -ne $expectedFailed) { throw "Run has $failed failures, expected $expectedFailed from the fixed input manifest." }
-    $expectedExit = if ($expectedFailed -eq 0) { 0 } else { 2 }
-    if ($ExitCode -ne $expectedExit) { throw "AWJ exit code is $ExitCode, expected $expectedExit." }
+function Get-ExpectedAutoBitDepth([object]$Record) {
+    if ($Record.BitDepth -ge 12) { return 12 }
+    return 10
+}
 
-    $versions = @($Rows.awj_version | Sort-Object -Unique)
-    if ($versions.Count -ne 1 -or $versions[0] -ne $Version) { throw "summary.csv AWJ version is '$($versions -join ',')', expected '$Version'." }
-    $expectedThreads = Get-ExpectedEncoderThreads $ThreadBudget $Selection.Count
-    foreach ($row in @($Rows | Where-Object status -eq 'ok')) {
-        if ($row.format -ne 'AVIF' -or $row.user_encoder -ne 'aom' -or $row.user_chroma -ne $Chroma -or
-            [int]$row.quality -ne $Quality -or [int]$row.speed -ne $Speed -or
-            [int]$row.applied_bit_depth -ne $BitDepth -or
-            [int]$row.encoder_threads -ne $expectedThreads) {
-            throw "Applied settings drifted for '$($row.input)'."
+function Assert-AwjSummary([object[]]$Rows, [object]$Scenario) {
+    if ($Rows.Count -ne $Scenario.Inputs.Count) { throw "AWJ summary row count mismatch for $($Scenario.Id)." }
+    $failed = @($Rows | Where-Object status -eq 'failed')
+    if ($failed.Count -ne $Scenario.ExpectedFailures) { throw "AWJ failure count mismatch for $($Scenario.Id)." }
+    $byPath = @{}
+    foreach ($record in $Scenario.Inputs) {
+        $byPath[[IO.Path]::GetFullPath($record.StagedPath).ToLowerInvariant()] = $record
+        $byPath[$record.StagedName.ToLowerInvariant()] = $record
+    }
+    foreach ($row in $Rows | Where-Object status -eq 'ok') {
+        $input = [string]$row.input
+        $key = if ([IO.Path]::IsPathRooted($input)) {
+            [IO.Path]::GetFullPath($input).ToLowerInvariant()
+        } else {
+            [IO.Path]::GetFileName($input).ToLowerInvariant()
         }
-        if ($row.has_non_opaque_alpha -eq 'true') {
-            if ($row.lossless -ne 'true' -or $row.encoder_selected -ne 'aom' -or $row.applied_chroma -ne '444' -or
-                [int]$row.final_encoder_quality -ne 100) {
-                throw "Transparent AVIF invariant failed for '$($row.input)'."
-            }
-        } elseif ($row.applied_chroma -ne $Chroma -or [int]$row.final_encoder_quality -ne $Quality) {
-            throw "Opaque AVIF settings drifted for '$($row.input)'."
+        if (-not $byPath.ContainsKey($key)) { throw "AWJ summary unknown input: $($row.input)" }
+        $record = $byPath[$key]
+        $lossless = ([string]$row.lossless).Equals('true', [StringComparison]::OrdinalIgnoreCase)
+        $finalQuality = $AwjQuality
+        $chroma = '420'
+        if ($row.format -ne 'AVIF' -or $row.encoder_id -ne 'aom' -or
+            [int]$row.quality -ne $AwjQuality -or [int]$row.final_encoder_quality -ne $finalQuality -or
+            [int]$row.speed -ne $AwjSpeed -or $row.applied_chroma -ne $chroma -or
+            [int]$row.applied_bit_depth -ne (Get-ExpectedAutoBitDepth $record) -or
+            [int]$row.encoder_threads -ne $Scenario.AwjEncoderThreads -or
+            $lossless -or
+            (-not $record.Opaque -and $row.applied_alpha -ne 'kept')) {
+            throw "AWJ applied settings drifted for $($row.input)."
         }
     }
 }
 
-$RunsPerCase = if ($Smoke) { 1 } else { 5 }
-$WarmupsPerCase = if ($Smoke) { 0 } else { 1 }
-if ($Smoke) { $CooldownSeconds = 0 }
-
-$Cases = [Collections.Generic.List[object]]::new()
-foreach ($surfaceName in @($Surface | Select-Object -Unique)) {
-    foreach ($fileCount in @($Count | Select-Object -Unique)) {
-        $Cases.Add([pscustomobject]@{ Surface = $surfaceName; AlphaClass = 'mixed'; Count = $fileCount })
-    }
-    foreach ($alphaCount in @($AlphaCoverageCount | Where-Object { $_ -gt 0 } | Select-Object -Unique)) {
-        $Cases.Add([pscustomobject]@{ Surface = $surfaceName; AlphaClass = 'opaque'; Count = $alphaCount })
-        $Cases.Add([pscustomobject]@{ Surface = $surfaceName; AlphaClass = 'transparent'; Count = $alphaCount })
-    }
+function New-FfmpegArguments([string]$InputPath, [string]$OutputPath) {
+    return @('-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+             '-threads', '1', '-filter_threads', '1', '-filter_complex_threads', '1',
+             '-i', $InputPath, '-frames:v', '1', '-an', '-sn', '-dn',
+             '-map_metadata', '-1', '-vf', 'scale=in_range=pc:out_range=pc:out_color_matrix=bt709',
+             '-pix_fmt', 'yuv420p10le', '-c:v', 'libaom-av1', '-usage', 'allintra',
+             '-still-picture', '1', '-cpu-used', [string]$AwjSpeed,
+             '-crf', [string]$FfmpegAomQuantizer, '-b:v', '0', '-lag-in-frames', '0',
+             '-row-mt', '1', '-aom-params', 'tune=iq', '-color_range', 'pc',
+             '-color_primaries', 'bt709', '-color_trc', 'iec61966-2-1',
+             '-colorspace', 'bt709', '-f', 'avif', $OutputPath)
 }
 
-$RawRoot = Join-Path $ResultsRoot 'raw'
-New-Item -ItemType Directory -Path $RawRoot -Force | Out-Null
-$AllRuns = [Collections.Generic.List[object]]::new()
+function Invoke-AwjCase([object]$Scenario, [object]$Descriptor, [string]$RunDirectory) {
+    $output = Reset-RunDirectory (Join-Path $RunDirectory 'awj')
+    $job = [pscustomobject]@{
+        Label = "$($Descriptor.Role) $($Scenario.Id)"
+        Executable = $Descriptor.Path
+        Arguments = New-AwjArguments $Scenario.InputDirectory $output $Descriptor.LegacyTenBit
+        AllowedExitCodes = if ($Scenario.ExpectedFailures) { @(0, 2) } else { @(0) }
+    }
+    $metrics = Invoke-JobBatch @($job) 1
+    $summary = Join-Path $output 'summary.csv'
+    if (-not (Test-Path -LiteralPath $summary -PathType Leaf)) { throw "$($Descriptor.Role) wrote no summary.csv." }
+    $rows = @(Import-Csv -LiteralPath $summary)
+    Assert-AwjSummary $rows $Scenario
+    $ok = @($rows | Where-Object status -eq 'ok')
+    $result = [pscustomobject]@{
+        Metrics = $metrics
+        OutputBytes = Get-CsvSum $rows 'output_bytes'
+        SuccessCount = $ok.Count
+        FailedCount = @($rows | Where-Object status -eq 'failed').Count
+        FailureNote = (@($rows | Where-Object status -eq 'failed' | ForEach-Object { $_.message }) -join ' | ')
+        DecodeSeconds = Get-CsvSum $ok 'decode_seconds'
+        PrepareSeconds = Get-CsvSum $ok 'prepare_seconds'
+        EncodeSeconds = Get-CsvSum $ok 'encode_seconds'
+        RgbToYuvSeconds = Get-CsvSum $ok 'avif_rgb_to_yuv_seconds'
+        AddImageSeconds = Get-CsvSum $ok 'avif_add_image_seconds'
+        FinishSeconds = Get-CsvSum $ok 'avif_finish_seconds'
+        OutputCopySeconds = Get-CsvSum $ok 'avif_output_copy_seconds'
+        WriteSeconds = Get-CsvSum $ok 'write_seconds'
+    }
+    Remove-RunDirectory $output
+    return $result
+}
 
-foreach ($case in $Cases) {
-    $caseId = "$($case.Surface)-$($case.AlphaClass)-$($case.Count)"
-    $selection = @(Get-StagedSelection $case.AlphaClass $case.Count)
-    $inputDir = Split-Path -Parent $selection[0].StagedPath
-    $caseRaw = Join-Path $RawRoot $caseId
-    New-Item -ItemType Directory -Path $caseRaw -Force | Out-Null
-    $iterations = $WarmupsPerCase + $RunsPerCase
-    for ($iteration = 0; $iteration -lt $iterations; $iteration++) {
-        $isWarmup = $iteration -lt $WarmupsPerCase
-        $runNumber = if ($isWarmup) { 0 } else { $iteration - $WarmupsPerCase + 1 }
-        $label = if ($isWarmup) { 'warmup' } else { "run-$runNumber" }
-        Write-Host "[$caseId] $label"
-
-        $currentPower = Get-PowerScheme
-        if ($currentPower.Guid -ne $LockedPowerGuid) { throw 'Windows power scheme changed during the benchmark.' }
-        $outputDir = Join-Path $ResultsRoot "work\$caseId-$label"
-        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-        $common = @(
-            '--input', $inputDir,
-            '--output', $outputDir,
-            '--format', 'avif',
-            '--avif-encoder', 'aom',
-            '--quality', [string]$Quality,
-            '--speed', [string]$Speed,
-            '--chroma', $Chroma,
-            '--bit-depth', [string]$BitDepth,
-            '--alpha', 'auto',
-            '--threads', 'auto',
-            '--memory-limit', 'auto',
-            '--image-size-limit', 'none',
-            '--template', '{name}',
-            '--timeout-encode', '120',
-            '--collision', 'overwrite',
-            '--keep-metadata',
-            '--no-wic-fallback',
-            '--experimental-encoders',
-            '--no-experimental-clamped-grid-padding',
-            '--large-image-priority', 'zenrav1e',
-            '--no-unlock-max-input-file-bytes',
-            '--summary',
-            '--no-log'
-        )
-        $arguments = switch ($case.Surface) {
-            'studio' {
-                $manifest = Join-Path $outputDir 'studio.awjq'
-                Write-StudioManifest $manifest $selection $outputDir
-                @($common + @('--studio-queue-manifest', $manifest))
-            }
-            'shell' { @('--shell-convert') + $common }
-            default { $common }
-        }
-
-        $process = Invoke-Awj $arguments
-        $summaryPath = Join-Path $outputDir 'summary.csv'
-        if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
-            throw "AWJ did not produce summary.csv. Exit=$($process.ExitCode); stderr=$($process.Stderr)"
-        }
-        $rows = @(Import-Csv -LiteralPath $summaryPath)
-        Assert-RunSummary $rows $selection $process.ExitCode
-
-        Copy-Item -LiteralPath $summaryPath -Destination (Join-Path $caseRaw "$label-summary.csv")
-        Set-Content -LiteralPath (Join-Path $caseRaw "$label.stdout.log") -Value $process.Stdout -Encoding utf8NoBOM
-        Set-Content -LiteralPath (Join-Path $caseRaw "$label.stderr.log") -Value $process.Stderr -Encoding utf8NoBOM
-
-        $decode = Get-CsvSum $rows 'decode_seconds'
-        $prepare = Get-CsvSum $rows 'prepare_seconds'
-        $encode = Get-CsvSum $rows 'encode_seconds'
-        $write = Get-CsvSum $rows 'write_seconds'
-        $stageTotal = $decode + $prepare + $encode + $write
-        $AllRuns.Add([pscustomobject]@{
-            CaseId = $caseId
-            Surface = $case.Surface
-            AlphaClass = $case.AlphaClass
-            FileCount = $case.Count
-            Warmup = $isWarmup
-            Run = $runNumber
-            ExitCode = $process.ExitCode
-            WallSeconds = $process.WallSeconds
-            CpuSeconds = $process.CpuSeconds
-            PeakWorkingSetBytes = $process.PeakWorkingSetBytes
-            ThroughputImagesPerSecond = $case.Count / $process.WallSeconds
-            CoreSeconds = Get-CsvSum $rows 'seconds'
-            DecodeSeconds = $decode
-            PrepareSeconds = $prepare
-            EncodeSeconds = $encode
-            WriteSeconds = $write
-            EncodeStagePercent = if ($stageTotal -gt 0) { 100 * $encode / $stageTotal } else { 0 }
-            SuccessCount = @($rows | Where-Object status -eq 'ok').Count
-            FailedCount = @($rows | Where-Object status -eq 'failed').Count
-            EncoderIds = (@($rows.encoder_id | Where-Object { $_ } | Sort-Object -Unique) -join '+')
-            DecoderIds = (@($rows.decoder_id | Where-Object { $_ } | Sort-Object -Unique) -join '+')
-            EncoderThreads = (@($rows.encoder_threads | Where-Object { $_ } | Sort-Object -Unique) -join '+')
-            AwjVersion = $Version
-            BuildCommit = $BuildCommit
-            WorkspaceCommit = $GitCommit
-            AomVersion = $AomVersion
-            LibavifCommit = $LibavifCommit
-            Dav1dVersion = $Dav1dVersion
-            PowerSchemeGuid = $LockedPowerGuid
+function Invoke-FfmpegCase([object]$Scenario, [string]$RunDirectory) {
+    $output = Reset-RunDirectory (Join-Path $RunDirectory 'ffmpeg')
+    $jobs = [Collections.Generic.List[object]]::new()
+    foreach ($record in $Scenario.Inputs) {
+        $name = ([IO.Path]::GetFileNameWithoutExtension($record.StagedName)) + '.avif'
+        $jobs.Add([pscustomobject]@{
+            Label = "ffmpeg $($record.StagedName)"
+            Executable = $FfmpegExecutable
+            Arguments = New-FfmpegArguments $record.StagedPath (Join-Path $output $name)
+            AllowedExitCodes = @(0)
         })
-        Remove-Item -LiteralPath $outputDir -Recurse -Force
-        if ($iteration -lt ($iterations - 1) -and $CooldownSeconds -gt 0) {
-            Start-Sleep -Seconds $CooldownSeconds
+    }
+    $metrics = Invoke-JobBatch @($jobs) $Scenario.FfmpegConcurrency
+    $outputs = @(Get-ChildItem -LiteralPath $output -Filter '*.avif' -File | Where-Object Length -gt 0)
+    if ($outputs.Count -ne $Scenario.SuccessCount) { throw "ffmpeg output count mismatch for $($Scenario.Id)." }
+    foreach ($file in $outputs) {
+        $probe = @(& $FfprobeExecutable -v error -select_streams v:0 -show_entries 'stream=codec_name,pix_fmt' -of default=noprint_wrappers=1 $file.FullName 2>&1)
+        $text = $probe -join [Environment]::NewLine
+        if ($LASTEXITCODE -ne 0 -or $text -notmatch 'codec_name=av1' -or $text -notmatch 'pix_fmt=yuv420p10le') {
+            throw "ffmpeg output validation failed: $($file.FullName)"
+        }
+    }
+    $result = [pscustomobject]@{
+        Metrics = $metrics
+        OutputBytes = [double](($outputs | Measure-Object Length -Sum).Sum)
+        SuccessCount = $outputs.Count
+        FailedCount = 0
+        FailureNote = ''
+        DecodeSeconds = $null; PrepareSeconds = $null; EncodeSeconds = $null
+        RgbToYuvSeconds = $null; AddImageSeconds = $null; FinishSeconds = $null
+        OutputCopySeconds = $null; WriteSeconds = $null
+    }
+    Remove-RunDirectory $output
+    return $result
+}
+
+$Files = @(Get-ChildItem -LiteralPath $InputRoot -File -Recurse)
+if (-not $Smoke -and $Files.Count -ne 613) { throw "Canonical corpus requires 613 files, found $($Files.Count)." }
+$Inventory = @(Get-ImageInventory $Files)
+$Opaque = @($Inventory | Where-Object { $_.Bytes -gt 0 -and $_.Opaque })
+$Transparent = @($Inventory | Where-Object { $_.Bytes -gt 0 -and -not $_.Opaque })
+if (-not $Opaque.Count -or -not $Transparent.Count) { throw 'Corpus needs opaque and transparent inputs.' }
+$StrictItems = @()
+if ($RunStrict) {
+    $items = [Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $Opaque.Count -and $items.Count -lt $StrictCount; ++$index) {
+        $percent = 100 * $index / [Math]::Max(1, $Opaque.Count)
+        Write-Progress -Activity 'Checking strict subset metadata' -Status "$($items.Count) / $StrictCount" -PercentComplete $percent
+        $candidate = $Opaque[$index]
+        $candidate.HasStrictMetadata = Test-HasStrictMetadata $candidate.Path
+        if (-not $candidate.HasStrictMetadata -and $candidate.BitDepth -le 10) {
+            $items.Add($candidate)
+        }
+    }
+    Write-Progress -Activity 'Checking strict subset metadata' -Completed
+    if ($items.Count -ne $StrictCount) { throw "Strict subset found $($items.Count), needs $StrictCount." }
+    $StrictItems = @($items.ToArray())
+}
+
+function New-Scenario([string]$Id, [string]$Description, [object[]]$Inputs, [string[]]$Tools) {
+    $threads = Get-ExpectedEncoderThreads $ThreadBudget $Inputs.Count
+    $staged = Stage-Records $Inputs $Id
+    return [pscustomobject]@{
+        Id = $Id; Description = $Description; Inputs = $Inputs
+        InputDirectory = $staged.Directory; LinkMode = $staged.LinkMode
+        TotalPixels = [long](($Inputs | Measure-Object Pixels -Sum).Sum)
+        SuccessPixels = [long](($Inputs | Where-Object { -not $_.ExpectedFailure } | Measure-Object Pixels -Sum).Sum)
+        SuccessCount = @($Inputs | Where-Object { -not $_.ExpectedFailure }).Count
+        ExpectedFailures = @($Inputs | Where-Object ExpectedFailure).Count
+        AwjEncoderThreads = $threads; AwjFileConcurrency = [int]($ThreadBudget / $threads)
+        FfmpegConcurrency = [int][Math]::Min($ThreadBudget, $Inputs.Count)
+        Tools = $Tools; WarmupRuns = $WarmupRuns; MeasuredRuns = $MeasuredRuns
+    }
+}
+
+$Scenarios = [Collections.Generic.List[object]]::new()
+if ($RunRegression) {
+    foreach ($count in $(if ($Smoke) { @(1) } else { @(1, 4, 12, 13) })) {
+        $records = New-Records (Take-First $Opaque $count "opaque-$count") "opaque-$count"
+        $Scenarios.Add((New-Scenario "opaque-$count" "opaque default AVIF, $count image(s)" $records @('AWJ')))
+    }
+    if (-not $Smoke) {
+        $batchTools = if ($DependencyBaseline) { @('DependencyBaseline', 'AWJ') } else { @('AWJ') }
+        $Scenarios.Add((New-Scenario 'batch-613' 'fixed 613 image CLI corpus' (New-Records $Inventory 'batch-613') $batchTools))
+    }
+$Scenarios.Add((New-Scenario 'transparent-12' 'transparent default AVIF path' (New-Records (Take-First $Transparent 12 'transparent-12') 'transparent-12') @('AWJ')))
+}
+if ($RunStrict) {
+    $tools = [Collections.Generic.List[string]]::new()
+    if ($Legacy) { $tools.Add('Legacy0103') }
+    $tools.Add('AWJ')
+    $tools.Add('ffmpeg')
+    $Scenarios.Add((New-Scenario 'strict-210' 'opaque without ICC EXIF XMP' (New-Records $StrictItems 'strict-210') @($tools)))
+}
+
+$Manifest = [Collections.Generic.List[object]]::new()
+foreach ($scenario in $Scenarios) {
+    foreach ($record in $scenario.Inputs) {
+        $Manifest.Add([pscustomobject]@{
+            Scenario = $scenario.Id; LinkMode = $scenario.LinkMode; Order = $record.Order
+            OriginalPath = $record.OriginalPath; StagedPath = $record.StagedPath
+            Width = $record.Width; Height = $record.Height; Pixels = $record.Pixels
+            Bytes = $record.Bytes; BitDepth = $record.BitDepth; Opaque = $record.Opaque
+            HasStrictMetadata = $record.HasStrictMetadata; ExpectedFailure = $record.ExpectedFailure
+            SHA256 = $record.SHA256
+        })
+    }
+}
+$ManifestPath = Join-Path $ResultsRoot 'inputs.csv'
+$Manifest | Export-Csv -LiteralPath $ManifestPath -NoTypeInformation -Encoding utf8NoBOM
+$ManifestHash = (Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+Add-BenchmarkJobType
+$Runs = [Collections.Generic.List[object]]::new()
+$RunPath = Join-Path $ResultsRoot 'runs.csv'
+$total = 0
+foreach ($scenario in $Scenarios) { $total += $scenario.Tools.Count * ($scenario.WarmupRuns + $scenario.MeasuredRuns) }
+$complete = 0
+foreach ($scenario in $Scenarios) {
+    for ($iteration = 0; $iteration -lt ($scenario.WarmupRuns + $scenario.MeasuredRuns); ++$iteration) {
+        $warmup = $iteration -lt $scenario.WarmupRuns
+        $number = if ($warmup) { 0 } else { $iteration - $scenario.WarmupRuns + 1 }
+        $label = if ($warmup) { 'warmup' } else { "run-$number" }
+        for ($order = 0; $order -lt $scenario.Tools.Count; ++$order) {
+            if ((Get-PowerScheme).Guid -ne $Power.Guid) { throw 'Power scheme changed during run.' }
+            $tool = $scenario.Tools[$order]
+            $descriptor = if ($tool -eq 'AWJ') { $Target } elseif ($tool -eq 'Legacy0103') { $Legacy } elseif ($tool -eq 'DependencyBaseline') { $DependencyBaseline } else { $null }
+            $runDirectory = Join-Path $WorkRoot "$($scenario.Id)-$label-$($order + 1)"
+            Write-Host "[$($scenario.Id)] $label $tool"
+            $result = if ($tool -eq 'ffmpeg') { Invoke-FfmpegCase $scenario $runDirectory } else { Invoke-AwjCase $scenario $descriptor $runDirectory }
+            Remove-RunDirectory $runDirectory
+            $role = if ($tool -eq 'ffmpeg') { 'ffmpeg' } else { $descriptor.Role }
+            $aom = if ($tool -eq 'ffmpeg') { $Ffmpeg.Aom } else { $descriptor.Aom }
+            $Runs.Add([pscustomobject]@{
+                Scenario = $scenario.Id; Tool = $tool; ToolRole = $role; Warmup = $warmup; Run = $number; OrderInRound = $order + 1
+                FileCount = $scenario.Inputs.Count; SuccessCount = $result.SuccessCount; FailedCount = $result.FailedCount
+                TotalPixels = $scenario.TotalPixels; SuccessPixels = $scenario.SuccessPixels
+                WallSeconds = $result.Metrics.WallSeconds; TreeCpuSeconds = $result.Metrics.CpuSeconds; PeakMemoryBytes = $result.Metrics.PeakMemoryBytes
+                OutputBytes = $result.OutputBytes; ImagesPerSecond = $result.SuccessCount / $result.Metrics.WallSeconds; MegaPixelsPerSecond = ($scenario.SuccessPixels / 1e6) / $result.Metrics.WallSeconds
+                DecodeSeconds = $result.DecodeSeconds; PrepareSeconds = $result.PrepareSeconds; EncodeSeconds = $result.EncodeSeconds
+                AvifRgbToYuvSeconds = $result.RgbToYuvSeconds; AvifAddImageSeconds = $result.AddImageSeconds; AvifFinishSeconds = $result.FinishSeconds
+                AvifOutputCopySeconds = $result.OutputCopySeconds; WriteSeconds = $result.WriteSeconds
+                EncoderThreads = if ($tool -eq 'ffmpeg') { 1 } else { $scenario.AwjEncoderThreads }
+                FileConcurrency = if ($tool -eq 'ffmpeg') { $scenario.FfmpegConcurrency } else { $scenario.AwjFileConcurrency }
+                AomVersion = $aom; FailureNote = $result.FailureNote
+            })
+            $Runs | Export-Csv -LiteralPath $RunPath -NoTypeInformation -Encoding utf8NoBOM
+            ++$complete
+            if ($complete -lt $total -and $CooldownSeconds -gt 0) { Start-Sleep -Seconds $CooldownSeconds }
         }
     }
 }
 
-$RunsPath = Join-Path $ResultsRoot 'runs.csv'
-$AllRuns | Export-Csv -LiteralPath $RunsPath -NoTypeInformation -Encoding utf8NoBOM
-$Measured = @($AllRuns | Where-Object { -not $_.Warmup })
+$Measured = @($Runs | Where-Object { -not $_.Warmup })
+function Aggregate([string]$ScenarioId, [string]$Tool) {
+    $rows = @($Measured | Where-Object { $_.Scenario -eq $ScenarioId -and $_.Tool -eq $Tool })
+    $scenario = $Scenarios | Where-Object Id -eq $ScenarioId
+    if ($rows.Count -ne $scenario.MeasuredRuns) { throw "Aggregate row mismatch for $ScenarioId/$Tool." }
+    $awj = $Tool -ne 'ffmpeg'
+    $stage = {
+        param([string]$Name)
+        if ($awj) { return Get-Median ([double[]]$rows.$Name) }
+        return [double]::NaN
+    }
+    $stage95 = {
+        param([string]$Name)
+        if ($awj) { return Get-P95 ([double[]]$rows.$Name) }
+        return [double]::NaN
+    }
+    return [pscustomobject]@{
+        Scenario = $ScenarioId; Tool = $Tool; ToolRole = $rows[0].ToolRole
+        WallMedian = Get-Median ([double[]]$rows.WallSeconds); WallP95 = Get-P95 ([double[]]$rows.WallSeconds)
+        CpuMedian = Get-Median ([double[]]$rows.TreeCpuSeconds); CpuP95 = Get-P95 ([double[]]$rows.TreeCpuSeconds)
+        PeakMedianMiB = (Get-Median ([double[]]$rows.PeakMemoryBytes)) / 1MB; PeakP95MiB = (Get-P95 ([double[]]$rows.PeakMemoryBytes)) / 1MB
+        ImagesPerSecond = Get-Median ([double[]]$rows.ImagesPerSecond); MegaPixelsPerSecond = Get-Median ([double[]]$rows.MegaPixelsPerSecond)
+        OutputMedianMiB = (Get-Median ([double[]]$rows.OutputBytes)) / 1MB
+        SuccessCount = $rows[0].SuccessCount; FailedCount = $rows[0].FailedCount; FailureNote = $rows[0].FailureNote
+        DecodeMedian = & $stage 'DecodeSeconds'; DecodeP95 = & $stage95 'DecodeSeconds'
+        PrepareMedian = & $stage 'PrepareSeconds'; PrepareP95 = & $stage95 'PrepareSeconds'
+        EncodeMedian = & $stage 'EncodeSeconds'; EncodeP95 = & $stage95 'EncodeSeconds'
+        RgbMedian = & $stage 'AvifRgbToYuvSeconds'; RgbP95 = & $stage95 'AvifRgbToYuvSeconds'
+        AddMedian = & $stage 'AvifAddImageSeconds'; AddP95 = & $stage95 'AvifAddImageSeconds'
+        FinishMedian = & $stage 'AvifFinishSeconds'; FinishP95 = & $stage95 'AvifFinishSeconds'
+        CopyMedian = & $stage 'AvifOutputCopySeconds'; CopyP95 = & $stage95 'AvifOutputCopySeconds'
+        WriteMedian = & $stage 'WriteSeconds'; WriteP95 = & $stage95 'WriteSeconds'
+    }
+}
+
 $Aggregates = [Collections.Generic.List[object]]::new()
-foreach ($case in $Cases) {
-    $caseId = "$($case.Surface)-$($case.AlphaClass)-$($case.Count)"
-    $runs = @($Measured | Where-Object CaseId -eq $caseId)
-    $Aggregates.Add([pscustomobject]@{
-        CaseId = $caseId
-        Surface = $case.Surface
-        AlphaClass = $case.AlphaClass
-        FileCount = $case.Count
-        Runs = $runs.Count
-        WallMedianSeconds = Get-Median @($runs.WallSeconds)
-        WallP95Seconds = Get-P95 @($runs.WallSeconds)
-        CpuMedianSeconds = Get-Median @($runs.CpuSeconds)
-        CpuP95Seconds = Get-P95 @($runs.CpuSeconds)
-        PeakMemoryMedianBytes = Get-Median @($runs.PeakWorkingSetBytes)
-        PeakMemoryP95Bytes = Get-P95 @($runs.PeakWorkingSetBytes)
-        ThroughputMedianImagesPerSecond = Get-Median @($runs.ThroughputImagesPerSecond)
-        ThroughputP95ImagesPerSecond = Get-P95 @($runs.ThroughputImagesPerSecond)
-        CoreMedianSeconds = Get-Median @($runs.CoreSeconds)
-        CoreP95Seconds = Get-P95 @($runs.CoreSeconds)
-        DecodeMedianSeconds = Get-Median @($runs.DecodeSeconds)
-        PrepareMedianSeconds = Get-Median @($runs.PrepareSeconds)
-        EncodeMedianSeconds = Get-Median @($runs.EncodeSeconds)
-        WriteMedianSeconds = Get-Median @($runs.WriteSeconds)
-        EncodeStageMedianPercent = Get-Median @($runs.EncodeStagePercent)
-        SuccessCount = $runs[0].SuccessCount
-        FailedCount = $runs[0].FailedCount
-        EncoderIds = $runs[0].EncoderIds
-        EncoderThreads = $runs[0].EncoderThreads
-    })
+foreach ($scenario in $Scenarios) {
+    foreach ($tool in $scenario.Tools) { $Aggregates.Add((Aggregate $scenario.Id $tool)) }
+}
+$Aggregates | Export-Csv -LiteralPath (Join-Path $ResultsRoot 'aggregates.csv') -NoTypeInformation -Encoding utf8NoBOM
+
+function Format-Number([double]$Value, [string]$Format = 'F3') {
+    if ([double]::IsNaN($Value)) { return 'n/a' }
+    return $Value.ToString($Format, $Invariant)
 }
 
-$SummaryPath = Join-Path $ResultsRoot 'summary.csv'
-$Aggregates | Export-Csv -LiteralPath $SummaryPath -NoTypeInformation -Encoding utf8NoBOM
-
-try { $CpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name).Trim() }
-catch { $CpuName = 'unknown' }
-$Metadata = [pscustomobject]@{
-    canonical = -not [bool]$Smoke
-    generated_at = [DateTimeOffset]::Now.ToString('o', $Invariant)
-    input_root = $InputRoot
-    input_count = $Inventory.Count
-    input_manifest_sha256 = $InventorySha256
-    executable = $Executable
-    executable_sha256 = $ExecutableSha256
-    build_type = 'Release'
-    awj_version = $Version
-    build_commit = $BuildCommit
-    workspace_commit = $GitCommit
-    workspace_dirty = $GitDirty
-    generated_release_changes = $GeneratedReleaseChanges
-    encoder_versions = [pscustomobject]@{ aom = $AomVersion; libavif_commit = $LibavifCommit; dav1d = $Dav1dVersion }
-    profile = [pscustomobject]@{ format = 'avif'; encoder = 'aom'; quality = $Quality; speed = $Speed; chroma = $Chroma; bit_depth = $BitDepth; alpha = 'auto'; threads = 'auto'; memory = 'auto' }
-    protocol = [pscustomobject]@{ warmups = $WarmupsPerCase; measured_runs = $RunsPerCase; cooldown_seconds = $CooldownSeconds; p95 = 'nearest-rank' }
-    machine = [pscustomobject]@{ cpu = $CpuName; hardware_threads = $HardwareThreads; automatic_thread_budget = $ThreadBudget; power_scheme_guid = $LockedPowerGuid; power_scheme = $Power.Text }
+$Gates = [Collections.Generic.List[object]]::new()
+function Add-Gate([string]$Name, [string]$Status, [string]$Detail) {
+    $Gates.Add([pscustomobject]@{ Name = $Name; Status = $Status; Detail = $Detail })
 }
-$MetadataPath = Join-Path $ResultsRoot 'metadata.json'
-$Metadata | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $MetadataPath -Encoding utf8NoBOM
+if ($RunStrict) {
+    $strictAwj = $Aggregates | Where-Object { $_.Scenario -eq 'strict-210' -and $_.Tool -eq 'AWJ' }
+    $strictFfmpeg = $Aggregates | Where-Object { $_.Scenario -eq 'strict-210' -and $_.Tool -eq 'ffmpeg' }
+    Add-Gate 'strict AWJ wall median <= ffmpeg' $(if ($strictAwj.WallMedian -le $strictFfmpeg.WallMedian) { 'PASS' } else { 'FAIL' }) "$(Format-Number $strictAwj.WallMedian) s vs $(Format-Number $strictFfmpeg.WallMedian) s"
+    if ($Legacy) {
+        $legacyStrict = $Aggregates | Where-Object { $_.Scenario -eq 'strict-210' -and $_.Tool -eq 'Legacy0103' }
+        $ratio = $strictAwj.CpuMedian / $legacyStrict.CpuMedian
+        Add-Gate 'strict AWJ CPU median <= 95% of 0.10.3' $(if ($ratio -le 0.95) { 'PASS' } else { 'FAIL' }) "$(Format-Number ($ratio * 100) 'F2')%"
+    } else {
+        Add-Gate 'strict AWJ CPU median <= 95% of 0.10.3' 'NOT RUN' 'Pass LegacyAwjExecutable.'
+    }
+}
+if ($DependencyBaseline -and $RunRegression) {
+    $current = $Aggregates | Where-Object { $_.Scenario -eq 'batch-613' -and $_.Tool -eq 'AWJ' }
+    $baseline = $Aggregates | Where-Object { $_.Scenario -eq 'batch-613' -and $_.Tool -eq 'DependencyBaseline' }
+    foreach ($metric in @(
+        [pscustomobject]@{ Name = 'wall'; Current = $current.WallMedian; Baseline = $baseline.WallMedian },
+        [pscustomobject]@{ Name = 'CPU'; Current = $current.CpuMedian; Baseline = $baseline.CpuMedian },
+        [pscustomobject]@{ Name = 'wall P95'; Current = $current.WallP95; Baseline = $baseline.WallP95 }
+    )) {
+        $ratio = $metric.Current / $metric.Baseline
+        Add-Gate "613 $($metric.Name) <= dependency baseline +2%" $(if ($ratio -le 1.02) { 'PASS' } else { 'FAIL' }) "$(Format-Number ($ratio * 100) 'F2')%"
+    }
+}
 
-function Format-Number([double]$Value, [string]$Pattern = 'F3') { return $Value.ToString($Pattern, $Invariant) }
 $Report = [Collections.Generic.List[string]]::new()
-$Report.Add('# AWJ reproducible benchmark')
+$Report.Add('# AWJimage 0.10.4 CLI AVIF benchmark')
 $Report.Add('')
-$Report.Add("Canonical: **$(-not [bool]$Smoke)**  ")
-$Report.Add("AWJ: **$Version**  ")
-$Report.Add("Commit: **$BuildCommit**  ")
-$Report.Add("Encoder: **libaom $AomVersion / libavif $($LibavifCommit.Substring(0, [Math]::Min(12, $LibavifCommit.Length)))**  ")
-$Report.Add("Input manifest: **$InventorySha256**  ")
-$Report.Add("Power: **$LockedPowerGuid**")
+$Report.Add("Generated: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))")
+$Report.Add("Power scheme: $($Power.Guid)")
+$Report.Add("Hardware threads / AWJ CPU budget: $HardwareThreads / $ThreadBudget")
+$Report.Add("Input manifest SHA-256: $ManifestHash")
 $Report.Add('')
-$Report.Add("Profile: AVIF, AOM, quality=$Quality, speed=$Speed, chroma=$Chroma, bit-depth=$BitDepth, alpha=auto, Release, $WarmupsPerCase warmup and $RunsPerCase measured runs.")
+$Report.Add('AWJ uses only input, output, summary, and no-log options. It therefore exercises the true defaults: AVIF AOM q70, speed 6, 420 chroma, automatic 10-bit-minimum depth, automatic non-opaque alpha retention at the same quality, and automatic memory.')
+$Report.Add('Strict ffmpeg uses QP 23, cpu-used 6, all-intra, still-picture, row-mt, yuv420p10le, one thread per process, and CPU-budget process concurrency. Inputs are pixels, bytes, path ascending. Each strict round runs AWJ before ffmpeg and sleeps between calls; thermal and file-cache bias remains a documented limitation.')
 $Report.Add('')
-$Report.Add('| Case | Wall median / P95 (s) | Process CPU median / P95 (s) | Item seconds sum median / P95 | Peak median / P95 (MiB) | Throughput median (img/s) | decode / prepare / encode / write median (s) | Encode share |')
-$Report.Add('|---|---:|---:|---:|---:|---:|---:|---:|')
-foreach ($row in $Aggregates) {
-    $peakMedian = $row.PeakMemoryMedianBytes / 1MB
-    $peakP95 = $row.PeakMemoryP95Bytes / 1MB
-    $Report.Add("| $($row.CaseId) | $(Format-Number $row.WallMedianSeconds) / $(Format-Number $row.WallP95Seconds) | $(Format-Number $row.CpuMedianSeconds) / $(Format-Number $row.CpuP95Seconds) | $(Format-Number $row.CoreMedianSeconds) / $(Format-Number $row.CoreP95Seconds) | $(Format-Number $peakMedian 'F1') / $(Format-Number $peakP95 'F1') | $(Format-Number $row.ThroughputMedianImagesPerSecond) | $(Format-Number $row.DecodeMedianSeconds) / $(Format-Number $row.PrepareMedianSeconds) / $(Format-Number $row.EncodeMedianSeconds) / $(Format-Number $row.WriteMedianSeconds) | $(Format-Number $row.EncodeStageMedianPercent 'F1')% |")
+$Report.Add("AWJ: $($Target.Version), $($Target.BuildType), $($Target.Commit), AOM $($Target.Aom), dav1d $($Target.Dav1d)")
+if ($Legacy) { $Report.Add("0.10.3 baseline: $($Legacy.Commit), AOM $($Legacy.Aom), explicit 10-bit only") }
+if ($DependencyBaseline) { $Report.Add("Dependency baseline: $($DependencyBaseline.Commit), AOM $($DependencyBaseline.Aom)") }
+if ($Ffmpeg) { $Report.Add("ffmpeg: $($Ffmpeg.Version), AOM $($Ffmpeg.Aom)") }
+$Report.Add('')
+$Report.Add('## Results')
+$Report.Add('')
+$Report.Add('| Scenario | Tool | Success / failed | Threads x files | Wall median / P95 s | Tree CPU median / P95 s | Peak memory median / P95 MiB | Images/s | MP/s | Output MiB |')
+$Report.Add('|---|---|---:|---:|---:|---:|---:|---:|---:|---:|')
+foreach ($item in $Aggregates) {
+    $row = @($Measured | Where-Object { $_.Scenario -eq $item.Scenario -and $_.Tool -eq $item.Tool })[0]
+    $Report.Add("| $($item.Scenario) | $($item.ToolRole) | $($item.SuccessCount) / $($item.FailedCount) | $($row.EncoderThreads) x $($row.FileConcurrency) | $(Format-Number $item.WallMedian) / $(Format-Number $item.WallP95) | $(Format-Number $item.CpuMedian) / $(Format-Number $item.CpuP95) | $(Format-Number $item.PeakMedianMiB 'F1') / $(Format-Number $item.PeakP95MiB 'F1') | $(Format-Number $item.ImagesPerSecond) | $(Format-Number $item.MegaPixelsPerSecond) | $(Format-Number $item.OutputMedianMiB 'F2') |")
 }
+$Report.Add('')
+$Report.Add('## AWJ stage timings')
+$Report.Add('')
+$Report.Add('| Scenario | Tool | Decode median / P95 | Prepare median / P95 | Encode median / P95 | RGB to YUV median / P95 | AddImage median / P95 | Finish median / P95 | Copy median / P95 | Write median / P95 |')
+$Report.Add('|---|---|---:|---:|---:|---:|---:|---:|---:|---:|')
+foreach ($item in $Aggregates | Where-Object { $_.Tool -ne 'ffmpeg' }) {
+    $Report.Add("| $($item.Scenario) | $($item.ToolRole) | $(Format-Number $item.DecodeMedian) / $(Format-Number $item.DecodeP95) | $(Format-Number $item.PrepareMedian) / $(Format-Number $item.PrepareP95) | $(Format-Number $item.EncodeMedian) / $(Format-Number $item.EncodeP95) | $(Format-Number $item.RgbMedian) / $(Format-Number $item.RgbP95) | $(Format-Number $item.AddMedian) / $(Format-Number $item.AddP95) | $(Format-Number $item.FinishMedian) / $(Format-Number $item.FinishP95) | $(Format-Number $item.CopyMedian) / $(Format-Number $item.CopyP95) | $(Format-Number $item.WriteMedian) / $(Format-Number $item.WriteP95) |")
+}
+$Report.Add('')
+$Report.Add('Stage values are sums of per-file CSV timings for each batch and are diagnostic spans, not a wall-clock decomposition. CPU and peak memory are queried from a Windows Job Object covering the process tree.')
+$Report.Add('')
+$Report.Add('## Gates')
+$Report.Add('')
+$Report.Add('| Gate | Status | Detail |')
+$Report.Add('|---|---|---|')
+if ($Gates.Count) {
+    foreach ($gate in $Gates) { $Report.Add("| $($gate.Name) | $($gate.Status) | $($gate.Detail) |") }
+} else {
+    $Report.Add('| no cross-version comparator selected | NOT RUN | Select strict mode or provide a baseline executable. |')
+}
+$Report.Add('')
+$Report.Add("Corpus: $($Inventory.Count) files; $($Opaque.Count) opaque; $($Transparent.Count) actual transparent; $(@($Inventory | Where-Object Bytes -eq 0).Count) zero-byte known failure. Strict subset: $StrictCount opaque files without ICC, EXIF, or XMP and no source depth above 10-bit, matching ffmpeg yuv420p10le.")
+$Report.Add('Historical q80 8-bit and large-image data are intentionally omitted because they are not comparable. AOM and libavif updates can change encoded bytes; the 10-bit default can increase CPU, memory, and output size.')
 $ReportPath = Join-Path $ResultsRoot 'report.md'
 $Report | Set-Content -LiteralPath $ReportPath -Encoding utf8NoBOM
 
+$Metadata = [ordered]@{
+    generated_at = (Get-Date).ToString('o')
+    input_root = $InputRoot
+    input_manifest = $ManifestPath
+    input_manifest_sha256 = $ManifestHash
+    power_scheme = $Power
+    hardware_threads = $HardwareThreads
+    automatic_thread_budget = $ThreadBudget
+    warmups = $WarmupRuns
+    measured_runs = $MeasuredRuns
+    cooldown_seconds = $CooldownSeconds
+    profile = [ordered]@{
+        awj = 'AVIF default q70 speed6 420 automatic minimum 10-bit automatic memory'
+        ffmpeg = 'QP23 cpu-used6 allintra still-picture row-mt yuv420p10le threads1'
+    }
+    awj = $Target
+    legacy_awj = $Legacy
+    dependency_baseline_awj = $DependencyBaseline
+    ffmpeg = $Ffmpeg
+    gates = @($Gates)
+}
+$Metadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $ResultsRoot 'metadata.json') -Encoding utf8NoBOM
 Write-Host "Benchmark complete: $ReportPath"
-Write-Host "Raw runs:          $RunsPath"
-Write-Host "Aggregate CSV:      $SummaryPath"
-Write-Host "Metadata:           $MetadataPath"

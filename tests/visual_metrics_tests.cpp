@@ -36,6 +36,29 @@ awj::ImageBuffer make_test_image(std::byte changed_blue) {
   return image;
 }
 
+awj::ImageBuffer make_high_bit_depth_test_image(int bit_depth) {
+  const auto maximum = static_cast<unsigned int>((1u << bit_depth) - 1u);
+  awj::ImagePlane plane{.stride = 16};
+  const auto append_sample = [&plane](unsigned int sample) {
+    plane.bytes.push_back(std::byte{static_cast<unsigned char>(sample & 0xffu)});
+    plane.bytes.push_back(std::byte{static_cast<unsigned char>(sample >> 8u)});
+  };
+  for (unsigned int channel = 0; channel < 4; ++channel) {
+    append_sample(maximum);
+  }
+  append_sample(0);
+  append_sample(0);
+  append_sample(0);
+  append_sample(maximum);
+  awj::ImageBuffer image{.width = 2,
+                          .height = 1,
+                          .pixel_format = awj::PixelFormat::rgba,
+                          .alpha_mode = awj::AlphaMode::straight,
+                          .bit_depth = bit_depth};
+  image.planes.push_back(std::move(plane));
+  return image;
+}
+
 }  // namespace
 
 int main() {
@@ -73,6 +96,16 @@ int main() {
   auto score = awj::calculate_visual_score(*reference, *changed);
   if (!score || score->visual_score < 1.0 || score->visual_score > 99.0) {
     return fail("视觉指标 score 范围无效。");
+  }
+
+  for (const int bit_depth : {10, 16}) {
+    auto high_bit_depth = awj::make_luma_image(make_high_bit_depth_test_image(bit_depth));
+    if (!high_bit_depth || high_bit_depth->pixels.size() != 2 ||
+        !nearly_equal(high_bit_depth->pixels[0], 1.0) ||
+        !nearly_equal(high_bit_depth->pixels[1], 0.0)) {
+      return fail(high_bit_depth ? "高位深图像 luma 归一化无效。"
+                                 : high_bit_depth.error());
+    }
   }
 
   return 0;

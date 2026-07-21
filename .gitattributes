@@ -47,6 +47,9 @@
 *.ttc   binary
 *.otf   binary
 
+# Unified diffs encode empty context lines with a single leading space.
+vcpkg-overlays/**/*.diff whitespace=-trailing-space
+
 ###############################################################################
 # diff behavior for common document formats
 # 

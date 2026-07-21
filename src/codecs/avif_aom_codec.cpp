@@ -3,6 +3,7 @@ module;
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -77,6 +78,12 @@ void zenravif_bridge_free(std::uint8_t* data, std::size_t size);
 namespace awj {
 
 namespace avif_aom_detail {
+
+using Clock = std::chrono::steady_clock;
+
+double elapsed_seconds(Clock::time_point started) {
+  return std::chrono::duration<double>(Clock::now() - started).count();
+}
 
 struct AvifImageDeleter {
   void operator()(avifImage* value) const noexcept {
@@ -341,36 +348,8 @@ std::expected<avifPixelFormat, std::string> avif_pixel_format_from_chroma(
   }
 }
 
-ChromaMode chroma_from_pixel_format(PixelFormat pixel_format) noexcept {
-  switch (pixel_format) {
-    case PixelFormat::yuv420:
-      return ChromaMode::yuv420;
-    case PixelFormat::yuv422:
-      return ChromaMode::yuv422;
-    case PixelFormat::yuv444:
-      return ChromaMode::yuv444;
-    case PixelFormat::gray:
-    case PixelFormat::rgb:
-    case PixelFormat::rgba:
-    case PixelFormat::unknown:
-    default:
-      return ChromaMode::auto_keep;
-  }
-}
-
-ChromaMode applied_chroma_from_settings(const ImageBuffer& image,
-                                        ChromaMode chroma,
-                                        bool lossless) noexcept {
-  if (chroma != ChromaMode::auto_keep) {
-    return chroma;
-  }
-  if (lossless && image.source_info) {
-    const auto source_chroma = chroma_from_pixel_format(image.source_info->pixel_format);
-    if (source_chroma != ChromaMode::auto_keep) {
-      return source_chroma;
-    }
-  }
-  return ChromaMode::yuv420;
+ChromaMode applied_chroma_from_settings(ChromaMode chroma) noexcept {
+  return chroma == ChromaMode::auto_keep ? ChromaMode::yuv420 : chroma;
 }
 
 const MetadataBlock* first_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
@@ -715,13 +694,17 @@ int applied_bit_depth_from_settings(const ImageBuffer& image,
   if (settings.bit_depth) {
     return *settings.bit_depth;
   }
+  const auto source_depth = avif_bit_depth_from_source(image);
   if (lossless) {
-    if (const auto source_depth = avif_bit_depth_from_source(image)) {
-      return *source_depth;
+    if (source_depth) {
+      return std::max(10, *source_depth);
     }
-    return image.bit_depth;
+    return std::max(10, image.bit_depth);
   }
-  return 8;
+  if (source_depth && *source_depth >= 10) {
+    return std::min(12, *source_depth);
+  }
+  return 10;
 }
 
 std::string default_bit_depth_reason(const ImageBuffer& image,
@@ -730,13 +713,26 @@ std::string default_bit_depth_reason(const ImageBuffer& image,
   if (settings.bit_depth_explicit) {
     return "用户明确请求 bit-depth";
   }
-  if (lossless && avif_bit_depth_from_source(image)) {
+  const auto source_depth = avif_bit_depth_from_source(image);
+  if (lossless && source_depth && *source_depth < 10) {
+    return "无损 auto 将低于 10-bit 的源图提升为 10-bit 输出";
+  }
+  if (lossless && source_depth) {
     return "无损模式继承源图 bit-depth";
   }
   if (lossless) {
-    return "无损模式继承解码后 bit-depth";
+    return image.bit_depth < 10
+               ? "无损 auto 将低于 10-bit 的解码图提升为 10-bit 输出"
+               : "无损模式继承解码后 bit-depth";
   }
-  return "auto 选择编码器默认 bit-depth";
+  if (source_depth && *source_depth >= 10 && *source_depth <= 12) {
+    return std::format("有损 auto 保留源图 {}-bit 输出", *source_depth);
+  }
+  if (source_depth && *source_depth > 12) {
+    return std::format("有损 auto 将源图 {}-bit 限制为 AOM 支持的 12-bit 输出",
+                       *source_depth);
+  }
+  return "auto 选择首选 10-bit 输出";
 }
 
 avifMatrixCoefficients matrix_coefficients_for_encode(const NativeEncodeSettings& settings,
@@ -1078,9 +1074,8 @@ bool libavif_encoder_available(AvifEncoderMode mode) {
 }
 
 bool lossless_requested(const NativeEncodeSettings& settings) noexcept {
-  return preserve_alpha_for_encode(settings) ||
-         (settings.visual_quality ? *settings.visual_quality >= 100
-                                  : settings.quality >= 100);
+  return settings.visual_quality ? *settings.visual_quality >= 100
+                                 : settings.quality >= 100;
 }
 
 SpeedMapping libavif_speed_mapping(AvifEncoderMode, int speed) {
@@ -1268,7 +1263,7 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
       return "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha auto/off 或 --avif-encoder auto/aom。";
     }
     if (capability.mode == AvifEncoderMode::zenrav1e) {
-      return "zenrav1e 当前不能保证 alpha 严格无损；请使用 --avif-encoder auto/aom。";
+      return "zenrav1e 当前不支持保留 alpha；请使用 --avif-encoder auto/aom。";
     }
     return std::format("AVIF encoder {} 不支持保留 alpha。", capability.id);
   }
@@ -1567,7 +1562,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   const bool lossless = avif_aom_detail::lossless_requested(settings);
   const auto actual_mode = AvifEncoderMode::aom;
   auto applied_chroma = avif_aom_detail::applied_chroma_from_settings(
-      image, settings.chroma_mode, lossless);
+      settings.chroma_mode);
   if (settings.avif_grid_plan) {
     const auto& plan = *settings.avif_grid_plan;
     const bool horizontal_misaligned =
@@ -1578,11 +1573,9 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
         (applied_chroma == ChromaMode::yuv422 && horizontal_misaligned) ||
         (applied_chroma == ChromaMode::yuv420 &&
          (horizontal_misaligned || vertical_misaligned));
-    if (incompatible && settings.chroma_mode == ChromaMode::auto_keep) {
-      applied_chroma = ChromaMode::yuv444;
-    } else if (incompatible) {
+    if (incompatible) {
       return std::unexpected{
-          "AVIF grid 的显式 420/422 色度与当前奇数输出或 cell 尺寸不兼容；请使用 --chroma auto/444。"};
+          "AVIF grid 的 420/422 色度与当前奇数输出或 cell 尺寸不兼容；auto 默认保持 420，请使用 --chroma 444。"};
     }
   }
   const auto pixel_format =
@@ -1637,7 +1630,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   encoder->codecChoice = avif_aom_detail::codec_choice_for(actual_mode);
   const int final_quality = lossless ? AVIF_QUALITY_LOSSLESS : std::clamp(settings.quality, 1, 100);
   encoder->quality = final_quality;
-  encoder->qualityAlpha = AVIF_QUALITY_LOSSLESS;
+  encoder->qualityAlpha = final_quality;
   const int encoder_speed = std::clamp(settings.speed, 0, 10);
   encoder->speed = encoder_speed;
   encoder->keyframeInterval = 1;
@@ -1668,6 +1661,10 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   auto output = std::move(*output_holder);
 
   avifResult result = AVIF_RESULT_OK;
+  double rgb_to_yuv_seconds = -1.0;
+  double add_image_seconds = -1.0;
+  double finish_seconds = -1.0;
+  double output_copy_seconds = -1.0;
   if (settings.avif_grid_plan) {
     const auto& plan = *settings.avif_grid_plan;
     if (plan.cols == 0 || plan.rows == 0 || plan.tile_width == 0 || plan.tile_height == 0) {
@@ -1729,10 +1726,13 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
+    auto substage_started = avif_aom_detail::Clock::now();
     result = avifEncoderAddImageGrid(
         encoder.get(), plan.cols, plan.rows,
         reinterpret_cast<const avifImage* const*>(tile_views.data()),
         AVIF_ADD_IMAGE_FLAG_SINGLE);
+    add_image_seconds =
+        avif_aom_detail::elapsed_seconds(substage_started);
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
@@ -1743,7 +1743,9 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
+    substage_started = avif_aom_detail::Clock::now();
     result = avifEncoderFinish(encoder.get(), output.get());
+    finish_seconds = avif_aom_detail::elapsed_seconds(substage_started);
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
@@ -1766,7 +1768,10 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
+    auto substage_started = avif_aom_detail::Clock::now();
     result = avifImageRGBToYUV(avif_image.get(), &rgb->rgb);
+    rgb_to_yuv_seconds =
+        avif_aom_detail::elapsed_seconds(substage_started);
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
@@ -1777,9 +1782,23 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
     }
-    result = avifEncoderWrite(encoder.get(), avif_image.get(), output.get());
+    substage_started = avif_aom_detail::Clock::now();
+    result = avifEncoderAddImage(encoder.get(), avif_image.get(), 1,
+                                 AVIF_ADD_IMAGE_FLAG_SINGLE);
+    add_image_seconds =
+        avif_aom_detail::elapsed_seconds(substage_started);
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
       return std::unexpected{stopped.error()};
+    }
+    if (result == AVIF_RESULT_OK) {
+      substage_started = avif_aom_detail::Clock::now();
+      result = avifEncoderFinish(encoder.get(), output.get());
+      finish_seconds =
+          avif_aom_detail::elapsed_seconds(substage_started);
+      if (auto stopped = avif_aom_detail::stop_if_requested(stop_token);
+          !stopped) {
+        return std::unexpected{stopped.error()};
+      }
     }
   }
   if (result != AVIF_RESULT_OK) {
@@ -1807,8 +1826,10 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
     return std::unexpected{stopped.error()};
   }
+  const auto copy_started = avif_aom_detail::Clock::now();
   std::ranges::copy_n(reinterpret_cast<std::byte*>(output->data), output->size,
                       encoded.bytes.begin());
+  output_copy_seconds = avif_aom_detail::elapsed_seconds(copy_started);
 
   auto diagnostics = diagnostics_from_settings(settings);
   diagnostics.encoder_id = avif_encoder_mode_name(actual_mode);
@@ -1827,6 +1848,10 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   diagnostics.speed_mapping = avif_aom_detail::libavif_speed_mapping(actual_mode, encoder_speed);
   diagnostics.encoder_threads = total_encoder_threads;
   diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
+  diagnostics.timing.avif_rgb_to_yuv_seconds = rgb_to_yuv_seconds;
+  diagnostics.timing.avif_add_image_seconds = add_image_seconds;
+  diagnostics.timing.avif_finish_seconds = finish_seconds;
+  diagnostics.timing.avif_output_copy_seconds = output_copy_seconds;
 
   return NativeEncodeResult{.encoded = std::move(encoded),
                             .diagnostics = std::move(diagnostics),
@@ -1930,7 +1955,7 @@ class ZenravifImageEncoder final : public ImageEncoder {
     }
     if (settings.source_has_alpha_channel && settings.applied_alpha == "kept") {
       return std::unexpected{
-          "zenrav1e 当前不能保证 alpha 严格无损；请使用 --avif-encoder auto/aom。"};
+          "zenrav1e 当前不支持保留 alpha；请使用 --avif-encoder auto/aom。"};
     }
     auto plane = avif_aom_detail::rgba_plane(image, "zenravif");
     if (!plane) {
@@ -1944,7 +1969,7 @@ class ZenravifImageEncoder final : public ImageEncoder {
       return std::unexpected{"zenravif encoder 只支持 8、10、12-bit 输出。"};
     }
     const auto applied_chroma = avif_aom_detail::applied_chroma_from_settings(
-        image, settings.chroma_mode, false);
+        settings.chroma_mode);
     if (applied_chroma != ChromaMode::yuv420 && applied_chroma != ChromaMode::yuv444) {
       return std::unexpected{"zenravif encoder 只支持 420 或 444 chroma。"};
     }

@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-0.10.3 发布说明：[RELEASE_NOTES_0.10.3.md](RELEASE_NOTES_0.10.3.md)
+0.10.4 发布说明：[RELEASE_NOTES_0.10.4.md](RELEASE_NOTES_0.10.4.md)
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
@@ -15,14 +15,14 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
-## 0.10.3 GitHub 发行包
+## 0.10.4 GitHub 发行包
 
-从 [GitHub Release 0.10.3](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3) 下载与系统匹配的归档；两个包不混装跨平台文件：
+从 [GitHub Release 0.10.4](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.4) 下载与系统匹配的归档；两个包不混装跨平台文件：
 
 | 归档 | 精确内容 | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Linux.7z) | Linux ELF：`AWJ` | `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c` |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae` |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Linux.7z) | Linux ELF：`AWJ` | 见 Release 正文 |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | 见 Release 正文 |
 
 归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。
 
@@ -49,7 +49,7 @@ cmake --preset linux-gcc-x64-release
 cmake --build --preset linux-gcc-x64-release --target AWJ
 ```
 
-`linux-gcc-x64-debug` 用于 Debug；`linux-gcc-x64-release` 使用 `-O3`、IPO/LTO、`-march=x86-64-v3`、section GC/strip，并静态链接 `libstdc++` / `libgcc`；只生成单个 `AWJ` ELF，没有 `AWJ.com`。0.10.3 GCC 16.1 Release 实测约 53.1 MiB，主要来自静态 Slint、SVT-AV1-HDR、JPGLI/libjxl/libavif 等 native codec 依赖；`readelf -d bin/x64/Release/AWJ` 不应出现 `libstdc++.so.6` 或 `libgcc_s.so.1`。
+`linux-gcc-x64-debug` 用于 Debug；`linux-gcc-x64-release` 使用 `-O3`、IPO/LTO、`-march=x86-64-v3`、section GC/strip，并静态链接 `libstdc++` / `libgcc`；只生成单个 `AWJ` ELF，没有 `AWJ.com`。`readelf -d bin/x64/Release/AWJ` 不应出现 `libstdc++.so.6` 或 `libgcc_s.so.1`。
 
 Windows 也可使用脚本：
 
@@ -73,13 +73,13 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 
 ```powershell
 # 1. 更新版本号
-Set-Content VERSION "0.10.3"
+Set-Content VERSION "0.10.4"
 .\scripts\Update-VcpkgVersion.ps1
 
 # 2. 提交并打 tag
 git add VERSION vcpkg.json
-git commit -m "release: 0.10.3"
-git tag 0.10.3
+git commit -m "release: 0.10.4"
+git tag 0.10.4
 
 # 3. 构建
 .\release.ps1
@@ -122,7 +122,7 @@ AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 
 AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）；`svt-av1-hdr` 上限为 16384×8704。超过 1000 万像素但仍在单图上限内的图片会排到普通队列末尾，避免单张大图的内存估算降低全部小图的并发；它们仍使用普通编码器，不会强制进入大图链路。总批次超过 12 张时，普通、延后和大图阶段都保持每张图片单编码线程。
 
-AVIF 输入需要保留透明通道时，颜色与 alpha 会一起自动使用 AOM q100/4:4:4 无损编码，用户设置的 `speed` 保持不变；`--alpha off` 仍按请求的质量与 speed 编码。
+`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；默认输出为 YUV 4:2:0，只有显式 `--chroma 422` 或 `--chroma 444` 才改变采样，绝不切换为 RGB。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化并按默认 420 重编码。源图 CICP range 默认保持（PC/full 或 TV/limited）；未知 range 使用 full。`--alpha off` 会移除 alpha。
 
 超过 AOM 单图上限后自动进入大图链路：
 1. 默认优先 `zenrav1e`，失败或不支持再回退 `grid`；
@@ -138,73 +138,56 @@ Studio 不再提供独立大图页；自动处理状态直接显示在主队列�
 
 `--allow-wic-fallback` 仅 Windows 有效；Linux 会接受但忽略该参数。Linux UI 的“选择”按钮会调用 `zenity`/`yad`/`kdialog`。右键菜单为 AVIF、WebP、JXL、JPGLI、PNG 分别写入 Nautilus 用户脚本，并同步写入 Thunar UCA；必要时重启文件管理器。
 
-多帧 WebP/GIF/APNG/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高。
+多帧 WebP/GIF/APNG/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高；若奇数 grid 与默认 420 不兼容，会明确要求显式选择 444，而不会自动改用其他采样。
 
 Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。0.10.3 增加待处理、处理中、成功和失败计数、仅看失败、重试失败项及选中项详情；详情保留完整错误、输入/输出路径、编码器、线程数和 decode/prepare/encode/write 阶段耗时。
 
-SoftComboBox、SoftButton、左侧导航与队列右键菜单提供 Tab 焦点、可见焦点环、Enter/Space、方向键、Home/End、Esc 以及可访问角色/名称。字体下拉框仍最多显示 10 行，支持滚轮和滚动条，不提供搜索或手动输入。参数页按常用参数、资源限制、格式高级选项分组，危险警告常驻，其余长说明收进帮助提示。
+SoftComboBox、SoftButton、左侧导航与队列右键菜单提供 Tab 焦点、可见焦点状态、Enter/Space、方向键、Home/End、Esc 以及可访问角色/名称。字体下拉框仍最多显示 10 行，支持滚轮和滚动条，不提供搜索或手动输入。参数页按常用参数、资源限制、格式高级选项分组，危险警告常驻。
 
 Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时，启动请求会合并到一个右键窗口和同一队列。右键窗口提供普通取消与强制终止；本体和右键窗口点击右上角关闭时会先终止活动任务。
 
 ## 基准测试
 
-Windows Release 的 canonical 基准使用固定 AVIF/AOM `quality=80`、`speed=6`、`chroma=420`、8-bit 和当前电源方案：
+当前 Windows 基准只测试 CLI，使用 `D:\图片\benchmark\test` 的 613 个文件。当前脚本测量 AWJ 默认 AVIF 行为和严格的 ffmpeg 对照；运行命令：
 
 ```powershell
-& .\scripts\benchmark.ps1 -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e -Surface cli
+pwsh -NoProfile -File .\scripts\benchmark.ps1 `
+  -InputRoot 'D:\图片\benchmark\test' `
+  -AwjExecutable .\bin\x64\Release\AWJ.exe `
+  -FfmpegExecutable 'D:\DevTools\Cli\FFmpeg\ffmpeg.exe' `
+  -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e `
+  -Mode All
 ```
 
-脚本先预热一次，再运行五次（P95 使用 nearest-rank）；混合输入覆盖 1、4、12、13、613 张，透明与不透明输入分别覆盖 1、13 张。0.10.3 按当前测试约定只运行 CLI；`studio` 仍只是同一个 CLI worker 的 manifest policy，`shell` 也是 CLI policy，不需要窗口自动化。`report.md`、`summary.csv`、`runs.csv`、`metadata.json` 和输入 SHA-256 清单写入 `build/benchmarks/`。canonical 运行要求源码工作树干净（允许 `release.ps1` 重建的已跟踪 Release 产物变化）、匹配当前 commit 的 `BUILD_INFO.txt`、Release 构建和显式电源方案；`-Smoke` 只用于验证基准工具，不可作为性能结论。
+当前协议不向 AWJ 传入质量、速度、位深或内存参数，因此验证实际默认值：AOM、quality 70、speed 6、YUV 4:2:0、自动至少 10-bit，以及非不透明 alpha 自动保留且同样按 q70 编码。严格对照使用 ffmpeg AOM QP 23、10-bit 4:2:0、all-intra、row-mt，并按像素、字节、路径排序。脚本先自检输入和 `summary.csv` 的实际参数，再记录 Job Object 覆盖的整棵进程树 CPU/峰值内存。
 
-报告中的 `Process CPU` 是 Windows 进程 CPU 时间；`Item seconds sum` 是 `summary.csv` 逐图 `seconds` 之和，仅用于和下方历史数据比较。两者以及整批墙钟时间不得混用。
+默认 `All` 同时运行回归和严格对照；`Regression` 只运行 AWJ，`Strict` 只运行 210 张不含 ICC/EXIF/XMP 的不透明图片与 ffmpeg。非 smoke 运行每组预热一次、测量五次，P95 使用 nearest-rank；每次调用间冷却 30 秒。结果写入 `build/benchmarks/`，不应把单轮最快值当作版本结论。
 
-### 0.10.3 canonical CLI 结果
+### 0.10.3 严格对照归档
 
-固定输入清单 SHA-256 为 `4CDFC310837192A7BDAC149C1C212ECD8F720AEE6EECB954D218D66D1E424628`。0.10.2 与 0.10.3 使用相同输入、AOM 3.13.3、libavif commit、电源方案、Release 构建、q80、speed6、4:2:0、8-bit 和 12 线程总预算；613 张均为 612 成功、1 个已知空 WebP 失败。
+以下结果是 2026-07-16 用旧版 q80/8-bit 协议采集的历史记录，不是当前脚本的复现输出。被测版本为 AWJ 0.10.3 MSVC Release、commit `2798db2`、AOM 3.13.3，以及 ffmpeg `git-2026-07-14-312c830916`、AOM 3.14.1。
 
-早期记录的 1367.171 与 1660.888 核秒使用了不同色度/协议，不能互相比较，也不作为下表的回归基线。
+### 大图能力结果
 
-| 613 张 CLI | 0.10.2 `ec61551` | 0.10.3 `2798db2` |
-|---|---:|---:|
-| 墙钟中位数 / P95 | 214.361 / 226.493 s | 162.660 / 166.395 s |
-| 进程 CPU 中位数 / P95 | 1613.906 / 1624.469 s | 1381.844 / 1399.391 s |
-| 峰值内存中位数 / P95 | 无效（旧采样缓存） | 2807.7 / 2822.4 MiB |
-| 吞吐量中位数 | 2.860 img/s | 3.769 img/s |
-| decode / prepare / encode / write 中位数 | 51.107 / 0.346 / 2189.732 / 15.396 s | 40.749 / 0.314 / 1668.552 / 10.198 s |
-| encode 阶段占比 | 97.0% | 97.0% |
+| 工具 | 结果 | 墙钟 | 进程 CPU | 采样峰值内存 | 输出 |
+|---|---|---:|---:|---:|---:|
+| AWJ | AOM grid 编码成功 | 167.554 s | 892.016 s | 23,707.0 MiB | 164.39 MiB |
+| ffmpeg | 进入 libaom 前被 MJPEG 解码器拒绝 | 0.246 s（失败用时） | 不适用 | 309.5 MiB | 无 |
 
-0.10.3 五轮墙钟为 158.326、166.395、162.366、162.660、163.967 s。旧 0.10.2 峰值内存值来自未刷新 `Process` 缓存的首次采样，不能用于版本比较；0.10.3 已修正采样，墙钟、CPU 和阶段计时不受该问题影响。本版没有修改 CLI 编码路径、AOM 参数、quality、speed、色度、位深或线程规则，因此表中更快的中位数只作为本机观测结果，不归因于 UI 改动，也不据此实施 libaom 微优化。严格回归未复现，未启动 ETW/perf。
+ffmpeg 的失败签名为 `MJPEG packet ... too big`；0.246 秒只是读入缓存后的失败用时，不是编码吞吐量，因此不计算大图速度比。
 
-| 0.10.3 CLI 小矩阵 | 墙钟中位 / P95 (s) | CPU 中位 / P95 (s) | 峰值中位 / P95 (MiB) | 吞吐量中位 (img/s) | decode / prepare / encode / write 中位 (s) |
-|---|---:|---:|---:|---:|---:|
-| mixed-1 | 1.577 / 3.648 | 2.656 / 3.703 | 104.7 / 105.0 | 0.634 | 0.054 / 0.000 / 1.264 / 0.008 |
-| mixed-4 | 1.804 / 2.447 | 8.094 / 8.625 | 317.2 / 321.5 | 2.217 | 0.430 / 0.001 / 3.495 / 0.028 |
-| mixed-12 | 6.295 / 6.600 | 25.406 / 26.031 | 826.1 / 860.8 | 1.906 | 1.290 / 0.007 / 27.062 / 0.093 |
-| mixed-13 | 11.004 / 12.692 | 30.312 / 33.734 | 786.6 / 801.8 | 1.181 | 1.146 / 0.017 / 32.912 / 0.133 |
-| opaque-1 | 0.605 / 0.635 | 1.875 / 2.000 | 119.9 / 120.3 | 1.653 | 0.086 / 0.000 / 0.370 / 0.005 |
-| transparent-1 | 1.150 / 1.249 | 1.969 / 2.141 | 121.7 / 121.8 | 0.870 | 0.018 / 0.000 / 0.995 / 0.007 |
-| opaque-13 | 5.887 / 6.433 | 26.500 / 27.531 | 897.0 / 918.3 | 2.208 | 1.806 / 0.014 / 29.310 / 0.120 |
-| transparent-13 | 6.733 / 7.040 | 27.734 / 28.250 | 882.9 / 902.0 | 1.931 | 0.463 / 0.000 / 32.402 / 0.146 |
+### 613 张结果
 
-以下为历史基准，AWJ 使用固定 `quality=80`、`speed=6`，不是当前 AVIF `quality=70` 的默认参数。612 张成功项中 610 张使用 AOM/libavif，2 张超过普通单图路径后使用 zenrav1e；另有 1 张空 WebP 按预期失败。AWJ 自动多核并行，ffmpeg 为单线程每实例。
+| 工具 | 调度 | 成功 / 失败 | 墙钟中位 / P95 | 进程 CPU 中位 / P95 | 采样峰值中位 / P95 | 吞吐量 | 输出中位数 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| AWJ | 12 文件 × 1 编码线程 | 612 / 1 | 110.878 / 111.891 s | 940.047 / 956.859 s | 2810.0 / 2820.5 MiB | 5.529 img/s，14.668 MP/s | 128.98 MiB |
+| ffmpeg | 12 进程 × 1 编码线程 | 612 / 1 | 107.671 / 109.772 s | 855.688 / 865.672 s | 3242.1 / 3275.8 MiB | 5.693 img/s，15.104 MP/s | 131.48 MiB |
 
-### 固定 q80 / speed6，FFmpeg 传递同样参数（613 张混合分辨率图片）
+五轮墙钟原始值：AWJ 为 111.364、109.919、110.883、111.891、107.727 秒；ffmpeg 为 109.772、108.981、106.784、107.671、106.767 秒。ffmpeg/AWJ 墙钟中位数比为 0.97×：本机此次协议下 ffmpeg 约快 2.9%，而 AWJ 的采样峰值内存中位数约低 13.3%，不构成 AWJ“大幅提速”的证据。
 
-| 指标 | AWJ | ffmpeg 8.1.1（scoop） |
-|------|-----|----------------------|
-| 并发方式 | 自动多核并行 | 单线程 × 12 并发 |
-| 总耗时 | 1,367.2 核秒 | 2,316 核秒 |
-| 平均每张 | 2.23 核秒 | 3.78 核秒 |
+AWJ 的 `decode / prepare / encode / write` 阶段总时长中位数/P95 分别为 37.529/38.040、0.278/0.291、1077.766/1090.467、8.916/9.609 秒。阶段值是并发图片的逐项求和，可以大于整批墙钟；ffmpeg 多进程运行未提供可比的阶段拆分。
 
-> 表中总耗时为逐图 `seconds` 之和，不是整批墙钟时间。ffmpeg 测试通过 PowerShell 传参，可能含额外传参与启动开销。
-
-### 2560×1600 固定分辨率（20 张，AWJ）
-
-平均每张 2.264 核秒。
-
-### 质量与体积
-
-同视觉质量下，ffmpeg 编码体积大于 AWJ。AWJ 指定同视觉质量所需的 CRF 值比 ffmpeg 高 1–3。该差异部分与 AOM 版本有关——AOM 3.14.0 包含重要质量改进，此处的质量优势不全是 AWJ 自身贡献。
+这是端到端 CLI 比较，不是同一 libaom 构建的微基准，也没有证明两组输出视觉质量相同。两者使用不同的 AOM 版本、构建选项以及解码/色彩转换前端；固定 AWJ→ffmpeg 顺序还可能让 AWJ 获得较低初始温度、让 ffmpeg 获得文件缓存。因此结果只描述这台机器和本次协议，不把差异归因于 AWJ glue code 或某个 AOM 参数。
 
 ### visual_quality 视觉质量评估
 
@@ -221,7 +204,7 @@ ctest --test-dir build/x64/Release -C Release --output-on-failure
 pwsh -NoProfile -File .\scripts\cli-worker-smoke.ps1
 ```
 
-`cli-worker-smoke.ps1` 不启动 Studio 窗口：它通过真实 CLI manifest 验证 ITEM/DETAIL、失败项重试输入、命名事件普通取消和 Job Object 强制终止进程树。Slint 的小型 component smoke 使用 testing backend，无窗口验证页面切换、键盘、字体滚动、深浅色、820×560 与 100%/150%/200% scale。0.10.3 Windows MSVC Release 为 31/31 通过。
+`cli-worker-smoke.ps1` 不启动 Studio 窗口：它通过真实 CLI manifest 验证 ITEM/DETAIL、失败项重试输入、命名事件普通取消和 Job Object 强制终止进程树。Slint 的小型 component smoke 使用 testing backend，无窗口验证页面切换、键盘、字体滚动、深浅色、820×560 与 100%/150%/200% scale。0.10.4 Windows MSVC Release 为 31/31 通过。
 
 Linux GCC Release 测试：
 
@@ -231,4 +214,4 @@ cmake --build --preset linux-gcc-x64-release
 ctest --test-dir build/linux-gcc-x64-release --output-on-failure
 ```
 
-0.10.3 Linux GCC 16.1 Release 为 16/16 通过；ELF 不依赖动态 `libstdc++.so.6` / `libgcc_s.so.1`，并确认 `-O3`、LTO、`x86-64-v3` 与静态 C++/GCC runtime 标志。
+0.10.4 Linux GCC 16.1 Release 为 16/16 通过；ELF 为 55,614,152 bytes，不依赖动态 `libstdc++.so.6` / `libgcc_s.so.1`，并确认 `-O3`、LTO、`x86-64-v3` 与静态 C++/GCC runtime 标志。

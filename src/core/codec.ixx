@@ -118,6 +118,10 @@ struct EncodeTimingDiagnostics {
   double decode_seconds{-1.0};
   double prepare_seconds{-1.0};
   double encode_seconds{-1.0};
+  double avif_rgb_to_yuv_seconds{-1.0};
+  double avif_add_image_seconds{-1.0};
+  double avif_finish_seconds{-1.0};
+  double avif_output_copy_seconds{-1.0};
   double write_seconds{-1.0};
   double visual_quality_search_seconds{-1.0};
   double visual_quality_candidate_encode_seconds{-1.0};

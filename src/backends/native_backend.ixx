@@ -1706,6 +1706,13 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.decode_seconds = native.diagnostics.timing.decode_seconds;
   result.prepare_seconds = native.diagnostics.timing.prepare_seconds;
   result.encode_seconds = native.diagnostics.timing.encode_seconds;
+  result.avif_rgb_to_yuv_seconds =
+      native.diagnostics.timing.avif_rgb_to_yuv_seconds;
+  result.avif_add_image_seconds =
+      native.diagnostics.timing.avif_add_image_seconds;
+  result.avif_finish_seconds = native.diagnostics.timing.avif_finish_seconds;
+  result.avif_output_copy_seconds =
+      native.diagnostics.timing.avif_output_copy_seconds;
   result.write_seconds = native.diagnostics.timing.write_seconds;
   result.visual_quality_search_seconds = native.diagnostics.timing.visual_quality_search_seconds;
   result.visual_quality_candidate_encode_seconds = native.diagnostics.timing.visual_quality_candidate_encode_seconds;
@@ -1954,6 +1961,10 @@ class NativeBackend final {
     if (!container_info) {
       return std::nullopt;
     }
+    if (!container_info->source_info ||
+        container_info->source_info->pixel_format != PixelFormat::yuv420) {
+      return std::nullopt;
+    }
     if (cancel_if_requested(result, stop_token)) {
       return result;
     }
@@ -2139,19 +2150,12 @@ class NativeBackend final {
       }
       prepared.settings.has_non_opaque_alpha = *has_non_opaque_alpha;
 
-      const auto source_chroma = native_backend_detail::lossless_source_chroma(decoded.image);
       const bool explicit_svt = requested_avif_encoder == AvifEncoderMode::svt;
       const bool must_preserve_alpha = native_backend_detail::alpha_must_be_preserved(
           cfg_.alpha_policy, prepared.settings.source_has_alpha_channel, *has_non_opaque_alpha);
       const bool requested_avif_lossless =
           native_backend_detail::avif_lossless_requested(cfg_);
-      const bool avif_lossless = requested_avif_lossless || must_preserve_alpha;
-      if (must_preserve_alpha) {
-        prepared.settings.quality = 100;
-        if (prepared.settings.visual_quality) {
-          prepared.settings.visual_quality = 100;
-        }
-      }
+      const bool avif_lossless = requested_avif_lossless;
 
       if (explicit_svt) {
         if (must_preserve_alpha) {
@@ -2189,30 +2193,12 @@ class NativeBackend final {
         prepared.settings.chroma_reason = cfg_.chroma_mode == ChromaMode::yuv420
                                              ? "显式选择 SVT 使用 420 chroma"
                                              : "显式选择 SVT 有损编码强制使用 420 chroma";
-      } else if (must_preserve_alpha) {
-        selection_requested_chroma = ChromaMode::yuv444;
-        prepared.settings.chroma_reason =
-            "保留 alpha 时使用 yuv444，确保 AVIF 整图无损";
-      } else if (avif_lossless) {
-        selection_requested_chroma = source_chroma == ChromaMode::auto_keep
-                                         ? ChromaMode::yuv444
-                                         : source_chroma;
-        prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
-                                             ? "无损源图 YUV chroma 未知，使用 yuv444 避免 subsampling"
-                                             : "无损模式继承源图 YUV chroma";
       } else if (cfg_.chroma_mode != ChromaMode::auto_keep) {
         selection_requested_chroma = cfg_.chroma_mode;
         prepared.settings.chroma_reason = "用户请求 chroma";
-      } else if (requested_avif_encoder == AvifEncoderMode::automatic) {
-        selection_requested_chroma = ChromaMode::auto_keep;
-        prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
-                                             ? "encoder/chroma auto 使用编码器推荐 chroma"
-                                             : "encoder/chroma auto 不用源图 chroma 限制 encoder selection";
       } else {
-        selection_requested_chroma = source_chroma;
-        prepared.settings.chroma_reason = source_chroma == ChromaMode::auto_keep
-                                             ? "chroma auto，源图 YUV chroma 未知"
-                                             : "chroma auto 继承源图 YUV chroma 用于 encoder selection";
+        selection_requested_chroma = ChromaMode::auto_keep;
+        prepared.settings.chroma_reason = "chroma auto 默认使用 420";
       }
 
       std::optional<int> selection_requested_bit_depth{};
@@ -2225,14 +2211,24 @@ class NativeBackend final {
           prepared.settings.bit_depth_reason = std::format(
               "显式选择 SVT 继承源图 {}-bit 输出", *prepared.settings.source_bit_depth);
         }
-      } else if (avif_lossless) {
-        selection_requested_bit_depth = native_backend_detail::lossless_source_bit_depth(decoded.image);
-        prepared.settings.bit_depth_reason = native_backend_detail::lossless_uses_decoded_bit_depth(decoded.image)
-                                             ? "无损模式使用解码后的 8-bit buffer bit-depth"
-                                             : "无损模式继承源图 bit-depth";
       } else if (cfg_.bit_depth) {
         selection_requested_bit_depth = cfg_.bit_depth;
         prepared.settings.bit_depth_reason = "用户明确请求 bit-depth";
+      } else if (avif_lossless) {
+        selection_requested_bit_depth =
+            native_backend_detail::lossless_source_bit_depth(decoded.image);
+        if (selection_requested_bit_depth &&
+            *selection_requested_bit_depth < 10) {
+          selection_requested_bit_depth = 10;
+          prepared.settings.bit_depth_reason =
+              "无损 auto 将低于 10-bit 的源图提升为 10-bit 输出";
+        } else {
+          prepared.settings.bit_depth_reason =
+              native_backend_detail::lossless_uses_decoded_bit_depth(
+                  decoded.image)
+                  ? "无损模式继承解码后的 bit-depth"
+                  : "无损模式继承源图 bit-depth";
+        }
       } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth >= 10) {
         selection_requested_bit_depth = prepared.settings.source_bit_depth;
         prepared.settings.bit_depth_reason = std::format(
@@ -2313,9 +2309,6 @@ class NativeBackend final {
         prepared.settings.alpha_reason = "force 保留源图 alpha 通道";
       } else {
         prepared.settings.alpha_reason = "force 请求保留 alpha，但当前编码器不支持 alpha";
-      }
-      if (must_preserve_alpha && prepared.settings.applied_alpha == "kept") {
-        prepared.settings.alpha_reason += "；AVIF 整图使用 AOM 无损编码";
       }
       native_backend_detail::populate_applied_avif_color_diagnostics(prepared.settings,
                                                                      cfg_,

@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-0.10.3 release notes (Chinese): [RELEASE_NOTES_0.10.3.md](RELEASE_NOTES_0.10.3.md)
+0.10.4 release notes (Chinese): [RELEASE_NOTES_0.10.4.md](RELEASE_NOTES_0.10.4.md)
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -15,14 +15,14 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
-## 0.10.3 GitHub release archives
+## 0.10.4 GitHub release archives
 
-Download the platform-matched archive from [GitHub Release 0.10.3](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3). The archives deliberately do not mix platform files:
+Download the platform-matched archive from [GitHub Release 0.10.4](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.4). The archives deliberately do not mix platform files:
 
 | Archive | Exact contents | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Linux.7z) | Linux ELF: `AWJ` | `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c` |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.3/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae` |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Linux.7z) | Linux ELF: `AWJ` | Release body |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | Release body |
 
 Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2.
 
@@ -43,7 +43,7 @@ cmake --preset linux-gcc-x64-release
 cmake --build --preset linux-gcc-x64-release --target AWJ
 ```
 
-`linux-gcc-x64-release` uses `-O3`, IPO/LTO, `-march=x86-64-v3`, section GC/strip, and statically links `libstdc++` / `libgcc`. Only `AWJ` is produced; there is no `AWJ.com`. The 0.10.3 GCC 16.1 Release ELF is 53.1 MiB.
+`linux-gcc-x64-release` uses `-O3`, IPO/LTO, `-march=x86-64-v3`, section GC/strip, and statically links `libstdc++` / `libgcc`. Only `AWJ` is produced; there is no `AWJ.com`.
 
 Windows release script:
 
@@ -54,11 +54,11 @@ Windows release script:
 Versioning is controlled by the root `VERSION` file. Release flow:
 
 ```powershell
-Set-Content VERSION "0.10.3"
+Set-Content VERSION "0.10.4"
 .\scripts\Update-VcpkgVersion.ps1
 git add VERSION vcpkg.json CHANGELOG.md
-git commit -m "release: 0.10.3"
-git tag 0.10.3
+git commit -m "release: 0.10.4"
+git tag 0.10.4
 .\release.ps1
 
 # Run from bin\x64\Release. Each archive must contain only these files.
@@ -87,7 +87,7 @@ AVIF inputs over the single-image limits (AOM 65536 edge / `2^30` pixels; SVT 16
 
 Studio no longer has a separate large-image page; automatic large-image status stays in the main queue. Inputs above 10 MP but still under single-image limits stay in the ordinary queue tail so one large memory estimate cannot throttle every small-file worker. They still use the ordinary encoder, and batches above 12 files keep one encoder thread per file in the ordinary, deferred, and large-image stages. Grid supports smaller right/bottom edge cells for non-divisible dimensions while preserving the original output size.
 
-When AVIF alpha must be preserved, both color and alpha automatically use full AOM q100/4:4:4 lossless encoding while the requested `speed` remains unchanged. `--alpha off` continues to use the requested quality and speed.
+`--alpha auto` retains non-opaque alpha automatically. AVIF color and alpha both use the requested quality or visual-quality result; auto output is YUV 4:2:0 and never switches to RGB, with 4:2:2 and 4:4:4 available only through explicit `--chroma 422` or `--chroma 444`. q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite; all other inputs use lossless AOM quantization and default 4:2:0 re-encoding. Source CICP range is retained by default (PC/full or TV/limited); unknown range uses full. `--alpha off` removes alpha.
 
 CLI session unlock (not written to `AWJ.jsonc`):
 - `--large-image-priority zenrav1e|grid`
@@ -95,46 +95,52 @@ CLI session unlock (not written to `AWJ.jsonc`):
 
 ## Reproducible benchmark
 
-Run the canonical Windows Release benchmark with the expected power scheme:
+The current Windows benchmark is CLI-only and uses the 613-file `D:\图片\benchmark\test` directory. It measures AWJ's default AVIF behavior and a strict ffmpeg comparison:
 
 ```powershell
-& .\scripts\benchmark.ps1 -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e -Surface cli
+pwsh -NoProfile -File .\scripts\benchmark.ps1 `
+  -InputRoot 'D:\图片\benchmark\test' `
+  -AwjExecutable .\bin\x64\Release\AWJ.exe `
+  -FfmpegExecutable 'D:\DevTools\Cli\FFmpeg\ffmpeg.exe' `
+  -PowerSchemeGuid 381b4222-f694-41f0-9685-ff5bb260df2e `
+  -Mode All
 ```
 
-The fixed AVIF/AOM profile is quality 80, speed 6, 4:2:0, and 8-bit. Each case has one warmup and five measured runs. Mixed inputs cover 1, 4, 12, 13, and 613 files; opaque and transparent inputs cover 1 and 13 files. The 0.10.3 validation uses CLI only: Studio manifest and shell modes are policies of the same CLI worker and do not require window automation. Results and the content-addressed input manifest are written under `build/benchmarks/`.
+The current protocol passes no quality, speed, bit-depth, or memory option to AWJ, so it verifies the true defaults: AOM, quality 70, speed 6, YUV 4:2:0, automatic at-least-10-bit output, and automatic retention of non-opaque alpha at q70. The strict comparison uses ffmpeg AOM QP 23, 10-bit 4:2:0, all-intra, row-mt, and pixel/byte/path ordering. The runner validates actual `summary.csv` settings before recording Job Object process-tree CPU and peak memory.
 
-`Process CPU` is Windows process CPU time. `Item seconds sum` is the sum of per-image `summary.csv` durations retained only for comparison with historical numbers; it is not batch wall time or process CPU time. Canonical runs require clean source files (tracked Release artifacts rebuilt by `release.ps1` may differ), a matching Release `BUILD_INFO.txt`, and an explicit power scheme. `-Smoke` validates the runner only.
+The default `All` mode runs both regression and strict comparison; `Regression` runs AWJ only and `Strict` runs the 210 opaque images without ICC/EXIF/XMP against ffmpeg. Non-smoke runs use one warmup and five measured runs per scenario, nearest-rank P95, and a 30-second cooldown. Results go under `build/benchmarks/`; a fastest single run is not a version conclusion.
 
-The fixed 613-file CLI case used the same input fingerprint, AOM 3.13.3, build profile, power scheme, and parameters in both versions:
+### 0.10.3 strict-comparison archive
 
-The earlier 1367.171 and 1660.888 core-second records used different chroma/protocol settings, so they are neither directly comparable nor the baseline for this table.
+The following values were recorded on 2026-07-16 with the older q80/8-bit protocol. They are historical data, not output reproducible by the current runner. The tested builds were AWJ 0.10.3 MSVC Release, commit `2798db2`, AOM 3.13.3, and ffmpeg `git-2026-07-14-312c830916`, AOM 3.14.1.
 
-| Metric | 0.10.2 `ec61551` | 0.10.3 `2798db2` |
-| --- | ---: | ---: |
-| Wall median / P95 | 214.361 / 226.493 s | 162.660 / 166.395 s |
-| Process CPU median / P95 | 1613.906 / 1624.469 s | 1381.844 / 1399.391 s |
-| Peak memory median / P95 | invalid (stale cached sample) | 2807.7 / 2822.4 MiB |
-| Median throughput | 2.860 img/s | 3.769 img/s |
-| decode / prepare / encode / write median | 51.107 / 0.346 / 2189.732 / 15.396 s | 40.749 / 0.314 / 1668.552 / 10.198 s |
+### Large-image capability
 
-The five 0.10.3 wall runs are 158.326, 166.395, 162.366, 162.660, and 163.967 seconds. The old 0.10.2 peak-memory value came from the first cached `Process` sample and is not comparable; 0.10.3 refreshes the process data before each sample. Wall, CPU, and stage timings were unaffected. No CLI encoder code, AOM tuning, quality, speed, chroma, bit-depth, or thread rule changed in 0.10.3, so the faster median is an observation, not a claimed UI optimization. The strict regression did not reproduce; ETW/perf was not run.
+| Tool | Result | Wall | Process CPU | Sampled peak | Output |
+| --- | --- | ---: | ---: | ---: | ---: |
+| AWJ | AOM grid encode succeeded | 167.554 s | 892.016 s | 23,707.0 MiB | 164.39 MiB |
+| ffmpeg | MJPEG decoder rejected the input before libaom | 0.246 s (time to failure) | n/a | 309.5 MiB | none |
 
-| 0.10.3 CLI case | Wall median / P95 (s) | CPU median / P95 (s) | Peak median / P95 (MiB) | Median throughput (img/s) |
-| --- | ---: | ---: | ---: | ---: |
-| mixed-1 | 1.577 / 3.648 | 2.656 / 3.703 | 104.7 / 105.0 | 0.634 |
-| mixed-4 | 1.804 / 2.447 | 8.094 / 8.625 | 317.2 / 321.5 | 2.217 |
-| mixed-12 | 6.295 / 6.600 | 25.406 / 26.031 | 826.1 / 860.8 | 1.906 |
-| mixed-13 | 11.004 / 12.692 | 30.312 / 33.734 | 786.6 / 801.8 | 1.181 |
-| opaque-1 | 0.605 / 0.635 | 1.875 / 2.000 | 119.9 / 120.3 | 1.653 |
-| transparent-1 | 1.150 / 1.249 | 1.969 / 2.141 | 121.7 / 121.8 | 0.870 |
-| opaque-13 | 5.887 / 6.433 | 26.500 / 27.531 | 897.0 / 918.3 | 2.208 |
-| transparent-13 | 6.733 / 7.040 | 27.734 / 28.250 | 882.9 / 902.0 | 1.931 |
+The validated ffmpeg signature is `MJPEG packet ... too big`. Its 0.246 seconds is cached-input failure latency, not encoding throughput, so no large-image speed ratio is reported.
+
+### 613-file results
+
+| Tool | Schedule | Success / failure | Wall median / P95 | Process CPU median / P95 | Sampled peak median / P95 | Throughput | Median output |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| AWJ | 12 files x 1 encoder thread | 612 / 1 | 110.878 / 111.891 s | 940.047 / 956.859 s | 2810.0 / 2820.5 MiB | 5.529 img/s, 14.668 MP/s | 128.98 MiB |
+| ffmpeg | 12 processes x 1 encoder thread | 612 / 1 | 107.671 / 109.772 s | 855.688 / 865.672 s | 3242.1 / 3275.8 MiB | 5.693 img/s, 15.104 MP/s | 131.48 MiB |
+
+The five wall-time samples are 111.364, 109.919, 110.883, 111.891, and 107.727 seconds for AWJ, versus 109.772, 108.981, 106.784, 107.671, and 106.767 seconds for ffmpeg. The ffmpeg/AWJ median wall ratio is 0.97x: ffmpeg is about 2.9% faster under this machine and protocol, while AWJ's sampled median peak memory is about 13.3% lower. This is not evidence of a large AWJ speedup.
+
+AWJ's summed `decode / prepare / encode / write` stage median/P95 values are 37.529/38.040, 0.278/0.291, 1077.766/1090.467, and 8.916/9.609 seconds. Stage values sum concurrent per-image durations and can exceed batch wall time; the multi-process ffmpeg run does not expose a comparable stage split.
+
+This is an end-to-end CLI comparison, not a same-libaom-build microbenchmark, and it does not establish equal visual quality. The tools use different AOM versions, build options, and decode/color-conversion front ends. Fixed AWJ-then-ffmpeg order can give AWJ a lower initial temperature and ffmpeg a filesystem-cache advantage. These results describe only this machine and protocol; they do not attribute the difference to AWJ glue code or any AOM parameter.
 
 ## Studio and verification
 
-0.10.3 adds keyboard focus and accessibility metadata to custom combos, buttons, navigation, help, and queue menus. The queue shows pending/running/success/failure counts, failed-only filtering, retry, and complete item details including paths, error text, encoder threads, and stage timings. The font list remains limited to ten visible rows with wheel and scrollbar support and no search/manual entry.
+Custom combos, buttons, navigation, and queue menus expose keyboard focus and accessibility metadata. The queue shows pending/running/success/failure counts, failed-only filtering, retry, and complete item details including paths, error text, encoder threads, and stage timings. The font list remains limited to ten visible rows with wheel and scrollbar support and no search/manual entry.
 
-`scripts/cli-worker-smoke.ps1` launches no UI. It validates the real CLI manifest ITEM/DETAIL stream, a failed-item retry manifest, named-event cancellation, and Job Object force termination. A small headless Slint component test covers navigation, keyboard input, font scrolling, light/dark state, 820x560, and 100%/150%/200% scale. Windows MSVC Release passes 31/31 tests; Linux GCC 16.1 Release passes 16/16 and has no dynamic `libstdc++`/`libgcc_s` dependency.
+`scripts/cli-worker-smoke.ps1` launches no UI. It validates the real CLI manifest ITEM/DETAIL stream, a failed-item retry manifest, named-event cancellation, and Job Object force termination. A small headless Slint component test covers navigation, keyboard input, font scrolling, light/dark state, 820x560, and 100%/150%/200% scale. 0.10.4 Windows MSVC Release passes 31/31 tests; the 55,614,152-byte Linux GCC 16.1 Release passes 16/16 and has no dynamic `libstdc++`/`libgcc_s` dependency.
 
 ## Platform notes
 

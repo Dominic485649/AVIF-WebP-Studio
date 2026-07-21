@@ -4,6 +4,7 @@ module;
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <format>
 #include <limits>
@@ -71,8 +72,9 @@ std::expected<LumaImage, std::string> make_luma_image(
   if (image.width == 0 || image.height == 0 || image.planes.empty()) {
     return std::unexpected{"输入图像为空，无法计算视觉指标。"};
   }
-  if (image.bit_depth != 8) {
-    return std::unexpected{"当前视觉指标仅支持 8-bit 图像。"};
+  if (image.bit_depth != 8 && image.bit_depth != 10 &&
+      image.bit_depth != 12 && image.bit_depth != 16) {
+    return std::unexpected{"当前视觉指标仅支持 8、10、12 或 16-bit 图像。"};
   }
 
   if (image.width > std::numeric_limits<std::size_t>::max() / image.height) {
@@ -88,13 +90,29 @@ std::expected<LumaImage, std::string> make_luma_image(
   const auto& plane = image.planes.front();
   LumaImage luma{.width = image.width, .height = image.height,
                  .pixels = std::move(*pixels)};
+  const std::size_t bytes_per_sample = image.bit_depth > 8 ? 2 : 1;
+  const double max_sample = image.bit_depth == 16
+                                ? 65535.0
+                                : static_cast<double>((1u << image.bit_depth) - 1u);
+  const auto normalized_sample = [bytes_per_sample, max_sample](
+                                     const unsigned char* pixel,
+                                     std::size_t channel) noexcept {
+    const auto* sample = pixel + channel * bytes_per_sample;
+    if (bytes_per_sample == 1) {
+      return static_cast<double>(sample[0]) / max_sample;
+    }
+    const auto value = static_cast<unsigned int>(sample[0]) |
+                       (static_cast<unsigned int>(sample[1]) << 8u);
+    return static_cast<double>(value) / max_sample;
+  };
 
   if (image.pixel_format == PixelFormat::rgba || image.pixel_format == PixelFormat::rgb) {
     const std::size_t channels = image.pixel_format == PixelFormat::rgba ? 4 : 3;
-    if (image.width > std::numeric_limits<std::size_t>::max() / channels) {
+    if (image.width > std::numeric_limits<std::size_t>::max() / channels /
+                          bytes_per_sample) {
       return std::unexpected{"RGB/RGBA 图像宽度过大，无法计算视觉指标。"};
     }
-    const std::size_t min_stride = image.width * channels;
+    const std::size_t min_stride = image.width * channels * bytes_per_sample;
     if (plane.stride < min_stride ||
         plane.stride > std::numeric_limits<std::size_t>::max() / image.height ||
         plane.bytes.size() < plane.stride * image.height) {
@@ -104,12 +122,11 @@ std::expected<LumaImage, std::string> make_luma_image(
     for (std::size_t y = 0; y < image.height; ++y) {
       const auto* row = bytes + y * plane.stride;
       for (std::size_t x = 0; x < image.width; ++x) {
-        const auto* pixel = row + x * channels;
+        const auto* pixel = row + x * channels * bytes_per_sample;
         const double luma_value =
-            (0.2126 * static_cast<double>(pixel[0]) +
-             0.7152 * static_cast<double>(pixel[1]) +
-             0.0722 * static_cast<double>(pixel[2])) /
-            255.0;
+            0.2126 * normalized_sample(pixel, 0) +
+            0.7152 * normalized_sample(pixel, 1) +
+            0.0722 * normalized_sample(pixel, 2);
         luma.pixels[y * image.width + x] = static_cast<float>(luma_value);
       }
     }
@@ -117,7 +134,8 @@ std::expected<LumaImage, std::string> make_luma_image(
   }
 
   if (image.pixel_format == PixelFormat::gray) {
-    if (plane.stride < image.width ||
+    if (image.width > std::numeric_limits<std::size_t>::max() / bytes_per_sample ||
+        plane.stride < image.width * bytes_per_sample ||
         plane.stride > std::numeric_limits<std::size_t>::max() / image.height ||
         plane.bytes.size() < plane.stride * image.height) {
       return std::unexpected{"灰度图像 buffer 尺寸无效，无法计算视觉指标。"};
@@ -126,7 +144,8 @@ std::expected<LumaImage, std::string> make_luma_image(
     for (std::size_t y = 0; y < image.height; ++y) {
       const auto* row = bytes + y * plane.stride;
       for (std::size_t x = 0; x < image.width; ++x) {
-        luma.pixels[y * image.width + x] = static_cast<float>(static_cast<double>(row[x]) / 255.0);
+        luma.pixels[y * image.width + x] =
+            static_cast<float>(normalized_sample(row + x * bytes_per_sample, 0));
       }
     }
     return luma;

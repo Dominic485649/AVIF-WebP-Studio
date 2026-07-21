@@ -821,7 +821,7 @@ std::string help_text() {
 
 默认后端：内置 native（libavif/AOM/zenrav1e/svt-av1-hdr/WebP/JXL/JPGLI）
 默认质量：PNG 无损，AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
-质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源参数；显式 --avif-encoder svt 不支持 q100/visual-quality 100、alpha、444/422 或高于 10-bit
+质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入原始流直通，其他输入使用 AOM 无损量化并按默认 420 重编码；显式 --avif-encoder svt 不支持 q100/visual-quality 100、alpha、444/422 或高于 10-bit
 
 用法:
   AWJ [选项]
@@ -830,20 +830,20 @@ std::string help_text() {
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
   -f, --format <png|avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；PNG 为无损 RGBA，JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
-  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时原始流直通，其他输入走 AOM 无损并尽量继承源位深/采样；显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 对 AVIF 输入在未请求改写色彩、alpha、位深或元数据时直通、其他输入走 AOM 无损；显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
+  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入原始流直通，其他输入走 AOM 无损量化并按默认 420 重编码；显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入直通，其他输入走 AOM 无损量化并按默认 420 重编码；显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
   --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选
   --no-visual-quality-fallback visual_quality 搜索未达标时失败（默认）
   -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPGLI 输出 JPEG 兼容 8-bit precision
-  --chroma <auto|444|422|420> AVIF/JPGLI 色度采样；AVIF auto 按源参数和编码器能力选择；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
+  --chroma <auto|444|422|420> AVIF/JPGLI 色度采样；AVIF auto 固定 YUV420，不继承源 422/444，也不输出 RGB；仅显式 422 或 444 才改变采样；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
   --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
   --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
   --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 默认 AOM，显式 svt 仅用于 420/8-10bit/无 alpha/非无损输入；AOM 单图上限 65536 边/2^30 像素，SVT 上限 16384x8704；超限后自动走大图链路（默认 zenrav1e，可优先 grid），再失败则报错
-  --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha，auto 删除无效 alpha，off 总是删除 alpha；AVIF 保留 alpha 时整图自动走 AOM q100/444 无损，speed 保持不变
+  --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha，auto 保留非不透明 alpha，off 总是删除 alpha；AVIF 颜色与 alpha 都跟随请求质量，auto chroma 为 420
   --svtav1hdr-crf <0-63>     svt-av1-hdr 专家 CRF；未指定时使用通用 quality，避免默认 quality 与默认 CRF 同时生效
   --svtav1hdr-preset <0-13>  svt-av1-hdr preset；默认 @SVTAV1HDR_PRESET@
   --svtav1hdr-tune <值>      svt-av1-hdr tune；默认 @SVTAV1HDR_TUNE@，UI 不提供修改入口
@@ -852,7 +852,7 @@ std::string help_text() {
   --color-primaries <n>      AVIF CICP color primaries；AOM/libavif 与 svt-av1-hdr 可应用
   --transfer-characteristics <n> AVIF CICP transfer characteristics；AOM/libavif 与 svt-av1-hdr 可应用
   --matrix-coefficients <n>  AVIF CICP matrix coefficients；AOM/libavif 与 svt-av1-hdr 可应用
-  --color-range <0|1>        AVIF color range；AOM/libavif 与 svt-av1-hdr 可应用
+  --color-range <0|1>        AVIF color range；显式指定时覆盖源值，未指定时保留源 PC/full 或 TV/limited，未知源使用 full；AOM/libavif 与 svt-av1-hdr 可应用
   --mastering-display <值>   svt-av1-hdr mastering display metadata
   --content-light <值>       svt-av1-hdr content light metadata
   --experimental-encoders   启用实验 AVIF 编码器；默认开启，构建支持时可显式使用 zenrav1e

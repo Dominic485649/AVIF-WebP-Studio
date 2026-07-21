@@ -28,12 +28,13 @@ option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into AWJ" ON)
 option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into AWJ" ON)
 option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
-set(AWJ_SVTAV1HDR_GIT_REPOSITORY "https://github.com/juliobbv-p/svt-av1-hdr.git" CACHE STRING "svt-av1-hdr repository")
-set(AWJ_SVTAV1HDR_GIT_TAG "cfb4e17693ae16945a7fe288d45437243d96c12e" CACHE STRING "svt-av1-hdr git tag or commit")
+set(AWJ_SVTAV1HDR_GIT_TAG "8d13912d5e0e6b611e3d482d880b41a7f2e5cd52" CACHE STRING "svt-av1-hdr source commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
 set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING "libavif git tag or commit")
 set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
 set(AWJ_JPEGLI_GIT_TAG "031a0077f5799a6041004267fc12b956c1f52a20" CACHE STRING "google/jpegli git tag or commit")
+set(AWJ_SLINT_GIT_REPOSITORY "https://github.com/slint-ui/slint.git" CACHE STRING "Slint repository")
+set(AWJ_SLINT_GIT_TAG "cf62c975c311e7036d599ed8ed0b7e6a8386a934" CACHE STRING "Slint git tag or commit")
 
 set(AVIF_RELEASE_IPO_SUPPORTED OFF)
 if(AVIF_ENABLE_RELEASE_IPO)
@@ -180,10 +181,17 @@ avif_find_vcpkg_library(JXL_BROTLI_ENC_LIBRARY brotlienc)
 avif_find_vcpkg_library(JXL_BROTLI_DEC_LIBRARY brotlidec)
 avif_find_vcpkg_library(JXL_BROTLI_COMMON_LIBRARY brotlicommon)
 avif_find_vcpkg_library(JXL_LCMS_LIBRARY lcms2)
+awj_force_single_config_vcpkg_library(LCMS2_LIBRARY
+    JXL_LCMS_LIBRARY_RELEASE
+    JXL_LCMS_LIBRARY_DEBUG)
 avif_find_vcpkg_library(AWJ_AOM_LIBRARY aom)
 awj_force_single_config_vcpkg_library(AOM_LIBRARY
     AWJ_AOM_LIBRARY_RELEASE
     AWJ_AOM_LIBRARY_DEBUG)
+avif_find_vcpkg_library(AWJ_DAV1D_LIBRARY dav1d)
+awj_force_single_config_vcpkg_library(DAV1D_LIBRARY
+    AWJ_DAV1D_LIBRARY_RELEASE
+    AWJ_DAV1D_LIBRARY_DEBUG)
 if(WIN32)
 avif_find_vcpkg_library(AWJ_LIBYUV_LIBRARY yuv)
 awj_force_single_config_vcpkg_library(LIBYUV_LIBRARY
@@ -423,9 +431,10 @@ if(AWJ_ENABLE_SVTAV1HDR)
     set(ENABLE_AVX512 OFF CACHE BOOL "" FORCE)
     set(SVT_AV1_BUILD_APPS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(SvtAv1Hdr
-        GIT_REPOSITORY ${AWJ_SVTAV1HDR_GIT_REPOSITORY}
-        GIT_TAG ${AWJ_SVTAV1HDR_GIT_TAG})
+        URL "https://codeload.github.com/juliobbv-p/svt-av1-hdr/tar.gz/${AWJ_SVTAV1HDR_GIT_TAG}"
+        URL_HASH "SHA256=3e89b341d162176b296f83dddcab1f95419e75470ed0725bfba0eb8b74e6c55b")
     FetchContent_MakeAvailable(SvtAv1Hdr)
+    file(WRITE "${svtav1hdr_SOURCE_DIR}/.awj-source-commit" "${AWJ_SVTAV1HDR_GIT_TAG}\n")
     awj_suppress_msvc_warnings(CODEC /wd4244)
     if(TARGET SvtAv1Enc)
         set(AWJ_SVTAV1HDR_AVAILABLE ON)
@@ -470,6 +479,7 @@ endif()
 FetchContent_Declare(libavif
     GIT_REPOSITORY ${AWJ_LIBAVIF_GIT_REPOSITORY}
     GIT_TAG ${AWJ_LIBAVIF_GIT_TAG}
+    UPDATE_DISCONNECTED TRUE
     ${AWJ_LIBAVIF_PATCH_COMMAND})
 FetchContent_MakeAvailable(libavif)
 
@@ -500,6 +510,7 @@ if(AWJ_ENABLE_JPEGLI)
         GIT_REPOSITORY ${AWJ_JPEGLI_GIT_REPOSITORY}
         GIT_TAG ${AWJ_JPEGLI_GIT_TAG}
         GIT_SUBMODULES third_party/libjpeg-turbo
+        UPDATE_DISCONNECTED TRUE
         PATCH_COMMAND ${CMAKE_COMMAND}
             "-DSOURCE_DIR=<SOURCE_DIR>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_jpegli_allocator.cmake")
@@ -528,10 +539,17 @@ set(SLINT_FEATURE_INTERPRETER OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
 FetchContent_Declare(Slint
-    GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG cf62c975c311e7036d599ed8ed0b7e6a8386a934
-    SOURCE_SUBDIR api/cpp)
+    GIT_REPOSITORY ${AWJ_SLINT_GIT_REPOSITORY}
+    GIT_TAG ${AWJ_SLINT_GIT_TAG}
+    UPDATE_DISCONNECTED TRUE
+    SOURCE_SUBDIR api/cpp
+    PATCH_COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_DIR=<SOURCE_DIR>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake")
 FetchContent_MakeAvailable(Slint)
+if(AVIF_STATIC_SLINT)
+    target_compile_definitions(Slint INTERFACE SLINT_STATIC=1)
+endif()
 if(NOT WIN32)
     foreach(slint_target Slint slint_cpp slint_cpp-static)
         if(TARGET ${slint_target})
@@ -1029,6 +1047,9 @@ endif()
 target_link_libraries(AWJ PRIVATE
     awj_core
     Slint::Slint)
+if(TARGET slint_cpp)
+    add_dependencies(AWJ slint_cpp)
+endif()
 if(WIN32)
     target_link_libraries(AWJ PRIVATE
         dwmapi
@@ -1061,6 +1082,9 @@ if(BUILD_TESTING)
     target_compile_definitions(awj_ui_smoke_tests PRIVATE
         SLINT_FEATURE_EXPERIMENTAL=1)
     target_link_libraries(awj_ui_smoke_tests PRIVATE Slint::Slint)
+    if(TARGET slint_cpp)
+        add_dependencies(awj_ui_smoke_tests slint_cpp)
+    endif()
     if(WIN32)
         target_link_libraries(awj_ui_smoke_tests PRIVATE
             dwmapi

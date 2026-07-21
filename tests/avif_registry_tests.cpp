@@ -334,7 +334,7 @@ int main() {
       experimental_capabilities);
   if (rejected_zen_alpha ||
       !contains_any(rejected_zen_alpha.error(), {"alpha", "aom"})) {
-    return fail("explicit zenrav1e alpha should require the lossless AOM path.");
+    return fail("explicit zenrav1e alpha should require the AOM path.");
   }
   auto diagnostics = awj::diagnostics_from_avif_selection(*selected);
   if (diagnostics.encoder_id != "zenrav1e" ||

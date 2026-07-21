@@ -5,6 +5,9 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
+
+#include <lcms2.h>
 
 import awj.avif_aom_codec;
 import awj.codec;
@@ -84,6 +87,87 @@ awj::ImageBuffer make_alpha_quality_test_image() {
   return image;
 }
 
+bool rgba_alpha_differs(const awj::ImageBuffer& source,
+                        const awj::ImageBuffer& decoded) {
+  if (source.pixel_format != awj::PixelFormat::rgba ||
+      decoded.pixel_format != awj::PixelFormat::rgba ||
+      source.bit_depth != 8 || decoded.bit_depth != 8 ||
+      source.width != decoded.width || source.height != decoded.height ||
+      source.planes.empty() || decoded.planes.empty()) {
+    return false;
+  }
+  const auto& source_plane = source.planes.front();
+  const auto& decoded_plane = decoded.planes.front();
+  constexpr std::size_t channels = 4;
+  if (source_plane.stride < source.width * channels ||
+      decoded_plane.stride < decoded.width * channels ||
+      source_plane.bytes.size() < source_plane.stride * source.height ||
+      decoded_plane.bytes.size() < decoded_plane.stride * decoded.height) {
+    return false;
+  }
+  for (std::size_t y = 0; y < source.height; ++y) {
+    for (std::size_t x = 0; x < source.width; ++x) {
+      const auto source_offset = y * source_plane.stride + x * channels + 3;
+      const auto decoded_offset = y * decoded_plane.stride + x * channels + 3;
+      if (source_plane.bytes[source_offset] != decoded_plane.bytes[decoded_offset]) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<std::byte> make_srgb_icc_profile() {
+  cmsHPROFILE profile = cmsCreate_sRGBProfile();
+  if (profile == nullptr) {
+    return {};
+  }
+  cmsUInt32Number size = 0;
+  if (!cmsSaveProfileToMem(profile, nullptr, &size) || size == 0) {
+    cmsCloseProfile(profile);
+    return {};
+  }
+  std::vector<std::byte> bytes(size);
+  const bool saved = cmsSaveProfileToMem(profile, bytes.data(), &size) != 0;
+  cmsCloseProfile(profile);
+  if (!saved) {
+    return {};
+  }
+  bytes.resize(size);
+  return bytes;
+}
+
+awj::ImageBuffer make_metadata_test_image(std::vector<std::byte> icc) {
+  auto image = make_test_image();
+  image.metadata = {
+      awj::MetadataBlock{.kind = awj::MetadataKind::icc,
+                         .bytes = std::move(icc)},
+      awj::MetadataBlock{.kind = awj::MetadataKind::exif,
+                         .bytes = {std::byte{0}, std::byte{0},
+                                   std::byte{0}, std::byte{0},
+                                   std::byte{'I'}, std::byte{'I'},
+                                   std::byte{42}, std::byte{0},
+                                   std::byte{8}, std::byte{0},
+                                   std::byte{0}, std::byte{0},
+                                   std::byte{0}, std::byte{0},
+                                   std::byte{0}, std::byte{0},
+                                   std::byte{0}, std::byte{0}}},
+      awj::MetadataBlock{.kind = awj::MetadataKind::xmp,
+                         .bytes = {std::byte{'<'}, std::byte{'x'},
+                                   std::byte{'/'}, std::byte{'>'}}},
+  };
+  return image;
+}
+
+bool has_metadata(const awj::ImageBuffer& image, awj::MetadataKind kind) {
+  for (const auto& block : image.metadata) {
+    if (block.kind == kind && !block.bytes.empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 awj::NativeEncodeSettings settings(int bit_depth,
                                     awj::ChromaMode chroma,
                                     awj::AvifEncoderMode encoder) {
@@ -147,39 +231,19 @@ int decode_bytes_to_temp(const awj::EncodedImage& encoded,
   return 0;
 }
 
-int verify_lossless_rgba(const awj::EncodedImage& encoded,
-                         const awj::ImageBuffer& source,
-                         std::string_view encoder_id) {
+int verify_avif_source_info(const awj::EncodedImage& encoded,
+                            awj::PixelFormat expected_chroma,
+                            int expected_color_range) {
   auto decoder = awj::make_avif_image_decoder(1);
-  auto decoded = decoder->decode_memory(encoded.bytes, "AOM lossless alpha regression");
-  if (!decoded || decoded->image.width != source.width ||
-      decoded->image.height != source.height ||
-      decoded->image.pixel_format != awj::PixelFormat::rgba ||
-      decoded->image.bit_depth != 8 || decoded->image.planes.empty()) {
-    return fail(decoded ? "AVIF alpha decode result invalid." : decoded.error());
+  auto decoded = decoder->decode_memory(encoded.bytes, "AVIF metadata regression");
+  if (!decoded || !decoded->image.source_info ||
+      decoded->image.source_info->pixel_format != expected_chroma ||
+      decoded->image.source_info->color_range.value_or(-1) != expected_color_range) {
+    return fail(decoded ? "AVIF chroma or color range metadata was not preserved."
+                        : decoded.error());
   }
-
-  const auto& expected = source.planes.front();
-  const auto& actual = decoded->image.planes.front();
   if (const int rc = verify_preferred_decoder(*decoded); rc != 0) {
     return rc;
-  }
-  for (std::size_t y = 0; y < source.height; ++y) {
-    for (std::size_t x = 0; x < source.width; ++x) {
-      for (std::size_t channel = 0; channel < 4; ++channel) {
-        const auto expected_value =
-            expected.bytes[y * expected.stride + x * 4 + channel];
-        const auto actual_value =
-            actual.bytes[y * actual.stride + x * 4 + channel];
-        if (expected_value != actual_value) {
-          return fail(std::format(
-              "AVIF {} RGBA was not lossless at ({}, {}, channel {}): expected {}, got {} via {}.",
-              encoder_id, x, y, channel,
-              std::to_integer<unsigned>(expected_value),
-              std::to_integer<unsigned>(actual_value), decoded->decoder_id));
-        }
-      }
-    }
   }
   return 0;
 }
@@ -211,6 +275,115 @@ int main() {
       default_speed->diagnostics.speed_mapping.codec_value != 6) {
     return fail(default_speed ? "AOM default speed diagnostics invalid."
                               : default_speed.error());
+  }
+
+  auto auto_8_image = make_test_image();
+  auto auto_8_settings = default_speed_settings;
+  auto_8_settings.bit_depth.reset();
+  auto_8_settings.bit_depth_explicit = false;
+  auto auto_8 = aom->encode(auto_8_image, auto_8_settings);
+  if (!auto_8 || auto_8->diagnostics.applied_bit_depth != 10) {
+    return fail(auto_8 ? "AOM auto 8-bit input did not use 10-bit output."
+                       : auto_8.error());
+  }
+
+  auto auto_10_image = make_test_image();
+  auto_10_image.source_info = awj::ImageSourceInfo{.bit_depth = 10};
+  auto auto_10 = aom->encode(auto_10_image, auto_8_settings);
+  if (!auto_10 || auto_10->diagnostics.applied_bit_depth != 10) {
+    return fail(auto_10 ? "AOM auto 10-bit input did not retain 10-bit output."
+                        : auto_10.error());
+  }
+
+  auto auto_12_image = make_test_image();
+  auto_12_image.source_info = awj::ImageSourceInfo{.bit_depth = 12};
+  auto auto_12 = aom->encode(auto_12_image, auto_8_settings);
+  if (!auto_12 || auto_12->diagnostics.applied_bit_depth != 12) {
+    return fail(auto_12 ? "AOM auto 12-bit input did not retain 12-bit output."
+                        : auto_12.error());
+  }
+
+  auto lossless_auto_chroma_settings = auto_8_settings;
+  lossless_auto_chroma_settings.quality = 100;
+  lossless_auto_chroma_settings.chroma_mode = awj::ChromaMode::auto_keep;
+  lossless_auto_chroma_settings.applied_color_range = 1;
+  auto source_444_image = make_test_image();
+  source_444_image.source_info = awj::ImageSourceInfo{
+      .pixel_format = awj::PixelFormat::yuv444, .bit_depth = 8};
+  auto lossless_auto_chroma = aom->encode(source_444_image,
+                                          lossless_auto_chroma_settings);
+  if (!lossless_auto_chroma || !lossless_auto_chroma->lossless ||
+      lossless_auto_chroma->diagnostics.applied_chroma != "420") {
+    return fail(lossless_auto_chroma
+                    ? "AOM auto chroma did not stay on 420 for a 444 source."
+                    : lossless_auto_chroma.error());
+  }
+  if (const int rc = verify_avif_source_info(lossless_auto_chroma->encoded,
+                                             awj::PixelFormat::yuv420, 1);
+      rc != 0) {
+    return rc;
+  }
+
+  auto explicit_422_settings = auto_8_settings;
+  explicit_422_settings.chroma_mode = awj::ChromaMode::yuv422;
+  explicit_422_settings.applied_color_range = 1;
+  auto explicit_422 = aom->encode(make_test_image(), explicit_422_settings);
+  if (!explicit_422 || explicit_422->diagnostics.applied_chroma != "422") {
+    return fail(explicit_422 ? "AOM explicit 422 request was not preserved."
+                             : explicit_422.error());
+  }
+  if (const int rc = verify_avif_source_info(explicit_422->encoded,
+                                             awj::PixelFormat::yuv422, 1);
+      rc != 0) {
+    return rc;
+  }
+
+  const auto verify_color_range = [&](int color_range) {
+    auto range_settings = auto_8_settings;
+    range_settings.chroma_mode = awj::ChromaMode::auto_keep;
+    range_settings.applied_color_range = color_range;
+    auto range_encoded = aom->encode(make_test_image(), range_settings);
+    if (!range_encoded || range_encoded->diagnostics.applied_chroma != "420") {
+      return fail(range_encoded ? "AOM default chroma was not 420."
+                                : range_encoded.error());
+    }
+    return verify_avif_source_info(range_encoded->encoded,
+                                   awj::PixelFormat::yuv420, color_range);
+  };
+  if (const int rc = verify_color_range(0); rc != 0) {
+    return rc;
+  }
+  if (const int rc = verify_color_range(1); rc != 0) {
+    return rc;
+  }
+
+  auto metadata_settings = auto_8_settings;
+  metadata_settings.source_has_icc = true;
+  metadata_settings.applied_icc = "kept";
+  auto icc = make_srgb_icc_profile();
+  if (icc.empty()) {
+    return fail("Could not create the ICC profile fixture.");
+  }
+  auto metadata_encoded =
+      aom->encode(make_metadata_test_image(std::move(icc)), metadata_settings);
+  if (!metadata_encoded) {
+    return fail(metadata_encoded.error());
+  }
+  auto metadata_decoder = awj::make_avif_image_decoder(1);
+  auto metadata_decoded = metadata_decoder->decode_memory(
+      metadata_encoded->encoded.bytes, "AVIF metadata regression",
+      awj::DecodeOptions{.copy_metadata_payloads = true});
+  if (!metadata_decoded) {
+    return fail(metadata_decoded.error());
+  }
+  if (!has_metadata(metadata_decoded->image, awj::MetadataKind::icc)) {
+    return fail("AVIF ICC metadata was not preserved by default.");
+  }
+  if (!has_metadata(metadata_decoded->image, awj::MetadataKind::exif)) {
+    return fail("AVIF EXIF metadata was not preserved by default.");
+  }
+  if (!has_metadata(metadata_decoded->image, awj::MetadataKind::xmp)) {
+    return fail("AVIF XMP metadata was not preserved by default.");
   }
 
   auto ten_bit = aom->encode(make_test_image(), settings(10, awj::ChromaMode::yuv420,
@@ -247,7 +420,7 @@ int main() {
     return fail(grid_encoded ? "AOM grid diagnostics invalid." : grid_encoded.error());
   }
 
-  auto alpha_settings = settings(8, awj::ChromaMode::yuv444,
+  auto alpha_settings = settings(8, awj::ChromaMode::auto_keep,
                                  awj::AvifEncoderMode::aom);
   alpha_settings.quality = 1;
   alpha_settings.resources.encoder_threads_per_file = 28;
@@ -258,14 +431,42 @@ int main() {
   const auto alpha_image = make_alpha_quality_test_image();
   auto alpha_encoded = aom->encode(alpha_image, alpha_settings);
   if (!alpha_encoded || alpha_encoded->encoded.bytes.empty() ||
-      !alpha_encoded->lossless || alpha_encoded->final_quality != 100 ||
+      alpha_encoded->lossless || alpha_encoded->final_quality != 1 ||
+      alpha_encoded->diagnostics.applied_chroma != "420" ||
       alpha_encoded->diagnostics.speed_mapping.user_speed != 6 ||
       alpha_encoded->diagnostics.encoder_threads != 28) {
     return fail(alpha_encoded ? "AOM alpha encode produced no bytes." : alpha_encoded.error());
   }
-  if (const int rc = verify_lossless_rgba(alpha_encoded->encoded, alpha_image, "AOM");
-      rc != 0) {
-    return rc;
+  auto alpha_decoder = awj::make_avif_image_decoder(1);
+  auto alpha_decoded = alpha_decoder->decode_memory(alpha_encoded->encoded.bytes,
+                                                     "AOM alpha regression");
+  if (!alpha_decoded || alpha_decoded->image.alpha_mode == awj::AlphaMode::none ||
+      !rgba_alpha_differs(alpha_image, alpha_decoded->image)) {
+    return fail(alpha_decoded ? "AOM alpha did not follow the requested lossy quality."
+                              : alpha_decoded.error());
+  }
+
+  auto auto_alpha_settings = alpha_settings;
+  auto_alpha_settings.bit_depth.reset();
+  auto_alpha_settings.bit_depth_explicit = false;
+  auto auto_alpha_encoded = aom->encode(alpha_image, auto_alpha_settings);
+  if (!auto_alpha_encoded || auto_alpha_encoded->lossless ||
+      auto_alpha_encoded->final_quality != 1 ||
+      auto_alpha_encoded->diagnostics.applied_chroma != "420" ||
+      auto_alpha_encoded->diagnostics.applied_bit_depth != 10 ||
+      auto_alpha_encoded->diagnostics.timing.avif_rgb_to_yuv_seconds < 0.0 ||
+      auto_alpha_encoded->diagnostics.timing.avif_add_image_seconds < 0.0 ||
+      auto_alpha_encoded->diagnostics.timing.avif_finish_seconds < 0.0 ||
+      auto_alpha_encoded->diagnostics.timing.avif_output_copy_seconds < 0.0) {
+    return fail(auto_alpha_encoded
+                    ? "AOM automatic alpha path did not retain lossy 10-bit diagnostics."
+                    : auto_alpha_encoded.error());
+  }
+  alpha_decoded = alpha_decoder->decode_memory(auto_alpha_encoded->encoded.bytes,
+                                                "AOM automatic alpha regression");
+  if (!alpha_decoded || alpha_decoded->image.alpha_mode == awj::AlphaMode::none) {
+    return fail(alpha_decoded ? "AOM automatic alpha channel was not retained."
+                              : alpha_decoded.error());
   }
 
   auto edge_grid_settings = settings(8, awj::ChromaMode::auto_keep,
@@ -277,10 +478,9 @@ int main() {
       .clamped_to_original_size = true};
   auto edge_grid_encoded = aom->encode(make_grid_test_image(129, 127),
                                        edge_grid_settings);
-  if (!edge_grid_encoded || edge_grid_encoded->encoded.bytes.empty() ||
-      edge_grid_encoded->diagnostics.applied_chroma != "444") {
-    return fail(edge_grid_encoded ? "AOM edge grid diagnostics invalid."
-                                  : edge_grid_encoded.error());
+  if (edge_grid_encoded ||
+      edge_grid_encoded.error().find("420") == std::string::npos) {
+    return fail("AOM edge grid auto mode did not reject incompatible 420 chroma.");
   }
 
   auto zen = awj::make_avif_image_encoder(awj::AvifEncoderMode::zenrav1e);
@@ -301,7 +501,7 @@ int main() {
     if (zen_alpha_encoded ||
         zen_alpha_encoded.error().find("alpha") == std::string::npos ||
         zen_alpha_encoded.error().find("aom") == std::string::npos) {
-      return fail("zenrav1e alpha did not require the lossless AOM path.");
+      return fail("zenrav1e alpha did not require the AOM path.");
     }
   } else if (zen_encoded || zen_encoded.error().find("not available") == std::string::npos) {
     return fail("zenravif unavailable build did not report clear error.");
@@ -329,12 +529,6 @@ int main() {
   if (const int rc = decode_bytes_to_temp(grid_encoded->encoded,
                                           temp_dir / "avif-aom-codec-test-grid.avif",
                                           128, 128, 8, 8);
-      rc != 0) {
-    return rc;
-  }
-  if (const int rc = decode_bytes_to_temp(
-          edge_grid_encoded->encoded,
-          temp_dir / "avif-aom-codec-test-edge-grid.avif", 129, 127, 8, 8);
       rc != 0) {
     return rc;
   }

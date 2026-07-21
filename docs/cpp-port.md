@@ -35,8 +35,8 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - 输出格式可选 AVIF、WebP、JXL 或 JPGLI。
 - `fast` / `balanced` / `best` / `extreme` 预设。
 - AVIF 默认 q70、WebP 默认 q95、JXL 默认 q85、JPGLI 默认 q90，仍支持 `q90` 风格质量参数。
-- 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF auto/q100 走直通或 AOM 严格无损，显式 SVT q100/visual-quality 100 为非像素级无损/最高质量路径，允许 RGB/YUV 与 420 chroma 转换损耗。
-- AVIF 采样支持 `auto/444/422/420`，位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`；显式 SVT 始终实际使用 420 chroma，且只支持 8/10-bit。
+- 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通，其他输入使用 AOM 无损量化并按默认 420 重编码；默认 420 仍可能产生 RGB/YUV 或 chroma 转换损耗，需显式 444 才避免色度子采样。
+- AVIF 采样支持 `auto/444/422/420`，`auto` 固定输出 YUV 420，不继承源图 422/444，也不输出 RGB；仅显式填写时使用 422/444。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`；显式 SVT 始终实际使用 420 chroma，且只支持 8/10-bit。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量；源图 CICP range 默认保持 PC/full 或 TV/limited，未知时使用 full。
 - JXL 不支持手动 chroma sampling，位深留空保持原片，可通过 native libjxl effort/speed 控制压缩成本。
 - WebP 固定 8-bit；有损 WebP 为 Y'CbCr 4:2:0，无损 WebP 为 ARGB。
 - JPGLI 固定 8-bit RGB JPEG 兼容输出，不提供手动 chroma/alpha 输出入口；ICC、EXIF、XMP 按现有保留/剥离规则处理。
@@ -118,15 +118,15 @@ cmake --preset linux-gcc-x64-release
 cmake --build --preset linux-gcc-x64-release --target AWJ
 ```
 
-Debug 使用 `linux-gcc-x64-debug`。Release 验证应确认 `bin/x64/Release/AWJ` 是 ELF、目录中没有 `AWJ.com`，`readelf -d` 不包含 `libstdc++.so.6` / `libgcc_s.so.1`，`build.ninja` 中可见 `-O3`、`-flto`、`-march=x86-64-v3`、`-static-libstdc++` 和 `-static-libgcc`。0.10.3 GCC 16.1 Release 实测约 53.1 MiB。
+Debug 使用 `linux-gcc-x64-debug`。Release 验证应确认 `bin/x64/Release/AWJ` 是 ELF、目录中没有 `AWJ.com`，`readelf -d` 不包含 `libstdc++.so.6` / `libgcc_s.so.1`，`build.ninja` 中可见 `-O3`、`-flto`、`-march=x86-64-v3`、`-static-libstdc++` 和 `-static-libgcc`。0.10.4 GCC 16.1 Release 实测 55,614,152 bytes（约 53.0 MiB）。
 
-测试可执行文件只在明确需要测试验证时单独构建，不能混入普通构建步骤。0.10.3 的 Windows MSVC Release 为 31/31，Linux GCC Release 为 16/16；Linux 测试配置需显式传 `-DBUILD_TESTING=ON`。Slint component smoke 使用 testing backend，不打开窗口；Windows 取消/强制终止由 `scripts/cli-worker-smoke.ps1` 直接测试 CLI worker、命名事件与 Job Object，不依赖 UI Automation。
+测试可执行文件只在明确需要测试验证时单独构建，不能混入普通构建步骤。0.10.4 的 Windows MSVC Release 为 31/31，Linux GCC Release 为 16/16；Linux 测试配置需显式传 `-DBUILD_TESTING=ON`。Slint component smoke 使用 testing backend，不打开窗口；Windows 取消/强制终止由 `scripts/cli-worker-smoke.ps1` 直接测试 CLI worker、命名事件与 Job Object，不依赖 UI Automation。
 
-## GitHub 发行归档（0.10.3）
+## GitHub 发行归档（0.10.4）
 
 从 `bin/x64/Release` 生成归档时，Linux 与 Windows 文件必须分开：`AWJ_Linux.7z` 只含 ELF `AWJ`，`AWJ_Win.7z` 只含 `AWJ.exe` 与 `AWJ.com`。使用 7-Zip `-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`；其中 `-mf=off` 禁用 `.exe` 自动 BCJ2 过滤，使所有数据块保持 LZMA2。上传前必须以 `7z l -slt` 核验精确清单和方法，并以 `7z t` 测试归档完整性。
 
-0.10.3 已发布到 [GitHub Release](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.3)：`AWJ_Linux.7z` 的 SHA-256 为 `d7efc2f4ece5fdf3876cad480fa74b7848d00deeda4398bc26f11cdc7b69377c`，`AWJ_Win.7z` 的 SHA-256 为 `108883cf75185255b68b390b7c2c5f9567811b8e180b66a12b394cd7d5243fae`。
+0.10.4 已发布到 [GitHub Release](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.4)：归档的精确 SHA-256 记录在 Release 正文。
 
 
 ## Linux UI 与文件管理器
@@ -136,7 +136,7 @@ Linux Studio 继续使用 `ui/awj_studio.slint`，不重做 UI。Win32 DWM、COM
 ## Studio 可访问性与队列诊断（0.10.3）
 
 - 自绘 combo、button、导航和队列菜单显式提供焦点、键盘操作、可访问角色/名称/状态；生产 Slint 输出不启用 experimental debug metadata，只有测试目标使用独立 `_ui_smoke` 生成文件。
-- 字体列表最多显示 10 行并保留滚轮/滚动条；参数页按常用、资源、高级格式分组，危险说明常驻，其余说明使用帮助提示。
+- 字体列表最多显示 10 行并保留滚轮/滚动条；参数页按常用、资源、高级格式分组，危险说明常驻。
 - 队列模型保留 pending/running/success/failed 计数、失败过滤、失败重试和详情字段。完整错误与路径不再依赖表格列宽展示。
 - 820×560、100%/150%/200% scale 和长文本几何由无窗口 smoke 覆盖；这不是屏幕阅读器认证，仍需在平台可访问工具发生兼容问题时补充针对性验证。
 ## 后续可扩展点
@@ -151,4 +151,4 @@ Linux Studio 继续使用 `ui/awj_studio.slint`，不重做 UI。Win32 DWM、COM
 - Studio 不再保留独立“大图模式”页面，自动处理状态并入主队列。
 - 两条路径都不可用/失败，或触达输入/运行时上限时明确报错。
 - 默认 20 GiB 输入/运行时上限可通过会话开关解除（UI 设置页 / CLI `--unlock-max-input-file-bytes`），不写入 `AWJ.jsonc`。
-- grid 支持非整数倍布局，右列和底行使用实际剩余尺寸并保持原始输出宽高；显式不兼容的 420/422 色度会明确报错。
+- grid 支持非整数倍布局，右列和底行使用实际剩余尺寸并保持原始输出宽高；默认 420 与奇数 grid 不兼容时会明确报错，不会自动改为 444。

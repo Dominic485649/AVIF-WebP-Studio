@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.10.4 - 2026-07-21
+
+- Windows Release 改为静态链接 Slint；vcpkg baseline 更新，AOM 升级至 3.14.1、dav1d 升级至 1.5.4，并以项目内 overlay 固定 AOM、dav1d 和 libyuv 的构建输入。
+- AVIF 自动 bit-depth 至少使用 10-bit，保留 10/12-bit 源图精度；`auto` chroma 固定为 YUV 420，只有显式 422/444 才改变采样。非不透明 alpha 自动保留并随请求质量编码，不再强制整图 q100/444；源图 CICP PC/full 与 TV/limited range 默认保持。
+- `summary.csv` 增加 AVIF RGB->YUV、AddImage、Finish 和输出复制耗时；基准脚本校验当前默认 AVIF 参数，并将旧 q80/8-bit 历史数据与当前协议分开。
+- 参数页移除右侧问号提示，导航已选项不再显示额外边框；键盘导航和可访问角色保持不变。
+- `bin/` 改为仅本地构建/打包输出，不再进入 Git 历史；正式二进制继续通过 GitHub Release 归档提供。
+
 ## 0.10.3 - 2026-07-15
 
 - 不调整编码器功能或参数语义：quality、speed、色度、位深、透明 AVIF AOM 整图无损、dav1d 优先解码与自动回退保持 0.10.2 行为；自动线程预算和“超过 12 张时每图单编码线程”规则保持不变。

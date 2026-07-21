@@ -88,28 +88,6 @@ awj::ImageBuffer make_alpha_test_image() {
   return image;
 }
 
-bool same_rgba(const awj::ImageBuffer& lhs, const awj::ImageBuffer& rhs) {
-  if (lhs.width != rhs.width || lhs.height != rhs.height ||
-      lhs.pixel_format != awj::PixelFormat::rgba ||
-      rhs.pixel_format != awj::PixelFormat::rgba || lhs.planes.empty() ||
-      rhs.planes.empty()) {
-    return false;
-  }
-  const auto& lhs_plane = lhs.planes.front();
-  const auto& rhs_plane = rhs.planes.front();
-  const auto row_bytes = lhs.width * 4;
-  for (std::size_t y = 0; y < lhs.height; ++y) {
-    const auto lhs_row = std::span<const std::byte>{lhs_plane.bytes}.subspan(
-        y * lhs_plane.stride, row_bytes);
-    const auto rhs_row = std::span<const std::byte>{rhs_plane.bytes}.subspan(
-        y * rhs_plane.stride, row_bytes);
-    if (!std::ranges::equal(lhs_row, rhs_row)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 void push_u16(std::vector<std::byte>& bytes, std::uint16_t value) {
   bytes.push_back(std::byte{static_cast<unsigned char>(value & 0xffu)});
   bytes.push_back(std::byte{static_cast<unsigned char>(value >> 8)});
@@ -436,19 +414,57 @@ int main() {
                      .path = alpha_input,
                      .bytes = std::filesystem::file_size(alpha_input)});
   const auto alpha_output = alpha_cfg.output_dir / "alpha-input.avif";
-  if (!alpha_result.ok || !alpha_result.lossless ||
-      alpha_result.final_encoder_quality != 100 ||
+  if (!alpha_result.ok || alpha_result.lossless ||
+      alpha_result.final_encoder_quality != 70 ||
       alpha_result.encoder_id != "aom" || alpha_result.applied_alpha != "kept" ||
-      alpha_result.applied_chroma != "444" || alpha_result.speed != 5 ||
+      alpha_result.applied_chroma != "420" ||
+      alpha_result.applied_bit_depth.value_or(0) != 10 ||
+      alpha_result.speed != 5 ||
+      alpha_result.avif_rgb_to_yuv_seconds < 0.0 ||
+      alpha_result.avif_add_image_seconds < 0.0 ||
+      alpha_result.avif_finish_seconds < 0.0 ||
+      alpha_result.avif_output_copy_seconds < 0.0 ||
       !std::filesystem::exists(alpha_output)) {
-    return fail("transparent AVIF auto path did not force full AOM lossless while preserving speed.");
+    return fail("transparent AVIF auto path did not preserve alpha at the requested lossy quality.");
   }
   auto avif_decoder = awj::make_avif_image_decoder(1);
   auto alpha_decoded = avif_decoder->decode(alpha_output);
-  if (!alpha_decoded ||
-      !same_rgba(alpha_decoded->image, alpha_reference->image)) {
-    return fail(alpha_decoded ? "transparent AVIF did not preserve full RGBA."
+  if (!alpha_decoded || alpha_decoded->image.alpha_mode == awj::AlphaMode::none) {
+    return fail(alpha_decoded ? "transparent AVIF did not retain alpha."
                               : alpha_decoded.error());
+  }
+
+  auto alpha_explicit_8_cfg = alpha_cfg;
+  alpha_explicit_8_cfg.output_dir = output / "alpha-explicit-8";
+  alpha_explicit_8_cfg.bit_depth = 8;
+  awj::NativeBackend alpha_explicit_8_backend{
+      alpha_explicit_8_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto alpha_explicit_8_result = alpha_explicit_8_backend.encode(
+      awj::ImageFile{.index = 0,
+                     .path = alpha_input,
+                     .bytes = std::filesystem::file_size(alpha_input)});
+  if (!alpha_explicit_8_result.ok || alpha_explicit_8_result.lossless ||
+      alpha_explicit_8_result.final_encoder_quality != 70 ||
+      alpha_explicit_8_result.applied_chroma != "420" ||
+      alpha_explicit_8_result.applied_bit_depth.value_or(0) != 8) {
+    return fail("transparent AVIF explicit 8-bit lossy request was not preserved.");
+  }
+
+  const auto alpha_summary_dir = output / "alpha-summary";
+  if (auto csv_ok = awj::write_csv(
+          alpha_summary_dir,
+          std::span<const awj::EncodeResult>{&alpha_result, 1});
+      !csv_ok) {
+    return fail(csv_ok.error());
+  }
+  const auto alpha_summary_csv =
+      read_text(alpha_summary_dir / "summary.csv");
+  if (alpha_summary_csv.find("avif_rgb_to_yuv_seconds,avif_add_image_seconds,avif_finish_seconds,avif_output_copy_seconds") ==
+      std::string::npos) {
+    return fail("AVIF substage timing columns are missing from summary.csv.");
   }
 
   auto alpha_off_cfg = alpha_cfg;
@@ -473,6 +489,7 @@ int main() {
   auto alpha_visual_cfg = alpha_cfg;
   alpha_visual_cfg.output_dir = output / "alpha-visual";
   alpha_visual_cfg.visual_quality = 80;
+  alpha_visual_cfg.visual_quality_fallback = true;
   awj::NativeBackend alpha_visual_backend{
       alpha_visual_cfg, logger,
       awj::ResourcePlan{.file_parallelism = 1,
@@ -482,13 +499,74 @@ int main() {
       awj::ImageFile{.index = 0,
                      .path = alpha_input,
                      .bytes = std::filesystem::file_size(alpha_input)});
-  if (!alpha_visual_result.ok || !alpha_visual_result.lossless ||
-      alpha_visual_result.final_encoder_quality != 100 ||
-      alpha_visual_result.search_attempt_count != 1 ||
+  if (!alpha_visual_result.ok || alpha_visual_result.final_encoder_quality < 1 ||
+      alpha_visual_result.final_encoder_quality > 100 ||
+      alpha_visual_result.search_attempt_count < 1 ||
       alpha_visual_result.applied_alpha != "kept" ||
-      alpha_visual_result.applied_chroma != "444" ||
+      alpha_visual_result.applied_chroma != "420" ||
       alpha_visual_result.speed != 5) {
-    return fail("transparent AVIF visual-quality path did not bypass to one lossless encode.");
+    return fail(std::format(
+        "transparent AVIF visual-quality diagnostics invalid: ok={} q={} attempts={} alpha={} chroma={} speed={} message={}",
+        alpha_visual_result.ok ? "true" : "false",
+        alpha_visual_result.final_encoder_quality,
+        alpha_visual_result.search_attempt_count,
+        alpha_visual_result.applied_alpha,
+        alpha_visual_result.applied_chroma,
+        alpha_visual_result.speed,
+        alpha_visual_result.message));
+  }
+
+  auto avif_source_encoder = awj::make_avif_image_encoder(awj::AvifEncoderMode::aom);
+  const auto preserves_native_color_range = [&](int color_range) {
+    auto source_settings = awj::NativeEncodeSettings{
+        .output_format = awj::OutputFormat::avif,
+        .quality = 70,
+        .speed = 6,
+        .bit_depth = 8,
+        .chroma_mode = awj::ChromaMode::yuv420,
+        .avif_encoder = awj::AvifEncoderMode::aom,
+        .applied_color_range = color_range,
+        .resources = awj::ResourcePlan{.file_parallelism = 1,
+                                       .encoder_threads_per_file = 1,
+                                       .global_thread_budget = 1}};
+    auto range_source = avif_source_encoder->encode(make_test_image(), source_settings);
+    if (!range_source) {
+      return false;
+    }
+    const auto range_name = std::format("range-{}", color_range);
+    const auto range_input = root / std::format("{}.avif", range_name);
+    {
+      std::ofstream stream{range_input, std::ios::binary};
+      stream.write(reinterpret_cast<const char*>(range_source->encoded.bytes.data()),
+                   static_cast<std::streamsize>(range_source->encoded.bytes.size()));
+    }
+    auto range_cfg = alpha_cfg;
+    range_cfg.input_path = range_input;
+    range_cfg.output_dir = output / range_name;
+    range_cfg.quality = 70;
+    range_cfg.visual_quality = {};
+    range_cfg.chroma_mode = awj::ChromaMode::auto_keep;
+    range_cfg.bit_depth = {};
+    awj::NativeBackend range_backend{
+        range_cfg, logger,
+        awj::ResourcePlan{.file_parallelism = 1,
+                          .encoder_threads_per_file = 1,
+                          .global_thread_budget = 1}};
+    auto range_result = range_backend.encode(
+        awj::ImageFile{.index = 0,
+                       .path = range_input,
+                       .bytes = std::filesystem::file_size(range_input)});
+    auto range_decoded = avif_decoder->decode(
+        range_cfg.output_dir / std::format("{}.avif", range_name));
+    return range_result.ok && range_result.source_color_range.value_or(-1) == color_range &&
+           range_result.applied_color_range.value_or(-1) == color_range &&
+           range_result.applied_chroma == "420" && range_decoded &&
+           range_decoded->image.source_info &&
+           range_decoded->image.source_info->pixel_format == awj::PixelFormat::yuv420 &&
+           range_decoded->image.source_info->color_range.value_or(-1) == color_range;
+  };
+  if (!preserves_native_color_range(0) || !preserves_native_color_range(1)) {
+    return fail("native AVIF did not preserve limited/full source color range.");
   }
 
   cfg.visual_quality = 100;
