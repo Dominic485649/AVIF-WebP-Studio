@@ -348,8 +348,25 @@ std::expected<avifPixelFormat, std::string> avif_pixel_format_from_chroma(
   }
 }
 
-ChromaMode applied_chroma_from_settings(ChromaMode chroma) noexcept {
-  return chroma == ChromaMode::auto_keep ? ChromaMode::yuv420 : chroma;
+ChromaMode applied_chroma_from_settings(const ImageBuffer& image,
+                                        ChromaMode chroma) noexcept {
+  if (chroma != ChromaMode::auto_keep || !image.source_info) {
+    return chroma == ChromaMode::auto_keep ? ChromaMode::yuv420 : chroma;
+  }
+  switch (image.source_info->pixel_format) {
+    case PixelFormat::yuv420:
+      return ChromaMode::yuv420;
+    case PixelFormat::yuv422:
+      return ChromaMode::yuv422;
+    case PixelFormat::yuv444:
+    case PixelFormat::rgb:
+    case PixelFormat::rgba:
+      return ChromaMode::yuv444;
+    case PixelFormat::gray:
+    case PixelFormat::unknown:
+    default:
+      return ChromaMode::yuv420;
+  }
 }
 
 const MetadataBlock* first_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
@@ -1562,7 +1579,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   const bool lossless = avif_aom_detail::lossless_requested(settings);
   const auto actual_mode = AvifEncoderMode::aom;
   auto applied_chroma = avif_aom_detail::applied_chroma_from_settings(
-      settings.chroma_mode);
+      image, settings.chroma_mode);
   if (settings.avif_grid_plan) {
     const auto& plan = *settings.avif_grid_plan;
     const bool horizontal_misaligned =
@@ -1969,7 +1986,7 @@ class ZenravifImageEncoder final : public ImageEncoder {
       return std::unexpected{"zenravif encoder 只支持 8、10、12-bit 输出。"};
     }
     const auto applied_chroma = avif_aom_detail::applied_chroma_from_settings(
-        settings.chroma_mode);
+        image, settings.chroma_mode);
     if (applied_chroma != ChromaMode::yuv420 && applied_chroma != ChromaMode::yuv444) {
       return std::unexpected{"zenravif encoder 只支持 420 或 444 chroma。"};
     }

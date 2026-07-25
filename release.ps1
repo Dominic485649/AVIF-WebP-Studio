@@ -173,8 +173,8 @@ Ensure-VcpkgManifestPackages $VcpkgRoot $VcpkgTriplet @(
 # Release pins must take effect even when an earlier configure populated FetchContent.
 # Reuse only clean sources whose resolved commit already matches the release pin.
 $PinnedFetchContentCommits = @{
-    "svtav1hdr" = "8d13912d5e0e6b611e3d482d880b41a7f2e5cd52"
-    "libavif" = "c5240fc79fe5c2407e10afd35f5505ef6333ea49"
+    "svtav1hdr" = "8b4b9f5624cb70c2363a7cebb553110c1447dd4c"
+    "libavif" = "bd32fb40a3b2028eb555b67f769c57a32ed8a1b4"
     "jpegli"  = "031a0077f5799a6041004267fc12b956c1f52a20"
     "slint"   = "cf62c975c311e7036d599ed8ed0b7e6a8386a934"
 }

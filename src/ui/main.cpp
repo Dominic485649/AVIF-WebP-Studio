@@ -65,14 +65,6 @@ import awj.studio_defaults;
 
 namespace {
 
-std::wstring large_image_priority_from_ui(int index) {
-  return index == 1 ? L"grid" : L"zenrav1e";
-}
-
-int large_image_priority_index(std::wstring_view priority) {
-  return priority == L"grid" ? 1 : 0;
-}
-
 awj::LargeImageDecision manual_large_image_decision(
     awj::ImageDimensions dimensions, bool grid_available,
     bool zenrav1e_available) {
@@ -3608,42 +3600,6 @@ awj::AvifEncoderMode avif_encoder_from_index(int index) {
   }
 }
 
-awj::Preset preset_from_index(int index) {
-  switch (index) {
-    case 0:
-      return awj::Preset::custom;
-    case 1:
-      return awj::Preset::lossless;
-    case 2:
-      return awj::Preset::visual_lossless;
-    case 3:
-      return awj::Preset::balanced;
-    case 4:
-      return awj::Preset::fast;
-    case 5:
-      return awj::Preset::fastest;
-    default:
-      return awj::Preset::balanced;
-  }
-}
-
-std::optional<int> visual_quality_for_preset(awj::Preset preset) noexcept {
-  switch (preset) {
-    case awj::Preset::custom:
-    case awj::Preset::lossless:
-      return std::nullopt;
-    case awj::Preset::visual_lossless:
-      return 75;
-    case awj::Preset::balanced:
-      return 50;
-    case awj::Preset::fast:
-      return 25;
-    case awj::Preset::fastest:
-    default:
-      return 17;
-  }
-}
-
 std::expected<awj::AppConfig, std::string> config_from_menu_params(
     awj::OutputFormat format, const MenuFormatParams& params) try {
   awj::AppConfig cfg = awj::default_app_config();
@@ -3733,21 +3689,6 @@ void apply_menu_preset_defaults_to_ui(AwjStudio& app, int preset_index) {
       to_shared(text_from_int(qualities[std::clamp(preset_index, 1, 5)])));
 }
 
-void apply_preset_defaults_to_ui(AwjStudio& app, int preset_index) {
-  const auto preset = preset_from_index(preset_index);
-  if (preset == awj::Preset::custom) {
-    return;
-  }
-  if (preset == awj::Preset::lossless) {
-    app.set_quality_text(to_shared("100"));
-    app.set_visual_quality_text({});
-  } else if (const auto visual_quality = visual_quality_for_preset(preset)) {
-    app.set_quality_text({});
-    app.set_visual_quality_text(to_shared(text_from_int(*visual_quality)));
-  }
-  app.set_quality_follows_format(false);
-}
-
 void apply_format_defaults_to_ui(AwjStudio& app, int format_index, UiState& state) {
   // Save quality for the format we're leaving
   const int old_index = state.last_format_index;
@@ -3806,13 +3747,11 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
       to_shared(text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
   app.set_memory_limit_text({});
   app.set_unlock_max_input_file_bytes(false);
-  app.set_selected_large_image_action_index(0);
   app.set_size_limit_index(0);
   app.set_max_width_text({});
   app.set_max_height_text({});
   app.set_max_long_edge_text({});
   app.set_max_short_edge_text({});
-  app.set_preset_index(0);
   app.set_visual_quality_text({});
   app.set_format_index(0);
   app.set_experimental_encoders(defaults.enable_experimental_encoders);
@@ -3853,7 +3792,7 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
     cfg.output_template = awj::encoding_defaults::default_output_template;
   }
   cfg.allow_wic_fallback = app.get_allow_wic_fallback();
-  cfg.preset = preset_from_index(app.get_preset_index());
+  cfg.preset = awj::Preset::custom;
 
   cfg.output_format = output_format_from_index(app.get_format_index());
   cfg.avif_encoder = cfg.output_format == awj::OutputFormat::avif
@@ -3936,7 +3875,6 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.memory_limit_bytes = *memory_limit;
   cfg.unlock_max_input_file_bytes = app.get_unlock_max_input_file_bytes();
   awj::encoding_defaults::unlock_max_input_file_bytes.store(cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
-  cfg.large_image_priority = large_image_priority_from_ui(app.get_selected_large_image_action_index());
 
   const auto size_limit = image_size_limit_from_fields(
       app.get_size_limit_index(), shared_to_string(app.get_max_width_text()),
@@ -3961,7 +3899,6 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
     cfg.speed.reset();
   }
 
-  awj::apply_preset(cfg, cfg.preset);
   if (quality) {
     cfg.quality = *quality;
   }
@@ -5323,7 +5260,6 @@ int run_studio_ui() {
     initialize_ui_defaults(*app, *state);
     apply_system_ui_font(*app);
     app->set_threads_text({});
-    app->set_selected_large_image_action_index(0);
     app->set_system_dark_mode(windows_prefers_dark_mode());
     state->config_defaults = capture_studio_config(*app, state.get());
     std::optional<std::string> config_warning;
@@ -5411,18 +5347,6 @@ int run_studio_ui() {
             return;
           }
           apply_format_defaults_to_ui(**app, index, *state);
-        }
-      });
-    });
-
-    app->on_preset_defaults_requested([weak, state](int index) {
-      run_ui_callback(weak, "应用预设默认值失败", [&] {
-        if (auto app = weak.lock()) {
-          if (reject_when_worker_active(**app, state,
-                                        "当前任务正在运行，无法修改预设")) {
-            return;
-          }
-          apply_preset_defaults_to_ui(**app, index);
         }
       });
     });
@@ -6107,10 +6031,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-std::wstring large_image_priority_from_ui(int index) {
-  return index == 1 ? L"grid" : L"zenrav1e";
-}
-
 struct LinuxMenuParams {
   int preset_index{};
   std::string quality_text{};
@@ -6614,17 +6534,6 @@ std::wstring collision_arg(int index) {
       return L"overwrite";
   }
 }
-std::wstring preset_arg(int index) {
-  switch (index) {
-    case 1: return L"lossless";
-    case 2: return L"best";
-    case 3: return L"balanced";
-    case 4: return L"fast";
-    case 5: return L"extreme";
-    default: return {};
-  }
-}
-
 std::wstring avif_encoder_arg(int index) {
   switch (index) {
     case 1: return L"svt";
@@ -6679,7 +6588,6 @@ std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) 
   push_option(args, L"--template", wide_from_shared(app.get_template_text()));
   push_option(args, L"--format", format_arg(app.get_format_index()));
   push_option(args, L"--collision", collision_arg(app.get_collision_index()));
-  push_option(args, L"--preset", preset_arg(app.get_preset_index()));
   args.push_back(L"--no-wic-fallback");
   push_flag(args, app.get_experimental_encoders(), L"--experimental-encoders",
             L"--no-experimental-encoders");
@@ -6698,7 +6606,6 @@ std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) 
 
   push_option(args, L"--threads", wide_from_shared(app.get_threads_text()));
   push_option(args, L"--memory-limit", memory_arg_from_ui(wide_from_shared(app.get_memory_limit_text())));
-  push_option(args, L"--large-image-priority", large_image_priority_from_ui(app.get_selected_large_image_action_index()));
   if (app.get_unlock_max_input_file_bytes()) {
     args.push_back(L"--unlock-max-input-file-bytes");
   }
@@ -7068,7 +6975,6 @@ void initialize_ui(AwjStudio& app) {
   app.set_template_text(to_shared(std::string{awj::encoding_defaults::default_output_template_text}));
   app.set_memory_limit_text(to_shared(std::string{awj::encoding_defaults::default_memory_limit_text}));
   app.set_unlock_max_input_file_bytes(false);
-  app.set_selected_large_image_action_index(0);
   app.set_status_text(to_shared("就绪"));
 }
 
@@ -7095,34 +7001,6 @@ int run_studio_ui() {
     app->on_format_defaults_requested([weak](int index) {
       if (auto app = weak.lock()) {
         set_format_quality(**app, index);
-      }
-    });
-    app->on_preset_defaults_requested([weak](int index) {
-      if (auto app = weak.lock()) {
-        switch (index) {
-          case 1:
-            (*app)->set_quality_text(to_shared("100"));
-            (*app)->set_visual_quality_text({});
-            break;
-          case 2:
-            (*app)->set_quality_text({});
-            (*app)->set_visual_quality_text(to_shared("75"));
-            break;
-          case 3:
-            (*app)->set_quality_text({});
-            (*app)->set_visual_quality_text(to_shared("50"));
-            break;
-          case 4:
-            (*app)->set_quality_text({});
-            (*app)->set_visual_quality_text(to_shared("25"));
-            break;
-          case 5:
-            (*app)->set_quality_text({});
-            (*app)->set_visual_quality_text(to_shared("17"));
-            break;
-          default:
-            break;
-        }
       }
     });
     app->on_clear_tasks([weak, state] {

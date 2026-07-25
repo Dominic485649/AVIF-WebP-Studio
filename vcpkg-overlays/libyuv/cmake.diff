@@ -2,10 +2,13 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index c6cce8a6..799cabde 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,10 @@
  
  cmake_minimum_required( VERSION 3.16 )
  project ( YUV C CXX )	# "C" is required even for C++ projects
++if(MSVC)
++  add_compile_definitions(_mm512_permi2var_epi8=_mm512_permutex2var_epi8)
++endif()
 +option( BUILD_TOOLS "Build tools" OFF )
  option( UNIT_TEST "Built unit tests" OFF )
  

@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-0.10.4 发布说明：[RELEASE_NOTES_0.10.4.md](RELEASE_NOTES_0.10.4.md)
+0.10.5 发布说明：[RELEASE_NOTES_0.10.5.md](RELEASE_NOTES_0.10.5.md)
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
@@ -15,14 +15,14 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
-## 0.10.4 GitHub 发行包
+## 0.10.5 GitHub 发行包
 
-从 [GitHub Release 0.10.4](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.4) 下载与系统匹配的归档；两个包不混装跨平台文件：
+从 [GitHub Release 0.10.5](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.5) 下载与系统匹配的归档；两个包不混装跨平台文件：
 
 | 归档 | 精确内容 | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Linux.7z) | Linux ELF：`AWJ` | 见 Release 正文 |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | 见 Release 正文 |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Linux.7z) | Linux ELF：`AWJ` | 见 Release 正文 |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | 见 Release 正文 |
 
 归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。
 
@@ -73,13 +73,13 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 
 ```powershell
 # 1. 更新版本号
-Set-Content VERSION "0.10.4"
+Set-Content VERSION "0.10.5"
 .\scripts\Update-VcpkgVersion.ps1
 
 # 2. 提交并打 tag
 git add VERSION vcpkg.json
-git commit -m "release: 0.10.4"
-git tag 0.10.4
+git commit -m "release: 0.10.5"
+git tag 0.10.5
 
 # 3. 构建
 .\release.ps1
@@ -122,11 +122,11 @@ AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 
 AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）；`svt-av1-hdr` 上限为 16384×8704。超过 1000 万像素但仍在单图上限内的图片会排到普通队列末尾，避免单张大图的内存估算降低全部小图的并发；它们仍使用普通编码器，不会强制进入大图链路。总批次超过 12 张时，普通、延后和大图阶段都保持每张图片单编码线程。
 
-`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；默认输出为 YUV 4:2:0，只有显式 `--chroma 422` 或 `--chroma 444` 才改变采样，绝不切换为 RGB。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化并按默认 420 重编码。源图 CICP range 默认保持（PC/full 或 TV/limited）；未知 range 使用 full。`--alpha off` 会移除 alpha。
+`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；`--chroma auto` 保留 YUV 源的 420/422/444，RGB/RGBA 转为 YUV444，灰度或未知源使用 420，始终不输出 RGB。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化，并按上述 auto 规则重编码。源图 CICP range 默认保持（PC/full 或 TV/limited）；未知 range 使用 full。`--alpha off` 会移除 alpha。
 
 超过 AOM 单图上限后自动进入大图链路：
 1. 默认优先 `zenrav1e`，失败或不支持再回退 `grid`；
-2. 参数页“大图优先”可改为 `grid` 优先再回退 `zenrav1e`；
+2. Studio 固定使用该默认顺序；CLI `--large-image-priority grid` 可改为 `grid` 优先再回退 `zenrav1e`；
 3. 两条路径都不可用/都失败，或触达输入/运行时内存上限时明确报错。
 
 Studio 不再提供独立大图页；自动处理状态直接显示在主队列。CLI：
@@ -134,15 +134,17 @@ Studio 不再提供独立大图页；自动处理状态直接显示在主队列�
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit`：仅当前会话解除默认 20 GiB 输入/运行时上限，不写入 `AWJ.jsonc`；过大图片可能 OOM。
 参数设置页其余编码参数同样只在本次运行内保持，不写入 `AWJ.jsonc`。
 
+Studio 的自动线程预算在逻辑线程数 >=12、5-11、2-4 时分别预留 4、2、1 个线程；单线程仍使用 1。自动内存上限取总内存 50% 与当前可用内存 80% 的较小值，只有一项可用时按该项计算。
+
 `--format jpgli` 和 `--format jpegli` 是 JPGLI 入口；`--format jpg` 不作为新增入口。启用 `--summary` 后，`summary.csv` 会记录 `format=JPGLI`、`encoder_id=jpegli`，输出路径仍通常是 `.jpg`。
 
 `--allow-wic-fallback` 仅 Windows 有效；Linux 会接受但忽略该参数。Linux UI 的“选择”按钮会调用 `zenity`/`yad`/`kdialog`。右键菜单为 AVIF、WebP、JXL、JPGLI、PNG 分别写入 Nautilus 用户脚本，并同步写入 Thunar UCA；必要时重启文件管理器。
 
-多帧 WebP/GIF/APNG/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高；若奇数 grid 与默认 420 不兼容，会明确要求显式选择 444，而不会自动改用其他采样。
+多帧 WebP/GIF/APNG/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高；若奇数 grid 与实际选择的 420/422 采样不兼容，会明确要求显式选择 444，而不会静默改变采样。
 
 Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。0.10.3 增加待处理、处理中、成功和失败计数、仅看失败、重试失败项及选中项详情；详情保留完整错误、输入/输出路径、编码器、线程数和 decode/prepare/encode/write 阶段耗时。
 
-SoftComboBox、SoftButton、左侧导航与队列右键菜单提供 Tab 焦点、可见焦点状态、Enter/Space、方向键、Home/End、Esc 以及可访问角色/名称。字体下拉框仍最多显示 10 行，支持滚轮和滚动条，不提供搜索或手动输入。参数页按常用参数、资源限制、格式高级选项分组，危险警告常驻。
+SoftComboBox、SoftButton、左侧导航与队列右键菜单提供 Tab 焦点、可见焦点状态、Enter/Space、方向键、Home/End、Esc 以及可访问角色/名称。字体下拉框仍最多显示 10 行，支持滚轮和滚动条，不提供搜索或手动输入。参数页按常用参数、资源限制、格式高级选项分组，右侧以彩色文字说明格式、资源和风险；右键菜单预设独立保留。
 
 Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时，启动请求会合并到一个右键窗口和同一队列。右键窗口提供普通取消与强制终止；本体和右键窗口点击右上角关闭时会先终止活动任务。
 

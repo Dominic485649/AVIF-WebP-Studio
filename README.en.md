@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-0.10.4 release notes (Chinese): [RELEASE_NOTES_0.10.4.md](RELEASE_NOTES_0.10.4.md)
+0.10.5 release notes (Chinese): [RELEASE_NOTES_0.10.5.md](RELEASE_NOTES_0.10.5.md)
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -15,14 +15,14 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
-## 0.10.4 GitHub release archives
+## 0.10.5 GitHub release archives
 
-Download the platform-matched archive from [GitHub Release 0.10.4](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.4). The archives deliberately do not mix platform files:
+Download the platform-matched archive from [GitHub Release 0.10.5](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.5). The archives deliberately do not mix platform files:
 
 | Archive | Exact contents | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Linux.7z) | Linux ELF: `AWJ` | Release body |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.4/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | Release body |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Linux.7z) | Linux ELF: `AWJ` | Release body |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | Release body |
 
 Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2.
 
@@ -54,11 +54,11 @@ Windows release script:
 Versioning is controlled by the root `VERSION` file. Release flow:
 
 ```powershell
-Set-Content VERSION "0.10.4"
+Set-Content VERSION "0.10.5"
 .\scripts\Update-VcpkgVersion.ps1
 git add VERSION vcpkg.json CHANGELOG.md
-git commit -m "release: 0.10.4"
-git tag 0.10.4
+git commit -m "release: 0.10.5"
+git tag 0.10.5
 .\release.ps1
 
 # Run from bin\x64\Release. Each archive must contain only these files.
@@ -82,16 +82,18 @@ Candidate encode/decode and final encoded-bytes selection remain native CPU pipe
 AVIF inputs over the single-image limits (AOM 65536 edge / `2^30` pixels; SVT 16384×8704) enter the automatic large-image chain:
 
 1. default priority is `zenrav1e`, then fall back to `grid`
-2. parameter page “large-image priority” can prefer `grid` first
+2. Studio keeps that default order; CLI `--large-image-priority grid` can prefer `grid` first
 3. if both paths are unavailable/fail, or the input/runtime memory cap is hit, the job fails clearly
 
 Studio no longer has a separate large-image page; automatic large-image status stays in the main queue. Inputs above 10 MP but still under single-image limits stay in the ordinary queue tail so one large memory estimate cannot throttle every small-file worker. They still use the ordinary encoder, and batches above 12 files keep one encoder thread per file in the ordinary, deferred, and large-image stages. Grid supports smaller right/bottom edge cells for non-divisible dimensions while preserving the original output size.
 
-`--alpha auto` retains non-opaque alpha automatically. AVIF color and alpha both use the requested quality or visual-quality result; auto output is YUV 4:2:0 and never switches to RGB, with 4:2:2 and 4:4:4 available only through explicit `--chroma 422` or `--chroma 444`. q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite; all other inputs use lossless AOM quantization and default 4:2:0 re-encoding. Source CICP range is retained by default (PC/full or TV/limited); unknown range uses full. `--alpha off` removes alpha.
+`--alpha auto` retains non-opaque alpha automatically. AVIF color and alpha both use the requested quality or visual-quality result; `--chroma auto` preserves YUV 4:2:0/4:2:2/4:4:4 sources, maps RGB/RGBA to YUV 4:4:4, and uses 4:2:0 for grayscale or unknown sources while always producing YUV. q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite; all other inputs use lossless AOM quantization and those auto rules. Source CICP range is retained by default (PC/full or TV/limited); unknown range uses full. `--alpha off` removes alpha.
 
 CLI session unlock (not written to `AWJ.jsonc`):
 - `--large-image-priority zenrav1e|grid`
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit` removes the default 20 GiB input/runtime cap for the current process only; huge images may OOM.
+
+Studio auto threading reserves 4 logical threads at >=12, 2 at 5-11, and 1 at 2-4; a single-thread system still uses 1. Automatic memory uses the smaller of 50% total memory and 80% currently available memory, falling back to the available source when only one is readable.
 
 ## Reproducible benchmark
 

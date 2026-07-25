@@ -1,12 +1,7 @@
-vcpkg_download_distfile(ARCHIVE
-    URLS "https://codeload.github.com/lemenkov/libyuv/tar.gz/afff0cf68bdd2d713c81040a4bd1b7c7fe69e39c"
-    FILENAME "libyuv-afff0cf68bdd2d713c81040a4bd1b7c7fe69e39c.tar.gz"
-    SHA512 658002f6018534b29881a05ee44877afa13811760fa2be34cdbebe7a35bff672f9f7a5489bfab979d95208b66fa39fa6b0972c2edea1ce731e9e981bf970f844
-)
-
-vcpkg_extract_source_archive(
-    SOURCE_PATH
-    ARCHIVE "${ARCHIVE}"
+vcpkg_from_git(
+    OUT_SOURCE_PATH SOURCE_PATH
+    URL https://chromium.googlesource.com/libyuv/libyuv
+    REF b56492e2dfc064f65ef27fed9c45d9bbfc2e2ad2
     PATCHES
         cmake.diff
 )

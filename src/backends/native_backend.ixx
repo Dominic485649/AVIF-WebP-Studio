@@ -572,12 +572,13 @@ ChromaMode chroma_from_source_pixel_format(PixelFormat pixel_format) noexcept {
       return ChromaMode::yuv422;
     case PixelFormat::yuv444:
       return ChromaMode::yuv444;
-    case PixelFormat::gray:
     case PixelFormat::rgb:
     case PixelFormat::rgba:
+      return ChromaMode::yuv444;
+    case PixelFormat::gray:
     case PixelFormat::unknown:
     default:
-      return ChromaMode::auto_keep;
+      return ChromaMode::yuv420;
   }
 }
 
@@ -2197,8 +2198,13 @@ class NativeBackend final {
         selection_requested_chroma = cfg_.chroma_mode;
         prepared.settings.chroma_reason = "用户请求 chroma";
       } else {
-        selection_requested_chroma = ChromaMode::auto_keep;
-        prepared.settings.chroma_reason = "chroma auto 默认使用 420";
+        selection_requested_chroma = native_backend_detail::lossless_source_chroma(decoded.image);
+        if (selection_requested_chroma == ChromaMode::auto_keep) {
+          selection_requested_chroma = ChromaMode::yuv420;
+        }
+        prepared.settings.chroma_reason = std::format(
+            "chroma auto 根据源图选择 {} chroma",
+            chroma_mode_name(selection_requested_chroma));
       }
 
       std::optional<int> selection_requested_bit_depth{};

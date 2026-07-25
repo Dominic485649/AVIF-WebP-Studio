@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.10.5 - 2026-07-25
+
+- Studio 主参数页恢复右侧彩色说明，移除主页面的“预设”和“大图优先”选择；右键菜单预设和 CLI `--large-image-priority` 保持可用。Studio 的大图自动链固定为 `zenrav1e` 优先、失败后回退 `grid`。
+- AVIF `--chroma auto` 现在保留 YUV 源的 420/422/444，RGB/RGBA 转为 YUV 444，灰度或未知源使用 420。解析后的采样会在编码器选择前传入，避免 422/444 源图误走 SVT 的 420-only 路径；显式 SVT 仍只接受 420。
+- 参数说明按真实资源规则更新：自动线程在 >=12、5-11、2-4 逻辑线程时分别预留 4、2、1 个线程；自动内存上限为总内存 50% 与当前可用内存 80% 的较小值，缺少任一数据时使用另一项。
+- 修正 AVIF AOM 直接编码路径的 auto chroma 回退与源格式映射，并补充 YUV422、YUV444、RGB、RGBA 和无源元数据的回归覆盖。
+- 依赖基线更新到当前 vcpkg registry；libyuv 升至 1951、libavif 升至 v1.4.2，并刷新静态 SVT AV1 HDR 源。AOM 3.14.1、dav1d 1.5.4、Jpegli 和 Slint 1.17.1 已确认处于当前上游版本。
+
 ## 0.10.4 - 2026-07-21
 
 - Windows Release 改为静态链接 Slint；vcpkg baseline 更新，AOM 升级至 3.14.1、dav1d 升级至 1.5.4，并以项目内 overlay 固定 AOM、dav1d 和 libyuv 的构建输入。

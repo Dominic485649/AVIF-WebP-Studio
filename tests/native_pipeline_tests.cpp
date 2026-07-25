@@ -417,7 +417,7 @@ int main() {
   if (!alpha_result.ok || alpha_result.lossless ||
       alpha_result.final_encoder_quality != 70 ||
       alpha_result.encoder_id != "aom" || alpha_result.applied_alpha != "kept" ||
-      alpha_result.applied_chroma != "420" ||
+      alpha_result.applied_chroma != "444" ||
       alpha_result.applied_bit_depth.value_or(0) != 10 ||
       alpha_result.speed != 5 ||
       alpha_result.avif_rgb_to_yuv_seconds < 0.0 ||
@@ -448,7 +448,7 @@ int main() {
                      .bytes = std::filesystem::file_size(alpha_input)});
   if (!alpha_explicit_8_result.ok || alpha_explicit_8_result.lossless ||
       alpha_explicit_8_result.final_encoder_quality != 70 ||
-      alpha_explicit_8_result.applied_chroma != "420" ||
+      alpha_explicit_8_result.applied_chroma != "444" ||
       alpha_explicit_8_result.applied_bit_depth.value_or(0) != 8) {
     return fail("transparent AVIF explicit 8-bit lossy request was not preserved.");
   }
@@ -503,7 +503,7 @@ int main() {
       alpha_visual_result.final_encoder_quality > 100 ||
       alpha_visual_result.search_attempt_count < 1 ||
       alpha_visual_result.applied_alpha != "kept" ||
-      alpha_visual_result.applied_chroma != "420" ||
+      alpha_visual_result.applied_chroma != "444" ||
       alpha_visual_result.speed != 5) {
     return fail(std::format(
         "transparent AVIF visual-quality diagnostics invalid: ok={} q={} attempts={} alpha={} chroma={} speed={} message={}",

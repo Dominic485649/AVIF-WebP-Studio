@@ -307,19 +307,37 @@ int main() {
   lossless_auto_chroma_settings.quality = 100;
   lossless_auto_chroma_settings.chroma_mode = awj::ChromaMode::auto_keep;
   lossless_auto_chroma_settings.applied_color_range = 1;
-  auto source_444_image = make_test_image();
-  source_444_image.source_info = awj::ImageSourceInfo{
-      .pixel_format = awj::PixelFormat::yuv444, .bit_depth = 8};
-  auto lossless_auto_chroma = aom->encode(source_444_image,
-                                          lossless_auto_chroma_settings);
-  if (!lossless_auto_chroma || !lossless_auto_chroma->lossless ||
-      lossless_auto_chroma->diagnostics.applied_chroma != "420") {
-    return fail(lossless_auto_chroma
-                    ? "AOM auto chroma did not stay on 420 for a 444 source."
-                    : lossless_auto_chroma.error());
+  const auto verify_auto_chroma = [&](awj::PixelFormat source_format,
+                                      awj::PixelFormat expected_format,
+                                      std::string_view expected_chroma) {
+    auto image = make_test_image();
+    image.source_info = awj::ImageSourceInfo{
+        .pixel_format = source_format, .bit_depth = 8};
+    auto encoded_auto = aom->encode(image, lossless_auto_chroma_settings);
+    if (!encoded_auto || !encoded_auto->lossless ||
+        encoded_auto->diagnostics.applied_chroma != expected_chroma) {
+      return fail(encoded_auto ? "AOM auto chroma did not follow source metadata."
+                               : encoded_auto.error());
+    }
+    return verify_avif_source_info(encoded_auto->encoded, expected_format, 1);
+  };
+  if (const int rc = verify_auto_chroma(awj::PixelFormat::yuv444,
+                                        awj::PixelFormat::yuv444, "444");
+      rc != 0) {
+    return rc;
   }
-  if (const int rc = verify_avif_source_info(lossless_auto_chroma->encoded,
-                                             awj::PixelFormat::yuv420, 1);
+  if (const int rc = verify_auto_chroma(awj::PixelFormat::yuv422,
+                                        awj::PixelFormat::yuv422, "422");
+      rc != 0) {
+    return rc;
+  }
+  if (const int rc = verify_auto_chroma(awj::PixelFormat::rgb,
+                                        awj::PixelFormat::yuv444, "444");
+      rc != 0) {
+    return rc;
+  }
+  if (const int rc = verify_auto_chroma(awj::PixelFormat::rgba,
+                                        awj::PixelFormat::yuv444, "444");
       rc != 0) {
     return rc;
   }
