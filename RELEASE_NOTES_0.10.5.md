@@ -24,3 +24,22 @@
 
 - Studio 的自动大图链固定为 `zenrav1e` 优先、失败或不支持后回退 `grid`，不再暴露会被意外保留的页面偏好。
 - CLI 仍保留 `--large-image-priority zenrav1e|grid`，供批处理和手动 worker 明确指定优先路径。
+
+## GitHub 发行归档
+
+GitHub Release 标签为 [`0.10.5`](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.5)，对应提交 `d9704f96018abe19c0e8d238d44506cc7d99e0ff`。归档按平台严格拆分，不携带未指定的附属文件：
+
+| 归档 | 精确内容 | 大小 | SHA-256 |
+|---|---|---:|---|
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Linux.7z) | `AWJ`（Linux ELF） | 16,289,284 bytes | `55cbdf0369adaa633ac32b977f187292a570ab90ad6738ee4ac0888bdd3de96e` |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Win.7z) | `AWJ.exe`、`AWJ.com`（Windows） | 11,713,010 bytes | `fca40d6be0b569fd6d9a8813b88ad615822e00ba03113c55e803e988d0980228` |
+
+两份文件均使用 7-Zip `-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off` 打包。Linux 包只包含 `AWJ`，Windows 包只包含 `AWJ.exe` 和 `AWJ.com`。
+
+## 二进制 SHA-256
+
+```text
+dfc8aec58beb0eb679a13da96d036a02cb2baa66f46a58b8672720c2a7299681  AWJ.exe
+4ec633f6d908543ca6f98cd2da5a5a05d1afd22d81dab6a156962d8745d36acc  AWJ.com
+7b3370ba66d27acdd15c36f44168d3f10e44f2c4f68768abbe9d9b291b0bf99a  AWJ
+```
