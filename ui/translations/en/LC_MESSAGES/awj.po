@@ -1,0 +1,608 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: AWJ 0.10.9\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en\n"
+
+msgid "选项"
+msgstr "Options"
+
+msgid "自动"
+msgstr "Auto"
+
+msgid "默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"
+msgstr "Direct3D 11 acceleration is on by default for the visual_quality luma, GMSD and MS-SSIM metrics; codec encode/decode still uses the native CPU libraries, and small images or failures fall back to CPU automatically."
+
+msgid "系统默认字体"
+msgstr "System default font"
+
+msgid "就绪"
+msgstr "Ready"
+
+msgid "主导航"
+msgstr "Main navigation"
+
+msgid "编码队列"
+msgstr "Encode queue"
+
+msgid "参数设置"
+msgstr "Parameters"
+
+msgid "菜单参数"
+msgstr "Menu parameters"
+
+msgid "设置"
+msgstr "Settings"
+
+msgid "常用参数"
+msgstr "Common parameters"
+
+msgid "格式"
+msgstr "Format"
+
+msgid "输出格式"
+msgstr "Output format"
+
+msgid "首选 AVIF"
+msgstr "Choose AVIF"
+
+msgid "极高压缩率 · 支持 HDR · 最高 12-bit"
+msgstr "top compression · HDR · up to 12-bit"
+
+msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPGLI 是新的 JPEG 编码器，在保持 JPEG 兼容的前提下明显提升压缩率。PNG 仅在右键菜单提供。"
+msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPGLI is a new JPEG encoder that clearly improves compression while staying JPEG-compatible. PNG is offered in the context menu only."
+
+msgid "编码器"
+msgstr "Encoder"
+
+msgid "AVIF 编码器"
+msgstr "AVIF encoder"
+
+msgid "保持“自动”就是最优解"
+msgstr "Leave this on Auto"
+
+msgid "优先 aom，超限自动切 zenrav1e"
+msgstr "aom first, auto-switch to zenrav1e past the limit"
+
+msgid "aom 支持高位深与 420/422/444，是默认主力。svt-av1-hdr 各项指标均不及 libaom，仅作备选。zenrav1e 能吃下超大图，但不适合当常规默认。"
+msgstr "aom supports high bit depth and 420/422/444, and is the default workhorse. svt-av1-hdr trails libaom on every metric, so it is only a fallback. zenrav1e can swallow very large images, but it is a poor everyday default."
+
+msgid "质量"
+msgstr "Quality"
+
+msgid "由视觉质量自动控制"
+msgstr "Driven by visual quality"
+
+msgid "1-100，越大越好；填 100 及以上为无损"
+msgstr "1-100, higher is better; 100 or above is lossless"
+
+msgid "一个刻度覆盖全部格式，AWJ 自动映射到各编码器的 crf / quality。默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPGLI 90。这一项主要影响文件体积。JPEG 转 JXL 默认走无损转封装。"
+msgstr "One scale covers every format; AWJ maps it to each encoder's crf / quality automatically. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPGLI 90. This setting mainly affects file size. JPEG to JXL defaults to lossless transcoding."
+
+msgid "视觉质量"
+msgstr "Visual quality"
+
+msgid "空由质量决定，1-100"
+msgstr "Empty follows quality, 1-100"
+
+msgid "建议留空"
+msgstr "Best left empty"
+
+msgid "填写后会对同一张图反复编码，用 GMSD / MS-SSIM 搜索目标画质，效果类似质量驱动的 VBR，但耗时会翻数倍。"
+msgstr "Once set, the same image is encoded over and over, searching for the target quality with GMSD / MS-SSIM. It behaves like quality-driven VBR, but takes several times as long."
+
+msgid "速度"
+msgstr "Speed"
+
+msgid "默认/可选0-10"
+msgstr "Default/optional 0-10"
+
+msgid "0-10，越大越快"
+msgstr "0-10, higher is faster"
+
+msgid "默认值是速度与画质的平衡点，自动映射到各编码器的 preset / effort / cpu-used。同一质量下数值越小压缩效率越高。不支持调速的格式会自动隐藏这一行。"
+msgstr "The default sits at the balance point between speed and picture quality, and maps automatically to each encoder's preset / effort / cpu-used. At the same quality, lower values compress more efficiently. Formats with no speed control hide this row automatically."
+
+msgid "资源限制"
+msgstr "Resource limits"
+
+msgid "线程"
+msgstr "Threads"
+
+msgid "自动/线程数"
+msgstr "Auto/thread count"
+
+msgid "留空 = 自动"
+msgstr "Empty = automatic"
+
+msgid "核心多时预留 4 个"
+msgstr "reserves 4 on many-core CPUs"
+
+msgid "填数字即为总线程上限。自动策略给桌面和 UI 留余量：逻辑核心 ≥12 预留 4 个，5-11 预留 2 个，2-4 预留 1 个，单核仍用 1 个。"
+msgstr "A number sets the total thread budget. The automatic policy leaves headroom for the desktop and the UI: 4 threads held back at ≥12 logical cores, 2 at 5-11, 1 at 2-4, and a single core still uses 1."
+
+msgid "内存"
+msgstr "Memory"
+
+msgid "内存限制"
+msgstr "Memory limit"
+
+msgid "例如 4（单位 GiB）"
+msgstr "e.g. 4 (in GiB)"
+
+msgid "min(总内存 80%, 可用 50%)"
+msgstr "min(80% of total, 50% of free)"
+
+msgid "填数字即为内存占用上限，单位 GiB。设置页可以解除内存限制，解除后覆盖这一项。"
+msgstr "A number sets the memory ceiling, in GiB. The settings page can lift the memory limit, which then overrides this value."
+
+msgid "尺寸限制"
+msgstr "Size limit"
+
+msgid "图片尺寸限制"
+msgstr "Image size limit"
+
+msgid "无限制"
+msgstr "Unlimited"
+
+msgid "手动"
+msgstr "Manual"
+
+msgid "自动 = 保证还能正确解码"
+msgstr "Auto keeps the image decodable"
+
+msgid "按格式与解码能力限制边长，也可以切换成无限制。手动时取宽、高、长边、短边里最严格的一项。"
+msgstr "Edge length is capped by format and decoder capability; you can also switch to unlimited. Manual takes the strictest of width, height, long edge and short edge."
+
+msgid "手动尺寸"
+msgstr "Manual size"
+
+msgid "最大宽度"
+msgstr "Max width"
+
+msgid "最大宽"
+msgstr "Max width"
+
+msgid "最大高度"
+msgstr "Max height"
+
+msgid "最大高"
+msgstr "Max height"
+
+msgid "最大长边"
+msgstr "Max long edge"
+
+msgid "最大短边"
+msgstr "Max short edge"
+
+msgid "格式高级选项"
+msgstr "Advanced format options"
+
+msgid "位深"
+msgstr "Bit depth"
+
+msgid "保持原片"
+msgstr "Keep source"
+
+msgid "自动至少 10-bit"
+msgstr "Auto uses 10-bit or better"
+
+msgid "源 ≤10-bit 提升到 10-bit，源 ≥12-bit 收到 12-bit；显式填写则以填写值为准。AVIF 支持 8 / 10 / 12-bit。"
+msgstr "Sources at ≤10-bit are lifted to 10-bit, sources at ≥12-bit are capped at 12-bit; an explicit value always wins. AVIF supports 8 / 10 / 12-bit."
+
+msgid "色度采样"
+msgstr "Chroma subsampling"
+
+msgid "自动 = 跟随源"
+msgstr "Auto follows the source"
+
+msgid "JPGLI 支持 444 / 422 / 420，自动时用 Jpegli 默认采样。"
+msgstr "JPGLI supports 444 / 422 / 420; auto uses the Jpegli default subsampling."
+
+msgid "一律以 YUV 编码：源是 420 / 422 / 444 就原样保留，RGB 与 RGBA 视作 444，灰度按 420 处理。"
+msgstr "Everything is encoded as YUV: sources already at 420 / 422 / 444 are kept as they are, RGB and RGBA are treated as 444, and grayscale is handled as 420."
+
+msgid "渐进"
+msgstr "Progressive"
+
+msgid "JPGLI 渐进级别"
+msgstr "JPGLI progressive level"
+
+msgid "关闭"
+msgstr "Off"
+
+msgid "普通"
+msgstr "Normal"
+
+msgid "更细"
+msgstr "Finer"
+
+msgid "哈夫曼"
+msgstr "Huffman"
+
+msgid "优化哈夫曼表"
+msgstr "Optimize Huffman tables"
+
+msgid "启用 XYB"
+msgstr "Enable XYB"
+
+msgid "透明通道"
+msgstr "Alpha channel"
+
+msgid "强制开启"
+msgstr "Force on"
+
+msgid "自动 = 源真的用到才保留"
+msgstr "Auto keeps alpha only when it's used"
+
+msgid "源没有 alpha，或者 alpha 全不透明，都会去掉这一层。保留时 alpha 与颜色用同一个质量值压缩；编码器不支持有损 alpha 时，只有 alpha 退回无损，颜色仍按质量压缩。"
+msgstr "If the source has no alpha, or its alpha is fully opaque, the channel is dropped. When alpha is kept, it is compressed at the same quality value as the color; if the encoder cannot do lossy alpha, only the alpha falls back to lossless while the color still follows the quality setting."
+
+msgid "安装右键菜单"
+msgstr "Install context menu"
+
+msgid "移除右键菜单"
+msgstr "Remove context menu"
+
+msgid "保存参数"
+msgstr "Save parameters"
+
+msgid "编辑格式"
+msgstr "Edit format"
+
+msgid "右键输出格式"
+msgstr "Context menu output format"
+
+msgid "此格式只决定正在编辑哪组右键参数；右键子菜单决定最终输出格式。这里的参数只用于右键菜单，不影响左侧的普通参数设置。"
+msgstr "This only picks which set of context-menu parameters you are editing; the context submenu decides the final output format. These parameters apply to the context menu only and do not affect the normal parameters on the left."
+
+msgid "右键 AVIF 编码器"
+msgstr "Context menu AVIF encoder"
+
+msgid "右键质量"
+msgstr "Context menu quality"
+
+msgid "右键转换固定使用编码质量；PNG 始终无损。"
+msgstr "Context menu conversion always uses the encode quality; PNG is always lossless."
+
+msgid "右键位深"
+msgstr "Context menu bit depth"
+
+msgid "留空保持原片"
+msgstr "Leave empty to keep source"
+
+msgid "不适用的格式会在保存/转换时忽略或按格式规则校验。"
+msgstr "Formats this does not apply to ignore it on save/convert, or validate it against the format rules."
+
+msgid "右键速度"
+msgstr "Context menu speed"
+
+msgid "0-10，留空默认"
+msgstr "0-10, empty for default"
+
+msgid "AVIF/WebP/JXL 可用；其他格式会忽略。"
+msgstr "Available for AVIF/WebP/JXL; other formats ignore it."
+
+msgid "右键色度采样"
+msgstr "Context menu chroma subsampling"
+
+msgid "AVIF/JPGLI 可用；其他格式会忽略。"
+msgstr "Available for AVIF/JPGLI; other formats ignore it."
+
+msgid "右键透明通道"
+msgstr "Context menu alpha channel"
+
+msgid "强制"
+msgstr "Force"
+
+msgid "仅 AVIF 可用；JPGLI 不支持强制保留透明通道。"
+msgstr "Available for AVIF only; JPGLI cannot force-keep the alpha channel."
+
+msgid "右键 JPGLI 渐进级别"
+msgstr "Context menu JPGLI progressive level"
+
+msgid "关闭为顺序 JPEG；普通和更细使用渐进编码。"
+msgstr "Off writes sequential JPEG; normal and finer use progressive encoding."
+
+msgid "哈夫曼表"
+msgstr "Huffman tables"
+
+msgid "渐进 JPEG 会自动启用哈夫曼表优化。"
+msgstr "Progressive JPEG enables Huffman table optimization automatically."
+
+msgid "JPGLI 实验选项。"
+msgstr "Experimental JPGLI option."
+
+msgid "右键图片尺寸限制"
+msgstr "Context menu image size limit"
+
+msgid "手动限制会取宽、高、长边、短边中最严格的缩小比例。"
+msgstr "A manual limit uses the strictest downscale ratio among width, height, long edge and short edge."
+
+msgid "右键最大宽度"
+msgstr "Context menu max width"
+
+msgid "右键最大高度"
+msgstr "Context menu max height"
+
+msgid "右键最大长边"
+msgstr "Context menu max long edge"
+
+msgid "右键最大短边"
+msgstr "Context menu max short edge"
+
+msgid "移除元数据"
+msgstr "Strip metadata"
+
+msgid "允许 WIC 兜底"
+msgstr "Allow WIC fallback"
+
+msgid "完成后关闭窗口"
+msgstr "Close window when done"
+
+msgid "输入路径"
+msgstr "Input path"
+
+msgid "输入图片文件或文件夹路径，回车加入队列"
+msgstr "Image file or folder path, press Enter to add to the queue"
+
+msgid "输入类型"
+msgstr "Input type"
+
+msgid "文件"
+msgstr "File"
+
+msgid "文件夹"
+msgstr "Folder"
+
+msgid "选择"
+msgstr "Browse"
+
+msgid "输出目录"
+msgstr "Output folder"
+
+msgid "默认与输入同目录"
+msgstr "Defaults to the input folder"
+
+msgid "打开"
+msgstr "Open"
+
+msgid "命名规则"
+msgstr "Naming rule"
+
+msgid "例：{{name}}_{{date}}"
+msgstr "e.g.: {{name}}_{{date}}"
+
+msgid "重复处理"
+msgstr "On conflict"
+
+msgid "覆盖"
+msgstr "Overwrite"
+
+msgid "跳过"
+msgstr "Skip"
+
+msgid "追加时间"
+msgstr "Append time"
+
+msgid "追加随机"
+msgstr "Append random"
+
+msgid "参数"
+msgstr "Params"
+
+msgid "日期"
+msgstr "Date"
+
+msgid "时间"
+msgstr "Time"
+
+msgid "随机"
+msgstr "Rand"
+
+msgid "哈希"
+msgstr "Hash"
+
+msgid "写入 CSV 报告"
+msgstr "Write CSV report"
+
+msgid "写入运行日志"
+msgstr "Write run log"
+
+msgid "强制终止"
+msgstr "Force stop"
+
+msgid "停止任务"
+msgstr "Stop task"
+
+msgid "开始转换"
+msgstr "Start converting"
+
+msgid "清空队列"
+msgstr "Clear queue"
+
+msgid "待处理 "
+msgstr "Pending "
+
+msgid "  ·  处理中 "
+msgstr "  ·  Running "
+
+msgid "  ·  成功 "
+msgstr "  ·  Succeeded "
+
+msgid "  ·  失败 "
+msgstr "  ·  Failed "
+
+msgid "仅看失败"
+msgstr "Failed only"
+
+msgid "重试失败"
+msgstr "Retry failed"
+
+msgid "文件名"
+msgstr "File name"
+
+msgid "目录"
+msgstr "Folder"
+
+msgid "大小"
+msgstr "Size"
+
+msgid "状态"
+msgstr "Status"
+
+msgid "输出或日志"
+msgstr "Output or log"
+
+msgid "队列为空"
+msgstr "Queue is empty"
+
+msgid "没有失败项"
+msgstr "No failed items"
+
+msgid "编码任务"
+msgstr "Encode tasks"
+
+msgid "总进度："
+msgstr "Overall progress: "
+
+msgid "关闭详情"
+msgstr "Close details"
+
+msgid "输入："
+msgstr "Input: "
+
+msgid "输出："
+msgstr "Output: "
+
+msgid "尚未生成"
+msgstr "not written yet"
+
+msgid "编码器："
+msgstr "Encoder: "
+
+msgid "尚未确定"
+msgstr "not decided yet"
+
+msgid "  ·  线程："
+msgstr "  ·  Threads: "
+
+msgid "阶段："
+msgstr "Stages: "
+
+msgid "尚无数据"
+msgstr "no data yet"
+
+msgid "错误/日志："
+msgstr "Errors/log: "
+
+msgid "无"
+msgstr "none"
+
+msgid "外观"
+msgstr "Appearance"
+
+msgid "主题"
+msgstr "Theme"
+
+msgid "跟随系统"
+msgstr "Follow system"
+
+msgid "浅色"
+msgstr "Light"
+
+msgid "深色"
+msgstr "Dark"
+
+msgid "字体"
+msgstr "Font"
+
+msgid "高级与实验功能"
+msgstr "Advanced and experimental features"
+
+msgid "开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"
+msgstr "When enabled, if the built-in professional native decoders (such as libavif or libwebp) fail to load an image, Windows WIC (Windows Imaging Component) is tried automatically as a fallback decode path."
+
+msgid "GPU 加速视觉质量"
+msgstr "GPU-accelerated visual quality"
+
+msgid "视觉质量未达标时兜底输出"
+msgstr "Output a fallback when visual quality is not met"
+
+msgid "填写视觉质量后生效；未填写视觉质量时此选项保持可选，但不会参与本次编码。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"
+msgstr "Takes effect once visual quality is set; while visual quality is empty this option stays selectable but plays no part in the encode. When enabled, if no candidate in the visual_quality search reaches the target, the closest candidate is still written; when disabled, missing the target fails the task."
+
+msgid "解除 20 GiB 输入/运行时上限"
+msgstr "Lift the 20 GiB input/runtime cap"
+
+msgid "仅当前会话生效，不会写入 AWJ.jsonc。"
+msgstr "Applies to this session only; never written to AWJ.jsonc."
+
+msgid "警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"
+msgstr "Warning: an oversized image or working set can exhaust memory, get the process killed by the system, or freeze the whole machine. Turn this on temporarily only when you genuinely need to handle very large files."
+
+msgid "启用实验性编码器（zenrav1e）"
+msgstr "Enable experimental encoders (zenrav1e)"
+
+msgid "启用后，构建支持时可在自动大图链路中使用 zenrav1e；普通队列自动不会选择实验编码器。不可用时相关路径会跳过或置灰。"
+msgstr "When enabled and the build supports it, zenrav1e can be used in the automatic large-image path; the normal queue never picks an experimental encoder on its own. Where it is unavailable, the related paths are skipped or greyed out."
+
+msgid "关于后端"
+msgstr "About the backend"
+
+msgid "当前内置后端：原生编解码器"
+msgstr "Current built-in backend: native codecs"
+
+msgid "Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"
+msgstr "Studio output: libavif / AOM, svt-av1-hdr, experimental zenrav1e, WebP, JXL, JPGLI; PNG is CLI and context menu only."
+
+msgid "编码流程统一使用内置原生后端。"
+msgstr "The whole encode pipeline uses the built-in native backend."
+
+msgid "队列操作"
+msgstr "Queue actions"
+
+msgid "打开所在位置"
+msgstr "Open file location"
+
+msgid "默认方式打开图片"
+msgstr "Open image with default app"
+
+msgid "优先编码"
+msgstr "Encode first"
+
+msgid "最后编码"
+msgstr "Encode last"
+
+msgid "上移"
+msgstr "Move up"
+
+msgid "下移"
+msgstr "Move down"
+
+msgid "复制完整路径"
+msgstr "Copy full path"
+
+msgid "从队列移除"
+msgstr "Remove from queue"
+
+msgid "AWJimage 右键转换"
+msgstr "AWJimage context menu convert"
+
+msgid "正在准备任务…"
+msgstr "Preparing tasks…"
+
+msgid "右键转换"
+msgstr "Context menu convert"
+
+msgid "状态与输出"
+msgstr "Status and output"
+
+msgid "打开输出目录"
+msgstr "Open output folder"
+
+msgctxt "button"
+msgid "关闭"
+msgstr "Close"

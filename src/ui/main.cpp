@@ -205,6 +205,8 @@ struct StudioConfigSnapshot {
   int input_mode_index{};
   int collision_index{};
   int theme_index{};
+  // 界面语言：0 = 中文（.slint 里的 msgid 原文），1 = English（bundled 翻译）。
+  int language_index{};
   std::string ui_font_family{};
   bool allow_wic_fallback{};
   bool strip_metadata{};
@@ -680,6 +682,7 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .input_mode_index = app.get_input_mode_index(),
       .collision_index = app.get_collision_index(),
       .theme_index = app.get_theme_index(),
+      .language_index = app.get_language_index(),
       .ui_font_family = shared_to_string(app.get_ui_font_family()),
       .allow_wic_fallback = app.get_allow_wic_fallback(),
       .strip_metadata = app.get_strip_metadata(),
@@ -1127,6 +1130,11 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
       !result) {
     return result;
   }
+  if (auto result = apply(apply_config_int(app, *values, "language_index", 0, 1,
+                                           &AwjStudio::set_language_index));
+      !result) {
+    return result;
+  }
   if (auto result = apply(apply_config_string(
           app, *values, "ui_font_family", &AwjStudio::set_ui_font_family));
       !result) {
@@ -1233,6 +1241,7 @@ std::expected<void, std::string> write_studio_config_file(
           defaults.input_mode_index);
   add_int("collision_index", current.collision_index, defaults.collision_index);
   add_int("theme_index", current.theme_index, defaults.theme_index);
+  add_int("language_index", current.language_index, defaults.language_index);
   add_string("ui_font_family", current.ui_font_family, defaults.ui_font_family);
 
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
@@ -1857,6 +1866,25 @@ bool windows_prefers_dark_mode() {
     return false;
   }
   return apps_use_light_theme == 0;
+}
+
+// 把界面语言切到 language_index 指定的语言。
+//
+// 0 = 中文，也就是 .slint 里 @tr() 的 msgid 原文，对应语言索引 0；
+// 1 = English，对应 ui/translations/en/LC_MESSAGES/awj.po 这份 bundled 翻译。
+//
+// select_bundled_translation 写的是 translations_dirty 这个真实的 Slint 属性，
+// 所以每个 @tr() 绑定都会失效并在下一帧重算——不需要重启，也不需要自己去
+// 逐个属性重新赋值。两点约束：必须在第一个组件创建之后才能调用，否则拿不到
+// bundle；传空串会走"默认语言"分支回到索引 0。
+//
+// 返回值刻意忽略：翻译缺失时回退到中文原文，是可接受的降级，不该阻断设置操作。
+void apply_ui_language(int language_index) noexcept {
+  try {
+    static_cast<void>(
+        slint::select_bundled_translation(language_index == 1 ? "en" : ""));
+  } catch (...) {
+  }
 }
 
 bool effective_studio_dark_mode(const AwjStudio& app) {
@@ -5303,6 +5331,9 @@ int run_studio_ui() {
     }
     load_system_font_options(*app);
     sync_template_flags(*app);
+    // 配置已经读进 language_index，这里让 @tr() 立刻按存下来的语言重算。
+    // 必须在组件创建之后调用，此时 AwjStudio::create() 早已完成。
+    apply_ui_language(app->get_language_index());
     state->last_config_snapshot = capture_studio_config(*app, state.get());
     if (auto warning = shell_context_menu_warning(state->menu_params)) {
       app->set_context_menu_warning(to_shared(*warning));
@@ -5310,6 +5341,16 @@ int run_studio_ui() {
     if (config_warning) {
       app->set_status_text(to_shared(*config_warning));
     }
+
+    app->on_language_selection_requested([weak](int index) {
+      run_ui_callback(weak, "切换界面语言失败", [&] {
+        if (auto app = weak.lock()) {
+          // 语言不受 running 限制：它只影响界面文字，不改变任何编码参数。
+          (*app)->set_language_index(index);
+          apply_ui_language(index);
+        }
+      });
+    });
 
     app->on_clear_tasks([weak, state] {
       run_ui_callback(weak, "清空任务失败", [&] {
@@ -7023,6 +7064,18 @@ int run_studio_ui() {
     app->set_large_image_rows(state->large_image_rows);
     app->set_selected_large_image_index(-1);
 
+    // 与 Windows 分支同一套机制：0 = 中文 msgid 原文，1 = bundled 英文翻译。
+    // 这个分支没有 Studio 配置持久化，所以语言只在本次运行内有效。
+    app->on_language_selection_requested([weak](int index) {
+      if (auto app = weak.lock()) {
+        (*app)->set_language_index(index);
+        try {
+          static_cast<void>(
+              slint::select_bundled_translation(index == 1 ? "en" : ""));
+        } catch (...) {
+        }
+      }
+    });
     app->on_format_defaults_requested([weak](int index) {
       if (auto app = weak.lock()) {
         set_format_quality(**app, index);

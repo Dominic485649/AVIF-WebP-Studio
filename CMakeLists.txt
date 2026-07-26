@@ -587,16 +587,31 @@ function(avif_add_slint_sources target slint_file)
     # Slint's depfile currently produces noisy MSBuild warnings when the repo path
     # contains spaces. The UI has a single .slint file, so a direct dependency is
     # enough and keeps Windows paths intact.
+    # 界面翻译走 Slint 的 bundled translations：目录结构是
+    # <dir>/<语言>/LC_MESSAGES/<domain>.po，由 slint-compiler 直接解析 .po 编进二进制，
+    # 不需要 msgfmt、不需要运行时 .mo、也不依赖 gettext（本项目的 Slint 没开 gettext）。
+    # 中文是 msgid 本身，也就是语言索引 0；切换到英文由 C++ 调
+    # slint::select_bundled_translation("en") 完成，因为它会写 translations_dirty 这个
+    # 真实属性，所有 @tr() 绑定都会失效重算，可以不重启即时切换。
+    # --no-default-translation-context：默认会拿组件名当 msgctxt，关掉之后 .po 里
+    # 绝大多数条目不需要 msgctxt，只有真正歧义的（例如"关闭"既是 Off 又是 Close）
+    # 才在源码里显式写 @tr("context" => "文本")。
+    set(awj_translation_dir "${CMAKE_CURRENT_SOURCE_DIR}/ui/translations")
+    set(awj_translation_po "${awj_translation_dir}/en/LC_MESSAGES/awj.po")
     add_custom_command(
         OUTPUT "${generated_header}" "${generated_cpp}"
         COMMAND ${slint_compiler_command} "${slint_absolute}"
                 -f cpp
                 --embed-resources embed-files
+                --translation-domain awj
+                --no-default-translation-context
+                --bundle-translations "${awj_translation_dir}"
                 -o "${generated_header}"
                 "--cpp-file=${generated_cpp}"
         DEPENDS
             Slint::slint-compiler
             "${slint_absolute}"
+            "${awj_translation_po}"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/logo.png"
         COMMENT "Generating ${slint_base}.h"
         VERBATIM)

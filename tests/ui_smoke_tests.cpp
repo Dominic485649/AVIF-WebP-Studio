@@ -234,6 +234,35 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     return fail("dark theme did not apply");
   }
 
+  // 界面语言切换。中文是 @tr() 的 msgid 原文（语言索引 0），English 来自
+  // ui/translations/en/LC_MESSAGES/awj.po 的 bundled 翻译。
+  // select_bundled_translation 写 translations_dirty 这个真实属性，所有 @tr()
+  // 绑定都会重算——可访问名也是 @tr() 的，所以这里直接用它来证明切换生效，
+  // 而不是只检查那个 int 属性被写进去了。
+  app->set_selected_page(0);
+  if (!find_one(app, "输出格式")) {
+    return fail("Chinese is not the default UI language");
+  }
+  if (!slint::select_bundled_translation("en")) {
+    return fail("no bundled English translation; check ui/translations and the "
+                "--bundle-translations flag in CMakeLists.txt");
+  }
+  app->set_language_index(1);
+  if (!find_one(app, "Output format")) {
+    return fail("switching to English did not retranslate accessible names");
+  }
+  if (find_one(app, "输出格式")) {
+    return fail("Chinese accessible name survived the switch to English");
+  }
+  // 切回中文：后面的断言仍按中文可访问名查找。
+  if (!slint::select_bundled_translation("")) {
+    return fail("could not switch back to the default language");
+  }
+  app->set_language_index(0);
+  if (!find_one(app, "输出格式")) {
+    return fail("switching back to Chinese did not restore the msgid text");
+  }
+
   app->set_selected_page(1);
   if (!find_one(app, "输入路径",
                 slint::language::AccessibleRole::TextInput) ||
