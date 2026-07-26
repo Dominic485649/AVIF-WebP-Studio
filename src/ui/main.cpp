@@ -88,6 +88,15 @@ struct Win32HandleDeleter {
 
 using UniqueWin32Handle = std::unique_ptr<void, Win32HandleDeleter>;
 
+// CreateFileW / CreateMailslotW 这类 API 失败时返回 INVALID_HANDLE_VALUE 而不是
+// nullptr，而 unique_ptr 的 operator bool 只和 nullptr 比较——直接把返回值包进去，
+// 失败会被当成成功，随后对 (HANDLE)-1 发起 I/O。统一在这里归一化成 nullptr，
+// 让 `if (handle)` 对两类 API 都成立。返回 nullptr 的 API（CreateMutexW、
+// CreateJobObjectW）走这里同样正确。
+[[nodiscard]] UniqueWin32Handle adopt_win32_handle(HANDLE value) noexcept {
+  return UniqueWin32Handle{value == INVALID_HANDLE_VALUE ? nullptr : value};
+}
+
 enum class QueueItemStatus {
   pending,
   running,
@@ -169,7 +178,6 @@ struct StudioChildProcess {
 
 
 struct MenuFormatParams {
-  int preset_index{};
   std::string quality_text{};
   std::string bit_depth_text{};
   std::string speed_text{};
@@ -600,8 +608,7 @@ std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
 
 
 MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
-  return MenuFormatParams{.preset_index = app.get_menu_preset_index(),
-                          .quality_text = shared_to_string(app.get_menu_quality_text()),
+  return MenuFormatParams{.quality_text = shared_to_string(app.get_menu_quality_text()),
                           .bit_depth_text = shared_to_string(app.get_menu_bit_depth_text()),
                           .speed_text = shared_to_string(app.get_menu_speed_text()),
                           .avif_encoder_index = app.get_menu_avif_encoder_index(),
@@ -621,7 +628,6 @@ MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
 }
 
 void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
-  app.set_menu_preset_index(params.preset_index);
   app.set_menu_quality_text(to_shared(params.quality_text));
   app.set_menu_bit_depth_text(to_shared(params.bit_depth_text));
   app.set_menu_speed_text(to_shared(params.speed_text));
@@ -1053,7 +1059,7 @@ std::expected<void, std::string> apply_menu_config_values(
       if (!result) return std::unexpected{result.error()};
       return {};
     };
-    if (auto r = one(apply_int(menu_config_key(prefix, "preset_index"), 0, 5, param.preset_index)); !r) return r;
+    // menu_*_preset_index 在 0.10.9 随右键预设下拉一并移除；旧配置里的残留键会被忽略。
     if (auto r = one(apply_string(menu_config_key(prefix, "quality_text"), param.quality_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "bit_depth_text"), param.bit_depth_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "speed_text"), param.speed_text)); !r) return r;
@@ -1241,7 +1247,6 @@ std::expected<void, std::string> write_studio_config_file(
     const auto prefix = menu_config_prefixes[i];
     const auto& value = current.menu_params[i];
     const auto& fallback = defaults.menu_params[i];
-    add_int(menu_config_key(prefix, "preset_index"), value.preset_index, fallback.preset_index);
     add_string(menu_config_key(prefix, "quality_text"), value.quality_text, fallback.quality_text);
     add_string(menu_config_key(prefix, "bit_depth_text"), value.bit_depth_text, fallback.bit_depth_text);
     add_string(menu_config_key(prefix, "speed_text"), value.speed_text, fallback.speed_text);
@@ -1975,6 +1980,33 @@ bool post_to_ui(slint::ComponentWeakHandle<AwjStudio> weak, Function&& fn) {
   } catch (...) {
     return false;
   }
+}
+
+// 把一个 worker 线程体包进 catch-all。
+//
+// 这不是多余的保险：从线程函数逃出的异常会直接走 std::terminate -> abort，进程
+// 静默消失，只在 Windows 错误报告里留下 0xC0000409 / FAST_FAIL_FATAL_APP_EXIT(7)。
+// 注意包在 std::jthread 构造外面的 try 只能接住“创建线程失败”，接不到线程体内部。
+//
+// 出错后不能在这里直接写 Slint 属性——那是跨线程改 UI。状态清理走带锁的
+// clear_run_if_callback_not_posted，界面提示走 post_to_ui 回到 UI 线程。
+template <class Body>
+auto guarded_worker(slint::ComponentWeakHandle<AwjStudio> weak,
+                    std::shared_ptr<UiState> state, std::uint64_t run_id,
+                    std::string_view what, Body body) {
+  return [weak, state = std::move(state), run_id, what,
+          body = std::move(body)](std::stop_token token) mutable {
+    try {
+      body(std::move(token));
+    } catch (...) {
+      clear_run_if_callback_not_posted(*state, run_id);
+      post_to_ui(weak, [what](AwjStudio& app) {
+        app.set_running(false);
+        set_status_text_noexcept(
+            app, std::format("{}发生未预期异常，任务已停止。", what));
+      });
+    }
+  };
 }
 
 std::string result_status_text(const awj::EncodeResult& result) {
@@ -2908,9 +2940,9 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
         ReleaseMutex(send_mutex.get());
         return true;
       }
-      UniqueWin32Handle slot{CreateFileW(slot_name.c_str(), GENERIC_WRITE,
-                                         FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                         FILE_ATTRIBUTE_NORMAL, nullptr)};
+      UniqueWin32Handle slot{adopt_win32_handle(
+          CreateFileW(slot_name.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                      nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr))};
       if (slot) {
         for (const auto& input : inputs) {
           const auto value = input.wstring();
@@ -2943,7 +2975,8 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
     ReleaseMutex(mutex.get());
     return std::unexpected{"无法锁定右键队列发送通道。"};
   }
-  UniqueWin32Handle slot{CreateMailslotW(slot_name.c_str(), 65520, 0, nullptr)};
+  UniqueWin32Handle slot{
+      adopt_win32_handle(CreateMailslotW(slot_name.c_str(), 65520, 0, nullptr))};
   if (!slot) {
     const DWORD error = GetLastError();
     ReleaseMutex(send_mutex.get());
@@ -3678,15 +3711,6 @@ MenuFormatParams default_menu_params_for_index(int index) {
   params.allow_wic_fallback = awj::encoding_defaults::default_allow_wic_fallback;
   params.alpha_policy_index = 1;
   return params;
-}
-
-void apply_menu_preset_defaults_to_ui(AwjStudio& app, int preset_index) {
-  if (preset_index <= 0) {
-    return;
-  }
-  constexpr std::array qualities{0, 100, 95, 85, 75, 60};
-  app.set_menu_quality_text(
-      to_shared(text_from_int(qualities[std::clamp(preset_index, 1, 5)])));
 }
 
 void apply_format_defaults_to_ui(AwjStudio& app, int format_index, UiState& state) {
@@ -4474,7 +4498,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
 
   std::optional<std::jthread> monitor;
   try {
-    monitor.emplace([weak, state, run_id, child = *child,
+    monitor.emplace(guarded_worker(
+        weak, state, run_id, "队列 worker 监控",
+        [weak, state, run_id, child = *child,
                      file_count = files->size()](std::stop_token token) mutable {
       std::string pending;
       std::optional<StudioWorkerItemEvent> pending_item;
@@ -4576,6 +4602,13 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
                     queue_index_for_run_index(*state, event.index)) {
               auto& item = state->queue_items[*queue_index];
               item.log_text = line;
+              // 跨进程约定：这里嗅探的是 AWJ CLI 子进程 stdout 里的中文子串，
+              // 生产方在 pipeline.ixx:461（", 未达标兜底"）。子进程的输出与日志
+              // 固定为中文、不跟随界面语言，本判断才成立——0.10.9 的双语只覆盖
+              // 界面标签。如果以后要翻译 worker 输出，必须先把这里换成不随语言
+              // 变化的机器可读信号（稳定 ASCII 标记，或把
+              // visual_quality_target_met 走 awj::BatchProgress 结构化通道传上来），
+              // 否则视觉质量未达标的行会静默不再标警告，且不会有编译错误。
               item.warning = item.warning ||
                              line.find("未达标") != std::string::npos;
             }
@@ -4715,7 +4748,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
               exit_code, ok_count, failed_count)));
         }
       });
-    });
+    }));
   } catch (...) {
     (*child)->terminate();
     WaitForSingleObject((*child)->process.get(), INFINITE);
@@ -5037,7 +5070,9 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       std::scoped_lock lock{state->mutex};
       state->active_child = *child;
     }
-    worker.emplace([weak, state, run_id, child = *child,
+    worker.emplace(guarded_worker(
+        weak, state, run_id, "编码 worker 监控",
+        [weak, state, run_id, child = *child,
                     large_index](std::stop_token token) mutable {
       std::string pending;
       auto publish_line = [&](std::string line) {
@@ -5146,7 +5181,7 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
         } catch (...) {
         }
       });
-    });
+    }));
   } catch (const std::exception&) {
     (*child)->terminate();
     WaitForSingleObject((*child)->process.get(), INFINITE);
@@ -5434,18 +5469,6 @@ int run_studio_ui() {
         if (auto app = weak.lock()) {
           store_current_menu_params(**app, *state);
           load_menu_params_for_index(**app, *state, index);
-        }
-      });
-    });
-
-    app->on_menu_preset_defaults_requested([weak, state](int index) {
-      run_ui_callback(weak, "应用菜单预设失败", [&] {
-        if (auto app = weak.lock()) {
-          if (reject_when_worker_active(**app, state,
-                                        "当前任务正在运行，无法修改菜单预设")) {
-            return;
-          }
-          apply_menu_preset_defaults_to_ui(**app, index);
         }
       });
     });
@@ -5793,16 +5816,22 @@ int run_studio_ui() {
     apply_title_bar_theme(app->window(), effective_studio_dark_mode(*app));
     constrain_window_to_work_area(app->window());
     DropBridge drop_bridge{app->window(), weak, state};
+    // 关窗回调在事件循环里执行，而 persist_studio_config_if_changed 会经由
+    // capture_studio_config 分配三十多个 std::string，下面的 std::format 也会分配。
+    // 这里抛出的异常会穿回 Rust 侧的 winit 栈帧（panic="abort"），必须自己接住；
+    // 无论保存成功与否都要放行关窗，否则窗口会关不掉。
     app->window().on_close_requested([weak, state] {
-      force_stop_current_worker(state);
-      if (auto app = weak.lock()) {
-        if (auto saved = persist_studio_config_if_changed(**app, *state);
-            !saved) {
-          set_status_text_noexcept(
-              **app,
-              std::format("保存 Studio 配置失败：{}", saved.error()));
+      run_ui_callback(weak, "关闭窗口时保存配置失败", [&] {
+        force_stop_current_worker(state);
+        if (auto app = weak.lock()) {
+          if (auto saved = persist_studio_config_if_changed(**app, *state);
+              !saved) {
+            set_status_text_noexcept(
+                **app,
+                std::format("保存 Studio 配置失败：{}", saved.error()));
+          }
         }
-      }
+      });
       return slint::CloseRequestResponse::HideWindow;
     });
     app->run();
@@ -5966,11 +5995,16 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
     app->show();
     apply_title_bar_theme(app->window(), dark_mode);
     constrain_window_to_work_area(app->window());
-    app->window().on_close_requested([&stop_source, &running] {
-      if (running.load(std::memory_order_acquire)) {
-        stop_source.request_stop();
-        TerminateProcess(GetCurrentProcess(),
-                         awj::studio_defaults::worker_force_stop_exit_code);
+    // 同上：事件循环里的回调不能让异常逃回 Rust 栈帧。这里的调用本身都不分配，
+    // 但加一层 catch-all 之后，将来往里加代码也不会把整个进程带走。
+    app->window().on_close_requested([&stop_source, &running]() noexcept {
+      try {
+        if (running.load(std::memory_order_acquire)) {
+          stop_source.request_stop();
+          TerminateProcess(GetCurrentProcess(),
+                           awj::studio_defaults::worker_force_stop_exit_code);
+        }
+      } catch (...) {
       }
       return slint::CloseRequestResponse::HideWindow;
     });
@@ -6007,6 +6041,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
 #include <exception>
 #include <expected>
 #include <format>
+#include <print>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -6032,7 +6067,6 @@ namespace {
 namespace fs = std::filesystem;
 
 struct LinuxMenuParams {
-  int preset_index{};
   std::string quality_text{};
   std::string bit_depth_text{};
   std::string speed_text{};
@@ -6200,7 +6234,6 @@ std::wstring wide_from_shared(const slint::SharedString& value) {
 
 LinuxMenuParams capture_linux_menu_params(const AwjStudio& app) {
   return LinuxMenuParams{
-      .preset_index = app.get_menu_preset_index(),
       .quality_text = shared_to_string(app.get_menu_quality_text()),
       .bit_depth_text = shared_to_string(app.get_menu_bit_depth_text()),
       .speed_text = shared_to_string(app.get_menu_speed_text()),
@@ -6219,7 +6252,6 @@ LinuxMenuParams capture_linux_menu_params(const AwjStudio& app) {
 }
 
 void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
-  app.set_menu_preset_index(params.preset_index);
   app.set_menu_quality_text(to_shared(params.quality_text));
   app.set_menu_bit_depth_text(to_shared(params.bit_depth_text));
   app.set_menu_speed_text(to_shared(params.speed_text));
@@ -6261,13 +6293,6 @@ LinuxMenuParams default_linux_menu_params(int format_index) {
   params.jpegli_optimize_huffman = awj::encoding_defaults::default_jpegli_optimize_huffman;
   params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
   return params;
-}
-
-void apply_linux_menu_preset(AwjStudio& app, int preset_index) {
-  if (preset_index <= 0) return;
-  constexpr std::array qualities{0, 100, 95, 85, 75, 60};
-  app.set_menu_quality_text(to_shared(std::format(
-      "{}", qualities[static_cast<std::size_t>(std::clamp(preset_index, 1, 5))])));
 }
 
 
@@ -7069,9 +7094,6 @@ int run_studio_ui() {
             **app, state->menu_params[static_cast<std::size_t>(state->menu_format_index)]);
       }
     });
-    app->on_menu_preset_defaults_requested([weak](int index) {
-      if (auto app = weak.lock()) apply_linux_menu_preset(**app, index);
-    });
     app->on_save_menu_params_requested([weak, state] {
       if (auto app = weak.lock()) {
         store_linux_menu_params(**app, *state);
@@ -7376,10 +7398,10 @@ int run_studio_ui() {
     state->worker.request_stop();
     return 0;
   } catch (const std::exception& ex) {
-    std::fprintf(stderr, "[FAIL] 启动 Slint UI 失败: %s\n", ex.what());
+    std::println(stderr, "[FAIL] 启动 Slint UI 失败: {}", ex.what());
     return 1;
   } catch (...) {
-    std::fprintf(stderr, "[FAIL] 启动 Slint UI 失败。\n");
+    std::println(stderr, "[FAIL] 启动 Slint UI 失败。");
     return 1;
   }
 }

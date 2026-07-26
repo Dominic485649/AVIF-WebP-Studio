@@ -35,17 +35,19 @@ struct ResourcePlan {
   int memory_file_parallelism{1};
 };
 
+// 自动内存上限取 min(总内存 80%, 当前可用 50%)：总内存那一项防止在空闲机器上
+// 把整台机器吃满，可用内存那一项给其他进程留出继续申请的余量。只读到一项时用该项。
 std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
-  const auto half_total = status.total_bytes / 2;
-  const auto available_headroom = static_cast<std::uint64_t>(
-      static_cast<long double>(status.available_bytes) * 0.8L);
-  if (half_total == 0) {
+  const auto total_headroom = static_cast<std::uint64_t>(
+      static_cast<long double>(status.total_bytes) * 0.8L);
+  const auto available_headroom = status.available_bytes / 2;
+  if (total_headroom == 0) {
     return available_headroom;
   }
   if (available_headroom == 0) {
-    return half_total;
+    return total_headroom;
   }
-  return std::min(half_total, available_headroom);
+  return std::min(total_headroom, available_headroom);
 }
 
 int exact_file_parallelism(int budget, int desired) noexcept {

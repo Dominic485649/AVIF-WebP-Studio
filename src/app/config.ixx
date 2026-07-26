@@ -861,7 +861,7 @@ std::string help_text() {
   --no-experimental-clamped-grid-padding 禁用 AVIF grid padding；不可整除分割会报错
   -p, --preset <名称>         fast / balanced / best / extreme；未指定时为自定义默认值；设置默认质量和编码超时，显式 --quality 可覆盖质量
   -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
-  --memory-limit <auto|大小>  内存限制；auto 为总内存一半与可用内存 80% 的较小值，可用 4GiB/4096MiB
+  --memory-limit <auto|大小>  内存限制；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
   --large-image-priority <zenrav1e|grid> 超过 AOM 单图上限后的自动大图优先路径；默认 zenrav1e，失败回退另一路径
   --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/运行时上限（默认关闭，不写入配置）
   --no-unlock-max-input-file-bytes / --no-unlock-20gib-limit 保持默认 20 GiB 上限

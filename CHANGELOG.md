@@ -1,5 +1,15 @@
 # 更新日志
 
+## 0.10.9 - 2026-07-26
+
+- 新增崩溃留痕：`wmain` 最先安装 `std::set_terminate` 与 `SetUnhandledExceptionFilter`，异常逃逸时向 exe 同目录（不可写则退到 `%LOCALAPPDATA%`）的 `AWJ-crash.log` 追加一行阶段、异常码与 `what()`。处理函数只用 Win32 原语、不分配内存，日志路径在进程健康时预先解析；SEH 过滤器返回 `EXCEPTION_CONTINUE_SEARCH`，Windows 错误报告的 minidump 照旧生成。Studio 与右键转换窗口两条 GUI 入口进 catch-all，异常返回退出码 3 而不是静默 abort。此前从资源管理器启动时进程会无提示消失，只在系统里留下 `0xC0000409` / `FAST_FAIL_FATAL_APP_EXIT(7)`。
+- 队列监控与编码监控两个 worker 线程体包进 catch-all。此前 `try` 只包住 `std::jthread` 的构造，仅能接住"创建线程失败"，线程体内部（管道拼接、事件解析等分配点）逃出的异常会直接 `std::terminate`。错误处理不跨线程写 Slint 属性：状态清理走带锁的 `clear_run_if_callback_not_posted`，界面提示走 `post_to_ui`。
+- Studio 关窗回调补上异常护栏。该回调在事件循环内执行且会经 `capture_studio_config` 分配三十余个字符串，异常会穿回 Rust 侧 `panic="abort"` 的栈帧；现在无论配置保存成功与否都放行关窗。
+- 修复两处句柄判断错误：`CreateFileW`（右键队列写入）与 `CreateMailslotW`（leader 建通道）失败返回 `INVALID_HANDLE_VALUE`，而 `unique_ptr::operator bool` 只与 `nullptr` 比较，失败被当成成功——前者对无效句柄发起 I/O，后者让 leader 持废句柄静默收不到任何输入。新增 `adopt_win32_handle` 统一归一化。
+- 自动内存上限改为 `min(总内存 80%, 当前可用 50%)`，修正此前两个系数写反的问题；同步更新 CLI `--memory-limit` 帮助与 README。回归测试从 1 条断言扩到 4 条，覆盖可用内存偏紧、机器空闲与两个单项回退分支。
+- 移除设置页的"右键编码预设"下拉及其全部支撑代码（属性、`changed` 处理、callback、两对 capture/apply、两个预设应用函数、两处回调注册与配置读写）。配置按 key 查找、忽略多余键，旧配置里残留的 `menu_*_preset_index` 不会报错。
+- `src/ui/main.cpp` 剩余的 C 风格 `std::fprintf` 输出改为 `std::println`，与 CLI、config、pipeline 既有风格一致。
+
 ## 0.10.5 - 2026-07-25
 
 - Studio 主参数页恢复右侧彩色说明，移除主页面的“预设”和“大图优先”选择；右键菜单预设和 CLI `--large-image-priority` 保持可用。Studio 的大图自动链固定为 `zenrav1e` 优先、失败后回退 `grid`。

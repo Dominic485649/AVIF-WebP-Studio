@@ -93,7 +93,7 @@ CLI session unlock (not written to `AWJ.jsonc`):
 - `--large-image-priority zenrav1e|grid`
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit` removes the default 20 GiB input/runtime cap for the current process only; huge images may OOM.
 
-Studio auto threading reserves 4 logical threads at >=12, 2 at 5-11, and 1 at 2-4; a single-thread system still uses 1. Automatic memory uses the smaller of 50% total memory and 80% currently available memory, falling back to the available source when only one is readable.
+Studio auto threading reserves 4 logical threads at >=12, 2 at 5-11, and 1 at 2-4; a single-thread system still uses 1. Automatic memory uses the smaller of 80% of total memory and 50% of currently available memory, falling back to the available source when only one is readable.
 
 ## Reproducible benchmark
 

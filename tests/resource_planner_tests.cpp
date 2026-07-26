@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -18,11 +19,34 @@ int fail(std::string_view message) {
 }  // namespace
 
 int main() {
+  constexpr std::uint64_t gib = 1024ull * 1024ull * 1024ull;
+
+  // 可用内存偏紧时由 available*0.5 决定。
   const auto memory = awj::automatic_memory_limit(
-      awj::MemoryStatus{.total_bytes = 32ull * 1024ull * 1024ull * 1024ull,
-                         .available_bytes = 10ull * 1024ull * 1024ull * 1024ull});
-  if (memory != 8ull * 1024ull * 1024ull * 1024ull) {
-    return fail("自动内存限制未使用 min(total/2, available*0.8)。");
+      awj::MemoryStatus{.total_bytes = 32ull * gib,
+                         .available_bytes = 10ull * gib});
+  if (memory != 5ull * gib) {
+    return fail("自动内存限制未使用 min(total*0.8, available*0.5)。");
+  }
+
+  // 机器很空闲时由 total*0.8 兜住，不能把整台机器吃满。
+  const auto memory_total_bound = awj::automatic_memory_limit(
+      awj::MemoryStatus{.total_bytes = 10ull * gib,
+                         .available_bytes = 32ull * gib});
+  if (memory_total_bound != 8ull * gib) {
+    return fail("自动内存限制未用 total*0.8 兜住空闲机器。");
+  }
+
+  // 只读到一项时使用该项，不能退化成 0。
+  if (awj::automatic_memory_limit(
+          awj::MemoryStatus{.total_bytes = 0, .available_bytes = 8ull * gib}) !=
+      4ull * gib) {
+    return fail("读不到总内存时未回退到 available*0.5。");
+  }
+  if (awj::automatic_memory_limit(
+          awj::MemoryStatus{.total_bytes = 10ull * gib, .available_bytes = 0}) !=
+      8ull * gib) {
+    return fail("读不到可用内存时未回退到 total*0.8。");
   }
 
   const auto single_av1 = awj::plan_resources(

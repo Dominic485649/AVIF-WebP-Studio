@@ -457,6 +457,9 @@ std::string format_result_line(const EncodeResult& result) {
             *result.requested_visual_quality, result.final_encoder_quality,
             result.search_attempt_count);
       }
+      // 注意：Studio 会在 src/ui/main.cpp 里对子进程 stdout 嗅探 "未达标" 来给
+      // 队列行打警告标记。这条文本属于跨进程约定，必须保持中文；worker 输出与
+      // 日志不跟随界面语言。改动前先看那边的说明。
       const char* target_state =
           result.visual_quality_target_met ? "" : ", 未达标兜底";
       return std::format(

@@ -134,7 +134,7 @@ Studio 不再提供独立大图页；自动处理状态直接显示在主队列�
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit`：仅当前会话解除默认 20 GiB 输入/运行时上限，不写入 `AWJ.jsonc`；过大图片可能 OOM。
 参数设置页其余编码参数同样只在本次运行内保持，不写入 `AWJ.jsonc`。
 
-Studio 的自动线程预算在逻辑线程数 >=12、5-11、2-4 时分别预留 4、2、1 个线程；单线程仍使用 1。自动内存上限取总内存 50% 与当前可用内存 80% 的较小值，只有一项可用时按该项计算。
+Studio 的自动线程预算在逻辑线程数 >=12、5-11、2-4 时分别预留 4、2、1 个线程；单线程仍使用 1。自动内存上限取总内存 80% 与当前可用内存 50% 的较小值，只有一项可用时按该项计算。
 
 `--format jpgli` 和 `--format jpegli` 是 JPGLI 入口；`--format jpg` 不作为新增入口。启用 `--summary` 后，`summary.csv` 会记录 `format=JPGLI`、`encoder_id=jpegli`，输出路径仍通常是 `.jpg`。
 

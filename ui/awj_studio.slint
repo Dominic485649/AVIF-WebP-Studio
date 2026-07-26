@@ -722,7 +722,6 @@ export component AwjStudio inherits Window {
     in-out property <string> context-menu-status: "";
     in-out property <string> context-menu-warning: "";
     in-out property <int> menu-format-index: 0;
-    in-out property <int> menu-preset-index: 0;
     in-out property <string> menu-quality-text: "";
     in-out property <string> menu-bit-depth-text: "";
     in-out property <string> menu-speed-text: "";
@@ -858,7 +857,6 @@ export component AwjStudio inherits Window {
     callback remove-context-menu-requested();
     callback save-menu-params-requested();
     callback menu-format-selected(int);
-    callback menu-preset-defaults-requested(int);
     callback context-menu-warning-clicked();
     callback toggle-template-token(string);
     callback title-bar-theme-requested(bool);
@@ -898,10 +896,6 @@ export component AwjStudio inherits Window {
 
     changed menu-format-index => {
         root.menu-format-selected(root.menu-format-index);
-    }
-
-    changed menu-preset-index => {
-        root.menu-preset-defaults-requested(root.menu-preset-index);
     }
 
     changed ui-font-index => {
@@ -1291,12 +1285,7 @@ export component AwjStudio inherits Window {
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "编辑格式"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                             SoftComboBox { accessible-name: "右键输出格式"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.menu-format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: "此格式只决定正在编辑哪组右键参数；右键子菜单决定最终输出格式。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: "预设"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: "右键编码预设"; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "自定义", enabled: true }, { text: "无损", enabled: true }, { text: "高质量", enabled: true }, { text: "平衡", enabled: true }, { text: "快速", enabled: true }, { text: "急速", enabled: true }]; current-index <=> root.menu-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: "保存到右键菜单专用参数，不影响左侧普通参数设置。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                Text { text: "此格式只决定正在编辑哪组右键参数；右键子菜单决定最终输出格式。这里的参数只用于右键菜单，不影响左侧的普通参数设置。"; horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                             }
                             if root.menu-format-index == 0: HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: "编码器"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }

@@ -6,9 +6,12 @@
 #endif
 
 #include <array>
+#include <atomic>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+#include <exception>
 
 #ifdef _WIN32
 int run_cli(int argc, wchar_t* argv[]);
@@ -43,24 +46,219 @@ void release_explorer_console_if_lonely() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 崩溃留痕
+//
+// GUI 进程从资源管理器启动时没有控制台：一旦异常逃到 std::terminate，UCRT 会
+// 直接 abort()，Windows 记下 0xC0000409 / FAST_FAIL_FATAL_APP_EXIT(7) 就没有别的
+// 线索了。这里的目标不是"接住"崩溃——terminate 之后已经无法安全恢复——而是在
+// 死掉之前留下一行可读的原因，把"启动一会自己就没了"变成可定位的问题。
+//
+// 约束：处理函数在堆和 CRT 状态都可能已经不可靠时运行，所以里面只用 Win32 原语，
+// 不分配内存、不用 std::format、不碰 iostream。日志路径在进程还健康的时候
+// (install_crash_diagnostics) 预先算好存进静态缓冲区。
+// ---------------------------------------------------------------------------
+
+constexpr std::size_t crash_path_capacity = MAX_PATH + 32;
+
+// 预先算好的两个候选路径：先写 exe 同目录（和 AWJ.jsonc 配置同一位置，用户第一
+// 眼会去那里找），失败再退到 %LOCALAPPDATA%（Program Files 下 exe 目录不可写）。
+wchar_t crash_log_primary[crash_path_capacity]{};
+wchar_t crash_log_fallback[crash_path_capacity]{};
+
+// 当前阶段，供崩溃时区分是 Studio 界面还是右键转换窗口出的问题。
+std::atomic<const char*> crash_stage{"startup"};
+
+void append_wide(wchar_t* buffer, std::size_t capacity, const wchar_t* text) noexcept {
+  std::size_t used = 0;
+  while (used < capacity && buffer[used] != L'\0') {
+    ++used;
+  }
+  for (std::size_t i = 0; text[i] != L'\0' && used + 1 < capacity; ++i) {
+    buffer[used++] = text[i];
+  }
+  if (used < capacity) {
+    buffer[used] = L'\0';
+  }
+}
+
+// 只用 WriteFile 追加一行，失败就换下一个候选路径，全失败就安静放弃。
+bool append_crash_line(const wchar_t* path, const char* text) noexcept {
+  if (path[0] == L'\0') {
+    return false;
+  }
+  const HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ,
+                                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                  nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  std::size_t length = 0;
+  while (text[length] != '\0') {
+    ++length;
+  }
+  DWORD written = 0;
+  const BOOL ok = WriteFile(file, text, static_cast<DWORD>(length), &written,
+                            nullptr);
+  CloseHandle(file);
+  return ok != FALSE;
+}
+
+// 把一个 64 位值按十六进制写进 buffer，不依赖 CRT 格式化。
+void append_hex(char* buffer, std::size_t capacity, unsigned long long value) noexcept {
+  constexpr char digits[] = "0123456789abcdef";
+  char scratch[17]{};
+  int count = 0;
+  do {
+    scratch[count++] = digits[value & 0xFull];
+    value >>= 4;
+  } while (value != 0 && count < 16);
+
+  std::size_t used = 0;
+  while (used < capacity && buffer[used] != '\0') {
+    ++used;
+  }
+  while (count > 0 && used + 1 < capacity) {
+    buffer[used++] = scratch[--count];
+  }
+  if (used < capacity) {
+    buffer[used] = '\0';
+  }
+}
+
+void append_ascii(char* buffer, std::size_t capacity, const char* text) noexcept {
+  std::size_t used = 0;
+  while (used < capacity && buffer[used] != '\0') {
+    ++used;
+  }
+  for (std::size_t i = 0; text[i] != '\0' && used + 1 < capacity; ++i) {
+    buffer[used++] = text[i];
+  }
+  if (used < capacity) {
+    buffer[used] = '\0';
+  }
+}
+
+void record_crash(const char* kind, const char* detail,
+                  unsigned long long code) noexcept {
+  char line[512]{};
+  append_ascii(line, sizeof(line), "AWJ crash: ");
+  append_ascii(line, sizeof(line), kind);
+  append_ascii(line, sizeof(line), " stage=");
+  const char* stage = crash_stage.load(std::memory_order_relaxed);
+  append_ascii(line, sizeof(line), stage != nullptr ? stage : "unknown");
+  if (code != 0) {
+    append_ascii(line, sizeof(line), " code=0x");
+    append_hex(line, sizeof(line), code);
+  }
+  if (detail != nullptr && detail[0] != '\0') {
+    append_ascii(line, sizeof(line), " detail=");
+    append_ascii(line, sizeof(line), detail);
+  }
+  append_ascii(line, sizeof(line), "\r\n");
+
+  if (!append_crash_line(crash_log_primary, line)) {
+    append_crash_line(crash_log_fallback, line);
+  }
+}
+
+// std::terminate 处理函数。走到这里说明有异常没人接，或者违反了 noexcept。
+// 先把还活着的异常对象里的 what() 抠出来，再交回 abort() —— 保持原有行为，
+// Windows 错误报告仍会照常生成 minidump，不影响既有的排查手段。
+[[noreturn]] void on_terminate() noexcept {
+  const char* detail = "";
+  try {
+    if (auto current = std::current_exception()) {
+      std::rethrow_exception(current);
+    } else {
+      detail = "no active exception (likely a noexcept violation)";
+    }
+  } catch (const std::exception& error) {
+    detail = error.what();
+  } catch (...) {
+    detail = "non-std exception";
+  }
+  record_crash("terminate", detail, 0);
+  std::abort();
+}
+
+// SEH 兜底：访问违例这类结构化异常不会经过 terminate。记完一行就把控制权交回
+// 系统（EXCEPTION_CONTINUE_SEARCH），让 WER 继续产生 minidump。
+LONG WINAPI on_unhandled_exception(EXCEPTION_POINTERS* info) noexcept {
+  unsigned long long code = 0;
+  if (info != nullptr && info->ExceptionRecord != nullptr) {
+    code = info->ExceptionRecord->ExceptionCode;
+  }
+  record_crash("unhandled-seh", "", code);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void install_crash_diagnostics() noexcept {
+  // exe 同目录。GetModuleFileNameW 失败就留空，append_crash_line 会跳过它。
+  wchar_t module_path[MAX_PATH]{};
+  const DWORD length =
+      GetModuleFileNameW(nullptr, module_path, static_cast<DWORD>(MAX_PATH));
+  if (length > 0 && length < MAX_PATH) {
+    std::size_t last_separator = 0;
+    for (std::size_t i = 0; module_path[i] != L'\0'; ++i) {
+      if (module_path[i] == L'\\' || module_path[i] == L'/') {
+        last_separator = i;
+      }
+    }
+    module_path[last_separator] = L'\0';
+    append_wide(crash_log_primary, crash_path_capacity, module_path);
+    append_wide(crash_log_primary, crash_path_capacity, L"\\AWJ-crash.log");
+  }
+
+  wchar_t local_appdata[MAX_PATH]{};
+  const DWORD appdata_length = GetEnvironmentVariableW(
+      L"LOCALAPPDATA", local_appdata, static_cast<DWORD>(MAX_PATH));
+  if (appdata_length > 0 && appdata_length < MAX_PATH) {
+    append_wide(crash_log_fallback, crash_path_capacity, local_appdata);
+    append_wide(crash_log_fallback, crash_path_capacity, L"\\AWJ-crash.log");
+  }
+
+  std::set_terminate(&on_terminate);
+  SetUnhandledExceptionFilter(&on_unhandled_exception);
+}
+
+// 两条 GUI 出口的最外层护栏。异常逃到这里已经无法继续，但把它变成一条崩溃记录
+// 加一个明确的退出码，总比静默 abort 好。
+template <class Entry>
+int run_guarded(const char* stage, Entry&& entry) noexcept {
+  crash_stage.store(stage, std::memory_order_relaxed);
+  try {
+    return entry();
+  } catch (const std::exception& error) {
+    record_crash("escaped-exception", error.what(), 0);
+  } catch (...) {
+    record_crash("escaped-exception", "non-std exception", 0);
+  }
+  return 3;
+}
+
 }  // namespace
 #endif
 
 #ifdef _WIN32
 int wmain(int argc, wchar_t* argv[]) {
+  // 最先装崩溃留痕：后面任何一步失败都还能留下一行原因。
+  install_crash_diagnostics();
   enable_process_dpi_awareness();
   if (argc <= 1) {
     release_explorer_console_if_lonely();
-    return run_studio_ui();
+    return run_guarded("studio-ui", [] { return run_studio_ui(); });
   }
 
   for (int i = 1; i < argc; ++i) {
     if (std::wcscmp(argv[i], L"--shell-window") == 0) {
       release_explorer_console_if_lonely();
-      return run_shell_convert_window(argc, argv);
+      return run_guarded("shell-window",
+                         [argc, argv] { return run_shell_convert_window(argc, argv); });
     }
   }
 
+  crash_stage.store("cli", std::memory_order_relaxed);
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   std::setvbuf(stderr, nullptr, _IONBF, 0);
   const int exit_code = run_cli(argc, argv);
