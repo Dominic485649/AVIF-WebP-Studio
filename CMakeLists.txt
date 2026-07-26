@@ -324,11 +324,13 @@ function(avif_copy_slint_runtime target)
                     "$<TARGET_FILE_DIR:${target}>/slint_cpp.dll"
             VERBATIM)
     endif()
-    add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E rm -f
-                "$<TARGET_FILE_DIR:${target}>/slint-compiler.exe"
-                "$<TARGET_FILE_DIR:${target}>/slint_compiler.pdb"
-        VERBATIM)
+    # 这里曾经在 POST_BUILD 删除 slint-compiler.exe / slint_compiler.pdb。那是错的：
+    # corrosion 把 slint-compiler 作为 byproduct 拷进运行时输出目录，而
+    # Slint::slint-compiler 的 TARGET_FILE 就解析到那里。AWJ 与 awj_ui_smoke_tests
+    # 共用同一个输出目录，并行构建时 AWJ 的删除会把另一个目标正要调用的编译器抹掉，
+    # 表现为 awj_studio_ui_smoke.h 的自定义生成随机失败（MSB8066）；串行构建因为会
+    # 重新拷贝而恰好看不出问题。发布打包本身用 release.ps1 的 $ReleaseFiles 白名单
+    # 拷到独立目录，编译器不可能被打进包里，所以这个清理没有任何收益。
 endfunction()
 
 set(AWJ_VISUAL_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/core/shaders")
