@@ -12,6 +12,7 @@ export module awj.jxr_codec;
 import awj.codec;
 import awj.decoder_common;
 import awj.image;
+import awj.large_image_plan;
 import awj.wic_codec;
 
 export namespace awj {

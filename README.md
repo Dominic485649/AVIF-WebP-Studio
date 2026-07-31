@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-0.10.5 发布说明：[RELEASE_NOTES_0.10.5.md](RELEASE_NOTES_0.10.5.md)
+1.0.0 发布说明：[RELEASE_NOTES_1.0.0.md](RELEASE_NOTES_1.0.0.md)
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
@@ -15,14 +15,14 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
-## 0.10.5 GitHub 发行包
+## 1.0.0 GitHub 发行包
 
-从 [GitHub Release 0.10.5](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.5) 下载与系统匹配的归档；两个包不混装跨平台文件：
+从 [GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0) 下载与系统匹配的归档；两个包不混装跨平台文件：
 
 | 归档 | 精确内容 | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Linux.7z) | Linux ELF：`AWJ` | 见 Release 正文 |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | 见 Release 正文 |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Linux.7z) | Linux ELF：`AWJ` | 见 Release 正文 |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | 见 Release 正文 |
 
 归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。
 
@@ -73,13 +73,13 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 
 ```powershell
 # 1. 更新版本号
-Set-Content VERSION "0.10.5"
+Set-Content VERSION "1.0.0"
 .\scripts\Update-VcpkgVersion.ps1
 
 # 2. 提交并打 tag
 git add VERSION vcpkg.json
-git commit -m "release: 0.10.5"
-git tag 0.10.5
+git commit -m "release: 1.0.0"
+git tag 1.0.0
 
 # 3. 构建
 .\release.ps1
@@ -161,7 +161,7 @@ pwsh -NoProfile -File .\scripts\benchmark.ps1 `
   -Mode All
 ```
 
-当前协议不向 AWJ 传入质量、速度、位深或内存参数，因此验证实际默认值：AOM、quality 70、speed 6、YUV 4:2:0、自动至少 10-bit，以及非不透明 alpha 自动保留且同样按 q70 编码。严格对照使用 ffmpeg AOM QP 23、10-bit 4:2:0、all-intra、row-mt，并按像素、字节、路径排序。脚本先自检输入和 `summary.csv` 的实际参数，再记录 Job Object 覆盖的整棵进程树 CPU/峰值内存。
+当前协议不向 AWJ 传入质量、速度、色度、位深或内存参数，因此验证实际默认值：AOM、quality 70、speed 6、按源格式自动选择色度、自动至少 10-bit，以及非不透明 alpha 自动保留且同样按 q70 编码。严格对照固定使用 ffmpeg AOM QP 23、10-bit 4:2:0、all-intra、row-mt，并按像素、字节、路径排序。脚本先自检输入和 `summary.csv` 的实际参数，再记录 Job Object 覆盖的整棵进程树 CPU/峰值内存。
 
 默认 `All` 同时运行回归和严格对照；`Regression` 只运行 AWJ，`Strict` 只运行 210 张不含 ICC/EXIF/XMP 的不透明图片与 ffmpeg。非 smoke 运行每组预热一次、测量五次，P95 使用 nearest-rank；每次调用间冷却 30 秒。结果写入 `build/benchmarks/`，不应把单轮最快值当作版本结论。
 

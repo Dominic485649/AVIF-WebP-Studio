@@ -166,19 +166,16 @@ void record_crash(const char* kind, const char* detail,
 // 先把还活着的异常对象里的 what() 抠出来，再交回 abort() —— 保持原有行为，
 // Windows 错误报告仍会照常生成 minidump，不影响既有的排查手段。
 [[noreturn]] void on_terminate() noexcept {
-  const char* detail = "";
   try {
     if (auto current = std::current_exception()) {
       std::rethrow_exception(current);
-    } else {
-      detail = "no active exception (likely a noexcept violation)";
     }
+    record_crash("terminate", "no active exception (likely a noexcept violation)", 0);
   } catch (const std::exception& error) {
-    detail = error.what();
+    record_crash("terminate", error.what(), 0);
   } catch (...) {
-    detail = "non-std exception";
+    record_crash("terminate", "non-std exception", 0);
   }
-  record_crash("terminate", detail, 0);
   std::abort();
 }
 

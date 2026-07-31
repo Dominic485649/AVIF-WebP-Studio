@@ -148,7 +148,7 @@ class LibRawImageDecoder final : public ImageDecoder {
       }
 
       if (processed_image->type != LIBRAW_IMAGE_BITMAP || processed_image->colors < 3 || processed_image->bits != 8 ||
-          processed_image->width <= 0 || processed_image->height <= 0 || processed_image->data == nullptr) {
+          processed_image->width <= 0 || processed_image->height <= 0) {
         return std::unexpected{"LibRaw 输出格式无效。"};
       }
 

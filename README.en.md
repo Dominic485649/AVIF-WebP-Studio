@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-0.10.5 release notes (Chinese): [RELEASE_NOTES_0.10.5.md](RELEASE_NOTES_0.10.5.md)
+1.0.0 release notes (Chinese): [RELEASE_NOTES_1.0.0.md](RELEASE_NOTES_1.0.0.md)
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -15,14 +15,14 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
-## 0.10.5 GitHub release archives
+## 1.0.0 GitHub release archives
 
-Download the platform-matched archive from [GitHub Release 0.10.5](https://github.com/Dominic485649/AWJimage/releases/tag/0.10.5). The archives deliberately do not mix platform files:
+Download the platform-matched archive from [GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0). The archives deliberately do not mix platform files:
 
 | Archive | Exact contents | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Linux.7z) | Linux ELF: `AWJ` | Release body |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/0.10.5/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | Release body |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Linux.7z) | Linux ELF: `AWJ` | Release body |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | Release body |
 
 Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2.
 
@@ -54,11 +54,11 @@ Windows release script:
 Versioning is controlled by the root `VERSION` file. Release flow:
 
 ```powershell
-Set-Content VERSION "0.10.5"
+Set-Content VERSION "1.0.0"
 .\scripts\Update-VcpkgVersion.ps1
 git add VERSION vcpkg.json CHANGELOG.md
-git commit -m "release: 0.10.5"
-git tag 0.10.5
+git commit -m "release: 1.0.0"
+git tag 1.0.0
 .\release.ps1
 
 # Run from bin\x64\Release. Each archive must contain only these files.
@@ -108,7 +108,7 @@ pwsh -NoProfile -File .\scripts\benchmark.ps1 `
   -Mode All
 ```
 
-The current protocol passes no quality, speed, bit-depth, or memory option to AWJ, so it verifies the true defaults: AOM, quality 70, speed 6, YUV 4:2:0, automatic at-least-10-bit output, and automatic retention of non-opaque alpha at q70. The strict comparison uses ffmpeg AOM QP 23, 10-bit 4:2:0, all-intra, row-mt, and pixel/byte/path ordering. The runner validates actual `summary.csv` settings before recording Job Object process-tree CPU and peak memory.
+The current protocol passes no quality, speed, chroma, bit-depth, or memory option to AWJ, so it verifies the true defaults: AOM, quality 70, speed 6, source-aware automatic chroma, automatic at-least-10-bit output, and automatic retention of non-opaque alpha at q70. The strict comparison fixes ffmpeg to AOM QP 23, 10-bit 4:2:0, all-intra, row-mt, and pixel/byte/path ordering. The runner validates actual `summary.csv` settings before recording Job Object process-tree CPU and peak memory.
 
 The default `All` mode runs both regression and strict comparison; `Regression` runs AWJ only and `Strict` runs the 210 opaque images without ICC/EXIF/XMP against ffmpeg. Non-smoke runs use one warmup and five measured runs per scenario, nearest-rank P95, and a 30-second cooldown. Results go under `build/benchmarks/`; a fastest single run is not a version conclusion.
 

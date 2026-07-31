@@ -23,6 +23,7 @@ module;
 export module awj.wic_codec;
 
 import awj.codec;
+import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
 import awj.image;

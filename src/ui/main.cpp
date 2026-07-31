@@ -53,6 +53,7 @@
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
+import awj.codec;
 import awj.config;
 import awj.core;
 import awj.decoder_registry;
@@ -1062,7 +1063,7 @@ std::expected<void, std::string> apply_menu_config_values(
       if (!result) return std::unexpected{result.error()};
       return {};
     };
-    // menu_*_preset_index 在 0.10.9 随右键预设下拉一并移除；旧配置里的残留键会被忽略。
+    // menu_*_preset_index 在 1.0.0 随右键预设下拉一并移除；旧配置里的残留键会被忽略。
     if (auto r = one(apply_string(menu_config_key(prefix, "quality_text"), param.quality_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "bit_depth_text"), param.bit_depth_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "speed_text"), param.speed_text)); !r) return r;
@@ -1956,6 +1957,10 @@ bool clear_run_if_callback_not_posted(UiState& state,
     }
     state.pending_events.clear();
     state.worker_active = false;
+    if (state.active_child) {
+      state.active_child->terminate();
+      state.active_child.reset();
+    }
     return true;
   } catch (...) {
     return false;
@@ -2017,7 +2022,8 @@ bool post_to_ui(slint::ComponentWeakHandle<AwjStudio> weak, Function&& fn) {
 // 注意包在 std::jthread 构造外面的 try 只能接住“创建线程失败”，接不到线程体内部。
 //
 // 出错后不能在这里直接写 Slint 属性——那是跨线程改 UI。状态清理走带锁的
-// clear_run_if_callback_not_posted，界面提示走 post_to_ui 回到 UI 线程。
+// clear_run_if_callback_not_posted 终止仍在运行的子进程并清理状态，界面提示走
+// post_to_ui 回到 UI 线程。
 template <class Body>
 auto guarded_worker(slint::ComponentWeakHandle<AwjStudio> weak,
                     std::shared_ptr<UiState> state, std::uint64_t run_id,
@@ -4632,7 +4638,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
               item.log_text = line;
               // 跨进程约定：这里嗅探的是 AWJ CLI 子进程 stdout 里的中文子串，
               // 生产方在 pipeline.ixx:461（", 未达标兜底"）。子进程的输出与日志
-              // 固定为中文、不跟随界面语言，本判断才成立——0.10.9 的双语只覆盖
+              // 固定为中文、不跟随界面语言，本判断才成立——1.0.0 的双语只覆盖
               // 界面标签。如果以后要翻译 worker 输出，必须先把这里换成不随语言
               // 变化的机器可读信号（稳定 ASCII 标记，或把
               // visual_quality_target_met 走 awj::BatchProgress 结构化通道传上来），

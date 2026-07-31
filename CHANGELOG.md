@@ -1,9 +1,17 @@
 # 更新日志
 
-## 0.10.9 - 2026-07-26
+## 1.0.0 - 2026-07-30
+
+- Studio 新增中文/English 即时切换，翻译随 Slint 资源编入可执行文件，不依赖 gettext、`.mo` 或额外运行时文件；配置保存界面语言，切换后无需重启。
+- 修正参数页布局：标签、输入框与下拉框按行垂直居中；彩色结论与详细说明在窄窗口自动换行，不再相互覆盖；两段彩色文字只保留 4 px 间距，设置页约束为视口宽度，避免为阅读说明文字横向滚动。
+- 补齐 Clang/MSVC 模块依赖声明，并让 Windows 宏定义对所有 Windows 编译器生效；删除 LibRaw 内嵌数组的恒假空指针判断，严格 Windows Release 构建可通过。
+- 审查崩溃处理器的异常对象生命周期，在 catch 作用域内立即记录 `what()`，不再把异常对象内部指针带出作用域。
+- 修正 benchmark 对 0.10.5 以来 `--chroma auto` 的过期假设：现在按 `summary.csv` 的源色度校验 420/422/444 映射，并在中英文文档中明确 AWJ 使用 source-aware auto、ffmpeg 严格对照固定使用 420。
+- vcpkg builtin baseline 更新到 2026-07-30 的 `c1d80d9c`。libavif `v1.4.2`、Slint `v1.17.1` 与 `zenravif 0.1.3` 已是最新稳定版，Jpegli 和 `svt-av1-hdr` 的固定提交分别等于当前上游 `main`；Rust 锁文件同步到 Rust 1.95 可用的最新传递依赖，并把 `Cargo.lock` 纳入 CMake 依赖，确保锁文件变化会真实重建 zenravif 静态库。没有为了追逐版本号改用未发布的 libavif/Slint 开发分支。
+- 修正 `svt-av1-hdr` 当前上游 `noise_generation.c` 的重复 Cr 赋值：配置阶段把第二个目标恢复为 Cb，并在上游源码变化导致修正无法验证时直接停止配置，消除 GCC `-Wsequence-point` 与胶片颗粒色度缩放点未初始化问题。
 
 - 新增崩溃留痕：`wmain` 最先安装 `std::set_terminate` 与 `SetUnhandledExceptionFilter`，异常逃逸时向 exe 同目录（不可写则退到 `%LOCALAPPDATA%`）的 `AWJ-crash.log` 追加一行阶段、异常码与 `what()`。处理函数只用 Win32 原语、不分配内存，日志路径在进程健康时预先解析；SEH 过滤器返回 `EXCEPTION_CONTINUE_SEARCH`，Windows 错误报告的 minidump 照旧生成。Studio 与右键转换窗口两条 GUI 入口进 catch-all，异常返回退出码 3 而不是静默 abort。此前从资源管理器启动时进程会无提示消失，只在系统里留下 `0xC0000409` / `FAST_FAIL_FATAL_APP_EXIT(7)`。
-- 队列监控与编码监控两个 worker 线程体包进 catch-all。此前 `try` 只包住 `std::jthread` 的构造，仅能接住"创建线程失败"，线程体内部（管道拼接、事件解析等分配点）逃出的异常会直接 `std::terminate`。错误处理不跨线程写 Slint 属性：状态清理走带锁的 `clear_run_if_callback_not_posted`，界面提示走 `post_to_ui`。
+- 队列监控与编码监控两个 worker 线程体包进 catch-all。此前 `try` 只包住 `std::jthread` 的构造，仅能接住"创建线程失败"，线程体内部（管道拼接、事件解析等分配点）逃出的异常会直接 `std::terminate`。错误处理不跨线程写 Slint 属性：带锁清理状态并终止仍在运行的子进程，界面提示走 `post_to_ui`。
 - Studio 关窗回调补上异常护栏。该回调在事件循环内执行且会经 `capture_studio_config` 分配三十余个字符串，异常会穿回 Rust 侧 `panic="abort"` 的栈帧；现在无论配置保存成功与否都放行关窗。
 - 修复两处句柄判断错误：`CreateFileW`（右键队列写入）与 `CreateMailslotW`（leader 建通道）失败返回 `INVALID_HANDLE_VALUE`，而 `unique_ptr::operator bool` 只与 `nullptr` 比较，失败被当成成功——前者对无效句柄发起 I/O，后者让 leader 持废句柄静默收不到任何输入。新增 `adopt_win32_handle` 统一归一化。
 - 自动内存上限改为 `min(总内存 80%, 当前可用 50%)`，修正此前两个系数写反的问题；同步更新 CLI `--memory-limit` 帮助与 README。回归测试从 1 条断言扩到 4 条，覆盖可用内存偏紧、机器空闲与两个单项回退分支。

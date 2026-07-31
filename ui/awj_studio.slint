@@ -660,11 +660,11 @@ component QueueMenuItem inherits Rectangle {
 
 // 参数提示：控件右侧的说明文字。
 //
-// 分两行：第一行是结论，加粗上色，可以由两段不同颜色拼接（例如"首选 AVIF" +
-// "极高压缩率 · 支持 HDR · 最高 12-bit"）；第二行是细节，用弱色。
+// 分为两个内容区：上方是结论，加粗上色，可以由两段不同颜色拼接（例如"首选 AVIF" +
+// "极高压缩率 · 支持 HDR · 最高 12-bit"）；下方是细节，用弱色。窄窗口下两处都可换行。
 //
 // 之所以是两行而不是一段富文本：Slint 的 Text 不支持行内彩色片段，要给句子里的
-// 关键词单独上色，只能把它拆成独立的 Text。两行结构在保留自动换行的同时做到了
+// 关键词单独上色，只能把它拆成独立的 Text。这个结构在保留自动换行的同时做到了
 // 这一点，而且不需要自己实现流式排版。位置沿用 0.9 的做法，仍在控件右侧。
 //
 // 高度由内容决定，调用方给所在行设 min-height 而不是固定 height，
@@ -681,24 +681,33 @@ component ParamHint inherits VerticalLayout {
     in property <color> detail-color;
 
     spacing: 3px;
-    alignment: center;
+    alignment: start;
+    cross-axis-alignment: stretch;
+    min-width: 0px;
+    horizontal-stretch: 1;
+    height: self.preferred-height;
 
     HorizontalLayout {
-        spacing: 8px;
-        Text {
+        width: 100%;
+        spacing: 4px;
+        cross-axis-alignment: center;
+        if root.lead != "": Text {
             text: root.lead;
             color: root.lead-color;
             font-size: 12px;
             font-weight: 700;
             wrap: word-wrap;
+            min-width: 0px;
+            horizontal-stretch: 0;
             vertical-alignment: center;
         }
-        Text {
+        if root.accent != "": Text {
             text: root.accent;
             color: root.accent-color;
             font-size: 12px;
             font-weight: 700;
             wrap: word-wrap;
+            min-width: 0px;
             horizontal-stretch: 1;
             vertical-alignment: center;
         }
@@ -709,6 +718,10 @@ component ParamHint inherits VerticalLayout {
         color: root.detail-color;
         font-size: 12px;
         wrap: word-wrap;
+        min-width: 0px;
+        width: 100%;
+        horizontal-stretch: 1;
+        height: self.preferred-height;
     }
 }
 
@@ -1175,6 +1188,7 @@ export component AwjStudio inherits Window {
                                         HorizontalLayout {
                                             min-height: 72px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("格式"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             SoftComboBox { accessible-name: @tr("输出格式"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             ParamHint {
@@ -1191,6 +1205,7 @@ export component AwjStudio inherits Window {
                                         if root.format-index == 0: HorizontalLayout {
                                             min-height: 72px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("编码器"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             SoftComboBox { accessible-name: @tr("AVIF 编码器"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             ParamHint {
@@ -1207,6 +1222,7 @@ export component AwjStudio inherits Window {
                                         HorizontalLayout {
                                             min-height: 78px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("质量"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             LineEdit { accessible-label: @tr("质量"); text <=> root.quality-text; placeholder-text: root.visual-quality-text.is-empty ? "1-100/q90/0.9" : @tr("由视觉质量自动控制"); enabled: !root.running && root.visual-quality-text.is-empty; width: root.parameter-control-width; opacity: root.visual-quality-text.is-empty ? 1.0 : 0.56; height: root.parameter-control-height; }
                                             ParamHint {
@@ -1221,6 +1237,7 @@ export component AwjStudio inherits Window {
                                         HorizontalLayout {
                                             min-height: 64px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("视觉质量"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             LineEdit { accessible-label: @tr("视觉质量"); text <=> root.visual-quality-text; placeholder-text: @tr("空由质量决定，1-100"); input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                             ParamHint {
@@ -1235,6 +1252,7 @@ export component AwjStudio inherits Window {
                                         if root.format-index != 3: HorizontalLayout {
                                             min-height: 56px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("速度"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             LineEdit { accessible-label: @tr("速度"); text <=> root.speed-text; placeholder-text: @tr("默认/可选0-10"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                             ParamHint {
@@ -1251,6 +1269,7 @@ export component AwjStudio inherits Window {
                                         HorizontalLayout {
                                             min-height: 64px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("线程"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             LineEdit { accessible-label: @tr("线程"); text <=> root.threads-text; placeholder-text: @tr("自动/线程数"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                             ParamHint {
@@ -1267,6 +1286,7 @@ export component AwjStudio inherits Window {
                                         HorizontalLayout {
                                             min-height: 64px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("内存"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             LineEdit { accessible-label: @tr("内存限制"); text <=> root.memory-limit-text; placeholder-text: @tr("例如 4（单位 GiB）"); input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                             ParamHint {
@@ -1283,6 +1303,7 @@ export component AwjStudio inherits Window {
                                         HorizontalLayout {
                                             min-height: 56px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("尺寸限制"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             SoftComboBox { accessible-name: @tr("图片尺寸限制"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: @tr("无限制"), enabled: true }, { text: @tr("手动"), enabled: true }]; current-index <=> root.size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             ParamHint {
@@ -1297,6 +1318,7 @@ export component AwjStudio inherits Window {
                                         if root.size-limit-index == 2: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("手动尺寸"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             LineEdit { accessible-label: @tr("最大宽度"); text <=> root.max-width-text; placeholder-text: @tr("最大宽"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
                                             LineEdit { accessible-label: @tr("最大高度"); text <=> root.max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
@@ -1309,6 +1331,7 @@ export component AwjStudio inherits Window {
                                         if root.format-index == 0: HorizontalLayout {
                                             min-height: 56px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("位深"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             LineEdit { accessible-label: @tr("位深"); text <=> root.bit-depth-text; placeholder-text: @tr("保持原片"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
                                             ParamHint {
@@ -1323,6 +1346,7 @@ export component AwjStudio inherits Window {
                                         if (root.format-index == 0 && root.avif-encoder-index != 1) || root.format-index == 3: HorizontalLayout {
                                             min-height: 64px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("色度采样"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             SoftComboBox { accessible-name: @tr("色度采样"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             ParamHint {
@@ -1339,6 +1363,7 @@ export component AwjStudio inherits Window {
                                         if root.format-index == 3: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("渐进"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             SoftComboBox { accessible-name: @tr("JPGLI 渐进级别"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("关闭"), enabled: true }, { text: @tr("普通"), enabled: true }, { text: @tr("更细"), enabled: true }]; current-index <=> root.jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                         }
@@ -1346,6 +1371,7 @@ export component AwjStudio inherits Window {
                                         if root.format-index == 3 && root.jpegli-progressive-index == 0: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("哈夫曼"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             CheckBox { text: @tr("优化哈夫曼表"); checked <=> root.jpegli-optimize-huffman; enabled: !root.running; width: root.parameter-control-width; }
                                         }
@@ -1353,6 +1379,7 @@ export component AwjStudio inherits Window {
                                         if root.format-index == 3: HorizontalLayout {
                                             height: 48px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: "XYB"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             CheckBox { text: @tr("启用 XYB"); checked <=> root.jpegli-xyb; enabled: !root.running; width: root.parameter-control-width; }
                                         }
@@ -1360,6 +1387,7 @@ export component AwjStudio inherits Window {
                                         if root.format-index == 0: HorizontalLayout {
                                             min-height: 56px;
                                             spacing: 10px;
+                                            cross-axis-alignment: center;
                                             Text { text: @tr("透明通道"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                             SoftComboBox { accessible-name: @tr("透明通道"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("强制开启"), enabled: true }, { text: @tr("自动"), enabled: true }, { text: @tr("关闭"), enabled: true }]; current-index <=> root.alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             ParamHint {
@@ -1840,6 +1868,9 @@ export component AwjStudio inherits Window {
                 }
 
 if root.selected-page == 2: ScrollView {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    viewport-width: parent.width;
                     VerticalLayout {
                         spacing: root.page-gap;
 
@@ -1951,30 +1982,40 @@ if root.selected-page == 2: ScrollView {
                                 Text { text: @tr("高级与实验功能"); color: root.text-strong; font-size: 18px; font-weight: 800; }
                                 if root.wic-ui-visible: VerticalLayout {
                                     spacing: 8px;
+                                    width: 100%;
+                                    height: self.preferred-height;
                                     CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.allow-wic-fallback; enabled: !root.running; }
-                                    Text { text: @tr("开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: @tr("开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                                 }
                                 VerticalLayout {
                                     spacing: 8px;
+                                    width: 100%;
+                                    height: self.preferred-height;
                                     CheckBox { text: @tr("GPU 加速视觉质量"); checked <=> root.visual-quality-gpu; enabled: !root.running; }
-                                    Text { text: root.visual-quality-gpu-help-text; color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: root.visual-quality-gpu-help-text; color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                                 }
                                 VerticalLayout {
                                     spacing: 8px;
+                                    width: 100%;
+                                    height: self.preferred-height;
                                     CheckBox { text: @tr("视觉质量未达标时兜底输出"); checked <=> root.visual-quality-fallback; enabled: !root.running; }
-                                    Text { text: @tr("填写视觉质量后生效；未填写视觉质量时此选项保持可选，但不会参与本次编码。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: @tr("填写视觉质量后生效；未填写视觉质量时此选项保持可选，但不会参与本次编码。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                                 }
 
                                 VerticalLayout {
                                     spacing: 8px;
+                                    width: 100%;
+                                    height: self.preferred-height;
                                     CheckBox { text: @tr("解除 20 GiB 输入/运行时上限"); checked <=> root.unlock-max-input-file-bytes; enabled: !root.running; }
-                                    Text { text: @tr("仅当前会话生效，不会写入 AWJ.jsonc。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; }
-                                    Text { text: @tr("警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"); color: #d13438; font-size: 13px; wrap: word-wrap; font-weight: 700; }
+                                    Text { text: @tr("仅当前会话生效，不会写入 AWJ.jsonc。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                                    Text { text: @tr("警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"); color: #d13438; font-size: 13px; wrap: word-wrap; font-weight: 700; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                                 }
                                 VerticalLayout {
                                     spacing: 8px;
+                                    width: 100%;
+                                    height: self.preferred-height;
                                     CheckBox { text: @tr("启用实验性编码器（zenrav1e）"); checked <=> root.experimental-encoders; enabled: !root.running; }
-                                    Text { text: @tr("启用后，构建支持时可在自动大图链路中使用 zenrav1e；普通队列自动不会选择实验编码器。不可用时相关路径会跳过或置灰。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; }
+                                    Text { text: @tr("启用后，构建支持时可在自动大图链路中使用 zenrav1e；普通队列自动不会选择实验编码器。不可用时相关路径会跳过或置灰。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                                 }
 
                             }
@@ -1990,9 +2031,9 @@ if root.selected-page == 2: ScrollView {
                                 padding: 24px;
                                 spacing: root.page-gap;
                                 Text { text: @tr("关于后端"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                Text { text: @tr("当前内置后端：原生编解码器"); color: root.text-body; font-size: 14px; }
-                                Text { text: @tr("Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"); color: root.text-body; font-size: 14px; }
-                                Text { text: @tr("编码流程统一使用内置原生后端。"); color: root.text-muted; font-size: 13px; }
+                                Text { text: @tr("当前内置后端：原生编解码器"); color: root.text-body; font-size: 14px; wrap: word-wrap; min-width: 0px; width: 100%; }
+                                Text { text: @tr("Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"); color: root.text-body; font-size: 14px; wrap: word-wrap; min-width: 0px; width: 100%; }
+                                Text { text: @tr("编码流程统一使用内置原生后端。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; }
                             }
                         }
                     }

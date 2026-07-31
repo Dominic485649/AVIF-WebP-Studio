@@ -30,7 +30,7 @@ option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
 set(AWJ_SVTAV1HDR_GIT_TAG "8b4b9f5624cb70c2363a7cebb553110c1447dd4c" CACHE STRING "svt-av1-hdr source commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
-set(AWJ_LIBAVIF_GIT_TAG "bd32fb40a3b2028eb555b67f769c57a32ed8a1b4" CACHE STRING "libavif git tag or commit")
+set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING "libavif git tag or commit")
 set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
 set(AWJ_JPEGLI_GIT_TAG "031a0077f5799a6041004267fc12b956c1f52a20" CACHE STRING "google/jpegli git tag or commit")
 set(AWJ_SLINT_GIT_REPOSITORY "https://github.com/slint-ui/slint.git" CACHE STRING "Slint repository")
@@ -227,6 +227,11 @@ target_link_libraries(JXL::jxl INTERFACE
 
 function(avif_enable_common_options target)
     target_compile_features(${target} PUBLIC cxx_std_23)
+    if(WIN32)
+        target_compile_definitions(${target} PUBLIC
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN)
+    endif()
     if(MSVC)
         target_compile_options(${target} PUBLIC
             /utf-8
@@ -241,9 +246,6 @@ function(avif_enable_common_options target)
             $<$<CONFIG:Release>:/Gw>
             $<$<CONFIG:Release>:/GF>
             $<$<AND:$<CONFIG:Release>,$<BOOL:${AWJ_ENABLE_X64_V3}>>:/arch:AVX2>)
-        target_compile_definitions(${target} PUBLIC
-            NOMINMAX
-            WIN32_LEAN_AND_MEAN)
         get_target_property(target_type ${target} TYPE)
         if(NOT target_type STREQUAL "STATIC_LIBRARY")
             target_link_options(${target} PRIVATE
@@ -436,6 +438,29 @@ if(AWJ_ENABLE_SVTAV1HDR)
         URL "https://codeload.github.com/juliobbv-p/svt-av1-hdr/tar.gz/${AWJ_SVTAV1HDR_GIT_TAG}"
         URL_HASH "SHA256=35454847f6635c793c996f5a1bda824b827b14de7fa04dd58d9c985aa795801f")
     FetchContent_MakeAvailable(SvtAv1Hdr)
+    # Upstream main assigns the Cr point twice and leaves the matching Cb point
+    # uninitialized. Patch the fetched source after population so this also works
+    # when release.ps1 reuses it through FETCHCONTENT_SOURCE_DIR_SVTAV1HDR.
+    set(AWJ_SVTAV1HDR_NOISE_SOURCE
+        "${svtav1hdr_SOURCE_DIR}/Source/Lib/Codec/noise_generation.c")
+    file(READ "${AWJ_SVTAV1HDR_NOISE_SOURCE}" AWJ_SVTAV1HDR_NOISE_TEXT)
+    set(AWJ_SVTAV1HDR_BROKEN_SCALING
+        "film_grain->scaling_points_cr[1][1] = film_grain->scaling_points_cr[1][1] =")
+    set(AWJ_SVTAV1HDR_FIXED_SCALING
+        "film_grain->scaling_points_cr[1][1] = film_grain->scaling_points_cb[1][1] =")
+    string(FIND "${AWJ_SVTAV1HDR_NOISE_TEXT}" "${AWJ_SVTAV1HDR_BROKEN_SCALING}"
+           AWJ_SVTAV1HDR_BROKEN_SCALING_OFFSET)
+    if(NOT AWJ_SVTAV1HDR_BROKEN_SCALING_OFFSET EQUAL -1)
+        string(REPLACE "${AWJ_SVTAV1HDR_BROKEN_SCALING}" "${AWJ_SVTAV1HDR_FIXED_SCALING}"
+               AWJ_SVTAV1HDR_NOISE_TEXT "${AWJ_SVTAV1HDR_NOISE_TEXT}")
+        file(WRITE "${AWJ_SVTAV1HDR_NOISE_SOURCE}" "${AWJ_SVTAV1HDR_NOISE_TEXT}")
+    else()
+        string(FIND "${AWJ_SVTAV1HDR_NOISE_TEXT}" "${AWJ_SVTAV1HDR_FIXED_SCALING}"
+               AWJ_SVTAV1HDR_FIXED_SCALING_OFFSET)
+        if(AWJ_SVTAV1HDR_FIXED_SCALING_OFFSET EQUAL -1)
+            message(FATAL_ERROR "svt-av1-hdr noise scaling source no longer matches the audited fix.")
+        endif()
+    endif()
     file(WRITE "${svtav1hdr_SOURCE_DIR}/.awj-source-commit" "${AWJ_SVTAV1HDR_GIT_TAG}\n")
     awj_suppress_msvc_warnings(CODEC /wd4244)
     if(TARGET SvtAv1Enc)
@@ -738,6 +763,7 @@ if(AWJ_JPEGLI_AVAILABLE)
 endif()
 
 set(ZENRAVIF_BRIDGE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.toml")
+set(ZENRAVIF_BRIDGE_LOCK "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.lock")
 set(ZENRAVIF_BRIDGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/src/lib.rs")
 set(AWJ_ZENRAVIF_AVAILABLE OFF)
 if(AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EXISTS "${ZENRAVIF_BRIDGE_SOURCE}")
@@ -753,6 +779,7 @@ if(AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EXISTS "${ZE
         COMMAND cargo build --manifest-path "${ZENRAVIF_BRIDGE_MANIFEST}" --release
         DEPENDS
             "${ZENRAVIF_BRIDGE_MANIFEST}"
+            "${ZENRAVIF_BRIDGE_LOCK}"
             "${ZENRAVIF_BRIDGE_SOURCE}"
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         COMMENT "Building zenravif Rust static library"

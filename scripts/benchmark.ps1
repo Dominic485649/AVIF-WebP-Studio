@@ -59,6 +59,11 @@ function Get-ExpectedEncoderThreads([int]$Budget, [int]$FileCount) {
     return $Budget
 }
 
+function Get-ExpectedAutoChroma([string]$SourceChroma) {
+    if ($SourceChroma -in @('420', '422', '444')) { return $SourceChroma }
+    return '420'
+}
+
 function New-AwjArguments([string]$InputDirectory, [string]$OutputDirectory,
                           [bool]$LegacyTenBit) {
     $arguments = @('--input', $InputDirectory, '--output', $OutputDirectory,
@@ -82,6 +87,12 @@ function Invoke-SelfTest {
         (Get-ExpectedEncoderThreads 12 12) -ne 1 -or
         (Get-ExpectedEncoderThreads 12 13) -ne 1) {
         throw 'Resource plan self-test failed.'
+    }
+    if ((Get-ExpectedAutoChroma '420') -ne '420' -or
+        (Get-ExpectedAutoChroma '422') -ne '422' -or
+        (Get-ExpectedAutoChroma '444') -ne '444' -or
+        (Get-ExpectedAutoChroma 'unknown') -ne '420') {
+        throw 'Auto chroma self-test failed.'
     }
     if (((New-AwjArguments 'in' 'out' $false) -join '|') -ne
         '--input|in|--output|out|--summary|--no-log') {
@@ -553,7 +564,7 @@ function Assert-AwjSummary([object[]]$Rows, [object]$Scenario) {
         $record = $byPath[$key]
         $lossless = ([string]$row.lossless).Equals('true', [StringComparison]::OrdinalIgnoreCase)
         $finalQuality = $AwjQuality
-        $chroma = '420'
+        $chroma = Get-ExpectedAutoChroma ([string]$row.source_chroma)
         if ($row.format -ne 'AVIF' -or $row.encoder_id -ne 'aom' -or
             [int]$row.quality -ne $AwjQuality -or [int]$row.final_encoder_quality -ne $finalQuality -or
             [int]$row.speed -ne $AwjSpeed -or $row.applied_chroma -ne $chroma -or
@@ -848,7 +859,7 @@ $Report.Add("Power scheme: $($Power.Guid)")
 $Report.Add("Hardware threads / AWJ CPU budget: $HardwareThreads / $ThreadBudget")
 $Report.Add("Input manifest SHA-256: $ManifestHash")
 $Report.Add('')
-$Report.Add('AWJ uses only input, output, summary, and no-log options. It therefore exercises the true defaults: AVIF AOM q70, speed 6, 420 chroma, automatic 10-bit-minimum depth, automatic non-opaque alpha retention at the same quality, and automatic memory.')
+$Report.Add('AWJ uses only input, output, summary, and no-log options. It therefore exercises the true defaults: AVIF AOM q70, speed 6, source-aware automatic chroma, automatic 10-bit-minimum depth, automatic non-opaque alpha retention at the same quality, and automatic memory.')
 $Report.Add('Strict ffmpeg uses QP 23, cpu-used 6, all-intra, still-picture, row-mt, yuv420p10le, one thread per process, and CPU-budget process concurrency. Inputs are pixels, bytes, path ascending. Each strict round runs AWJ before ffmpeg and sleeps between calls; thermal and file-cache bias remains a documented limitation.')
 $Report.Add('')
 $Report.Add("AWJ: $($Target.Version), $($Target.BuildType), $($Target.Commit), AOM $($Target.Aom), dav1d $($Target.Dav1d)")
