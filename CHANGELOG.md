@@ -1,5 +1,10 @@
 # 更新日志
 
+## 1.0.2 - 2026-08-10
+
+- prerelease：修正 Windows 更新 staging 位于 LocalAppData、安装目录位于其他卷时的跨卷替换；先复制到安装目录同卷临时文件再原子替换，保留失败回滚语义。
+- prerelease：修正发布脚本续签已有 manifest 时的版本数组解析，确保后续 sequence/版本校验不会把字段说明误当作版本号。
+
 ## 1.0.1 - 2026-08-09
 
 - 新增签名自动更新基础设施。客户端只接受内置 Ed25519 公钥验证通过的静态 `update-manifest.json`，签名覆盖确定性 UTF-8 原始字节；manifest 使用递增 sequence 防重放，版本严格按三段整数比较，并按 stable / prerelease 渠道过滤。

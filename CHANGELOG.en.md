@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2 - 2026-08-10
+
+- Prerelease: fixed Windows updates when LocalAppData staging and the installed application are on different volumes; the helper now copies to a same-volume temporary and atomically replaces the target while preserving rollback.
+- Prerelease: fixed release-script parsing when continuing an existing manifest so sequence/version validation does not treat the field label as a version component.
+
 ## 1.0.1 - 2026-08-09
 
 - Added the signed update foundation. The client accepts only a static `update-manifest.json` whose original deterministic UTF-8 bytes verify against the embedded Ed25519 public key. A monotonic sequence rejects replay, versions use strict integer MAJOR.MINOR.PATCH comparison, and stable/prerelease filtering is explicit.
