@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-1.0.0 发布说明：[RELEASE_NOTES_1.0.0.md](RELEASE_NOTES_1.0.0.md)
+1.0.0 发布说明：[GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0)
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
@@ -41,7 +41,27 @@ cmake --preset windows-msvc-x64-release
 cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 ```
 
-Linux 在 WSL 本地路径（推荐 `/home/dominic/Code/Cpp/AWJimage`，不要直接编译 `/mnt/d`）使用 vcpkg `x64-linux` 与 GCC 预设：
+Linux 通用预设不绑定任何私有工具链，编译器和 vcpkg 都从环境读取：
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+export CC=gcc-16 CXX=g++-16      # 默认 cc/c++ 不支持 C++23 模块时才需要
+cmake --preset linux-x64-release
+cmake --build --preset linux-x64-release --target AWJ
+```
+
+前置条件：
+
+- 支持 C++23 modules 的编译器（GCC 16+ 或 Clang 20+）与 Ninja、CMake 3.30+
+- vcpkg：`VCPKG_ROOT` 指向其检出目录，manifest 依赖由 `vcpkg.json` 声明
+- Linux 系统构建工具：`autoconf`、`autoconf-archive`、`automake` 和 `libtool`（vcpkg 构建 libsodium 需要）
+- Rust toolchain（`cargo` 在 `PATH` 中）：`third_party/zenravif-bridge` 会被构建为静态库；不需要时用 `-DAWJ_ENABLE_ZENRAVIF=OFF` 关闭
+- Vulkan：`find_package(Vulkan REQUIRED)`，由 vcpkg 的 `vulkan-headers` / `vulkan-loader` 满足
+- DXC：visual_quality shader 在构建期编译为 SPIR-V，优先使用 vcpkg `directx-dxc` 提供的 `dxc`，否则回退到 `PATH` 中的 `dxc`
+
+`linux-x64-debug` 用于 Debug。`linux-gcc-x64-*` 与 `linux-clang-x64-*` 是维护者专用预设，固定引用 `$HOME/.local/gcc-16.1-deb/wrappers/*-awj` 与 `$HOME/.local/vcpkg`，其他环境请使用上面的通用预设。
+
+维护者在 WSL 本地路径（推荐 `/home/dominic/Code/Cpp/AWJimage`，不要直接编译 `/mnt/d`）使用：
 
 ```bash
 cd /home/dominic/Code/Cpp/AWJimage
@@ -49,12 +69,13 @@ cmake --preset linux-gcc-x64-release
 cmake --build --preset linux-gcc-x64-release --target AWJ
 ```
 
-`linux-gcc-x64-debug` 用于 Debug；`linux-gcc-x64-release` 使用 `-O3`、IPO/LTO、`-march=x86-64-v3`、section GC/strip，并静态链接 `libstdc++` / `libgcc`；只生成单个 `AWJ` ELF，没有 `AWJ.com`。`readelf -d bin/x64/Release/AWJ` 不应出现 `libstdc++.so.6` 或 `libgcc_s.so.1`。
+Release 预设（通用与维护者版本相同）使用 `-O3`、IPO/LTO、`-march=x86-64-v3`、section GC/strip，并静态链接 `libstdc++` / `libgcc`；只生成单个 `AWJ` ELF，没有 `AWJ.com`。`readelf -d bin/x64/Release/AWJ` 不应出现 `libstdc++.so.6` 或 `libgcc_s.so.1`。
 
 Windows 也可使用脚本：
 
 ```powershell
-.\release.ps1
+# 本地开发/不生成发布 manifest
+.\release.ps1 -SkipUpdateManifest
 ```
 
 Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留发行文件；若目录中已有 Linux 构建，也会保留 `AWJ` 与 `AWJ.sha256`：
@@ -69,27 +90,51 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 - `bin\x64\Release\THIRD_PARTY_NOTICES.txt`
 - `bin\x64\Release\BUILD_INFO.txt`
 
-版本号由仓库根目录的 `VERSION` 文件控制，`CMakeLists.txt` 构建时自动读取，`scripts/Update-VcpkgVersion.ps1` 可同步到 `vcpkg.json`。发版流程：
+版本号由仓库根目录的 `VERSION` 文件控制，`CMakeLists.txt` 构建时自动读取，`scripts/Update-VcpkgVersion.ps1` 可同步到 `vcpkg.json`。正式发布还必须使用仓库外保存的 Ed25519 seed，把对应公钥编入客户端；私钥/seed 不得提交、复制到产物目录或写入日志。发版流程：
 
 ```powershell
-# 1. 更新版本号
-Set-Content VERSION "1.0.0"
+# 1. 更新版本号与中英文 changelog
+Set-Content VERSION "1.0.1"
 .\scripts\Update-VcpkgVersion.ps1
 
-# 2. 提交并打 tag
-git add VERSION vcpkg.json
-git commit -m "release: 1.0.0"
-git tag 1.0.0
+# 2. 从仓库外 seed 推导公钥；seed 文件只能包含 64 个小写十六进制字符
+cmake --build build\x64\Release --config Release --target awj_update_manifest_sign
+$PublicKey = (& .\bin\x64\Release\awj_update_manifest_sign.exe `
+    --print-public-key 'E:\AWJ-secrets\update-ed25519-seed.hex').Trim()
 
-# 3. 构建
-.\release.ps1
+# 3. 提交并打 tag；先单独完成并验证 Linux AWJ
+git add VERSION vcpkg.json CHANGELOG.md CHANGELOG.en.md
+git commit -m "release: 1.0.1"
+git tag 1.0.1
 
-# 4. 从 bin\x64\Release 打包；Linux 和 Windows 归档分别只收录下列文件
-7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ -m0=lzma2 -mx=9 -mmt=1 -mf=off
-7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com -m0=lzma2 -mx=9 -mmt=1 -mf=off
+# 4. 构建 Windows 资产并生成确定性、签名的静态 manifest
+.\release.ps1 `
+  -UpdateManifestSequence 1 `
+  -UpdatePublishedAtUtc '2026-08-09T12:00:00Z' `
+  -UpdatePublicKeyHex $PublicKey `
+  -UpdateSigningSeedFile 'E:\AWJ-secrets\update-ed25519-seed.hex' `
+  -LinuxAssetPath 'D:\release-assets\AWJ'
+
+# 5. 从 bin\x64\Release 打包；两个归档都必须带上 LICENSE、THIRD_PARTY_NOTICES.txt 和 BUILD_INFO.txt
+7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
+7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
 7z t ..\..\..\build\release\AWJ_Linux.7z
 7z t ..\..\..\build\release\AWJ_Win.7z
+
+# 6. 校验归档清单：确认许可证和构建来源文件确实在归档里
+7z l ..\..\..\build\release\AWJ_Linux.7z
+7z l ..\..\..\build\release\AWJ_Win.7z
 ```
+
+上传三个原始资产 `AWJ.exe`、`AWJ.com`、`AWJ` 和两个归档后，再把脚本生成的 `update-manifest.json` / `.sig` 提交到 `master`。脚本会拒绝不递增的 sequence、重复或跨渠道复用的版本、缺少双语 changelog、与内置公钥不匹配的 seed，以及 Cargo 许可证清单漂移。已写入 manifest 的版本不得用不同字节重新发布。
+
+静态链接的第三方库要求随二进制分发其许可证文本，因此 `LICENSE` 与 `THIRD_PARTY_NOTICES.txt` 必须进入归档，不能只打包可执行文件；`BUILD_INFO.txt` 记录版本、commit 和依赖版本，用于复现与审计。
+
+## 自动更新
+
+1.0.1 首次加入完整更新基础设施，1.0.0 用户仍需手动安装这一次。客户端只读取仓库中的静态 `update-manifest.json`，验过内置 Ed25519 公钥、递增 sequence、严格三段版本、主机白名单、大小和 SHA-256 后才采用候选；缓存日志从不作为执行依据。Windows 会成对下载并事务替换 `AWJ.exe` / `AWJ.com`，新版未通过启动健康检查时整组回滚；Linux 首轮只检查并打开候选 Release 页面。
+
+下一次真实链路测试使用 `1.0.2 prerelease`：stable 用户不会看到，主动选择 prerelease 的 1.0.1 用户用于虚拟机端到端升级。测试完成后不得把相同的 1.0.2 改成 stable，下一正式版必须使用 1.0.3 或更高版本。仓库默认 CMake 配置已集成正式公钥；发布脚本仍要求通过 `-DAWJ_UPDATE_PUBLIC_KEY_HEX=<64 位小写十六进制公钥>` 显式传入并与仓库外 seed 推导值匹配，未配置公钥的开发构建会 fail-closed，拒绝联网更新。
 
 `svt-av1-hdr` 与实验 `zenrav1e` 均静态链接进主程序，不需要 sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
@@ -122,7 +167,7 @@ AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 
 AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）；`svt-av1-hdr` 上限为 16384×8704。超过 1000 万像素但仍在单图上限内的图片会排到普通队列末尾，避免单张大图的内存估算降低全部小图的并发；它们仍使用普通编码器，不会强制进入大图链路。总批次超过 12 张时，普通、延后和大图阶段都保持每张图片单编码线程。
 
-`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；`--chroma auto` 保留 YUV 源的 420/422/444，RGB/RGBA 转为 YUV444，灰度或未知源使用 420，始终不输出 RGB。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化，并按上述 auto 规则重编码。源图 CICP range 默认保持（PC/full 或 TV/limited）；未知 range 使用 full。`--alpha off` 会移除 alpha。
+`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；`--chroma auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。无损 444 写入 identity matrix coefficients，即直通存储原始 RGB，不做 RGB↔YUV 转换。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化，并按上述 auto 规则重编码。CICP 按“用户显式值 > 源图值 > 兜底”生效，BT.2020/PQ/HLG 等 HDR 源会原样保留，只有源图和用户都没有 CICP 时才回退 BT.709/sRGB；source CICP range 默认保持（PC/full 或 TV/limited），未知 range 使用 full。`--alpha off` 会移除 alpha。
 
 超过 AOM 单图上限后自动进入大图链路：
 1. 默认优先 `zenrav1e`，失败或不支持再回退 `grid`；

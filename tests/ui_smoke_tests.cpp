@@ -114,11 +114,24 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   app->set_queue_success_count(1);
   app->set_queue_failed_only(false);
   app->set_selected_queue_index(0);
+  app->set_current_version("1.0.1");
+  app->set_update_available(true);
+  app->set_update_version("1.0.2");
+  app->set_update_published_at("2026-08-10T00:00:00Z");
+  app->set_update_changelog_zh_cn("更新测试版");
+  app->set_update_changelog_en("Update test build");
+  app->set_update_summary_zh_cn("更新测试版");
+  app->set_update_summary_en("Update test build");
+  app->set_update_action_text("打开候选版本页面");
+  app->set_show_update_changelog(true);
   int retries = 0;
+  int version_clicks = 0;
   app->on_retry_failed([&retries] { ++retries; });
+  app->on_version_clicked([&version_clicks] { ++version_clicks; });
   const std::array pages{
       std::pair{"编码队列", 1}, std::pair{"参数设置", 0},
-      std::pair{"菜单参数", 3}, std::pair{"设置", 2}};
+      std::pair{"菜单参数", 3}, std::pair{"更新日志", 4},
+      std::pair{"设置", 2}};
   for (const auto& [label, page] : pages) {
     auto element =
         find_one(app, label, slint::language::AccessibleRole::Tab);
@@ -168,8 +181,13 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
   send_key(app, slint::platform::key_codes::UpArrow);
   send_text_key(app, " ");
+  if (app->get_selected_page() != 4) {
+    return fail("Up/Space navigation did not reach the changelog page");
+  }
+  send_key(app, slint::platform::key_codes::UpArrow);
+  send_text_key(app, " ");
   if (app->get_selected_page() != 3) {
-    return fail("Up/Space navigation failed");
+    return fail("second Up/Space navigation did not reach menu settings");
   }
   send_key(app, slint::platform::key_codes::Home);
   send_key(app, slint::platform::key_codes::Return);
@@ -234,6 +252,23 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     return fail("dark theme did not apply");
   }
 
+  app->set_selected_page(4);
+  app->set_show_update_changelog(false);
+  if (find_one(app, "更新日志", slint::language::AccessibleRole::Tab)) {
+    return fail("hidden changelog remains in the accessible navigation tree");
+  }
+  auto version = find_one(app, "当前版本 1.0.1",
+                          slint::language::AccessibleRole::Button);
+  if (!version) {
+    return fail("hiding the changelog also hid the version/update control");
+  }
+  version->invoke_accessible_default_action();
+  if (version_clicks != 1) {
+    return fail("version accessibility action did not fire");
+  }
+  app->set_selected_page(2);
+  app->set_show_update_changelog(true);
+
   // 界面语言切换。中文是 @tr() 的 msgid 原文（语言索引 0），English 来自
   // ui/translations/en/LC_MESSAGES/awj.po 的 bundled 翻译。
   // select_bundled_translation 写 translations_dirty 这个真实属性，所有 @tr()
@@ -250,6 +285,9 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   app->set_language_index(1);
   if (!find_one(app, "Output format")) {
     return fail("switching to English did not retranslate accessible names");
+  }
+  if (!find_one(app, "Changelog", slint::language::AccessibleRole::Tab)) {
+    return fail("the new changelog navigation item was not translated");
   }
   if (find_one(app, "输出格式")) {
     return fail("Chinese accessible name survived the switch to English");

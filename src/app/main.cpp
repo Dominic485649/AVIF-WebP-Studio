@@ -12,13 +12,18 @@
 #include <cstdlib>
 #include <cwchar>
 #include <exception>
+#include <limits>
 
 #ifdef _WIN32
+import awj.update_windows;
+
 int run_cli(int argc, wchar_t* argv[]);
+int run_studio_ui(const wchar_t* health_event = nullptr,
+                  const wchar_t* installed_version = nullptr);
 #else
 int run_cli(int argc, char* argv[]);
-#endif
 int run_studio_ui();
+#endif
 int run_shell_convert_window(int argc, wchar_t* argv[]);
 
 #ifdef _WIN32
@@ -241,10 +246,38 @@ int run_guarded(const char* stage, Entry&& entry) noexcept {
 int wmain(int argc, wchar_t* argv[]) {
   // 最先装崩溃留痕：后面任何一步失败都还能留下一行原因。
   install_crash_diagnostics();
+  const auto parse_pid = [](const wchar_t* text) -> DWORD {
+    if (text == nullptr || *text == L'\0') return 0;
+    wchar_t* end = nullptr;
+    const unsigned long value = std::wcstoul(text, &end, 10);
+    return end != nullptr && *end == L'\0' && value != 0 &&
+                   value <= std::numeric_limits<DWORD>::max()
+               ? static_cast<DWORD>(value)
+               : 0;
+  };
+  if (argc == 3 && std::wcscmp(argv[1], L"--update-helper") == 0) {
+    const DWORD parent_pid = parse_pid(argv[2]);
+    return parent_pid == 0 ? 19 : awj::update::run_update_helper(parent_pid);
+  }
+  if (argc == 3 && std::wcscmp(argv[1], L"--update-recover") == 0) {
+    const DWORD parent_pid = parse_pid(argv[2]);
+    return parent_pid == 0 ? 19
+                           : awj::update::run_update_recovery_helper(parent_pid);
+  }
+  if (argc == 4 && std::wcscmp(argv[1], L"--update-health-check") == 0) {
+    enable_process_dpi_awareness();
+    release_explorer_console_if_lonely();
+    return run_guarded("update-health-check", [argv] {
+      return run_studio_ui(argv[2], argv[3]);
+    });
+  }
+  if (awj::update::launch_update_recovery_if_needed()) {
+    return 0;
+  }
   enable_process_dpi_awareness();
   if (argc <= 1) {
     release_explorer_console_if_lonely();
-    return run_guarded("studio-ui", [] { return run_studio_ui(); });
+    return run_guarded("studio-ui", [] { return run_studio_ui(nullptr, nullptr); });
   }
 
   for (int i = 1; i < argc; ++i) {

@@ -30,12 +30,13 @@ Native codecs only:
 9. Outputs go through temp files and collision policy before the final path.
 10. Logs and `summary.csv` record backend, quality, fallback, and GPU metric path.
 
-## AVIF defaults (0.10.4)
+## AVIF defaults
 
-- `auto` always writes YUV 4:2:0; 4:2:2 and 4:4:4 require explicit chroma settings, and AVIF output never switches to RGB.
+- `auto` chroma preserves the source representation: YUV sources keep 4:2:0, 4:2:2, or 4:4:4; RGB and RGBA sources use 4:4:4; grayscale and unknown sources use 4:2:0.
+- Lossless 4:4:4 writes identity matrix coefficients, so the original RGB is stored directly in the 4:4:4 container with no RGB/YUV color conversion.
 - Non-opaque alpha is retained by `--alpha auto`; color and alpha both follow the requested quality or visual-quality result rather than forcing q100.
-- Source CICP range is preserved as PC/full or TV/limited unless overridden. Unknown range uses full.
-- q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite. All other inputs use lossless AOM quantization and default 4:2:0, which can still change pixels during RGB/YUV or chroma conversion; use explicit 4:4:4 when chroma subsampling is unacceptable.
+- CICP precedence is explicit user value, then source value, then fallback. HDR sources keep their own primaries, transfer characteristics, and matrix coefficients (BT.2020, PQ, HLG); BT.709/sRGB is used only when neither the user nor the source supplies CICP. Range is preserved as PC/full or TV/limited, and unknown range uses full.
+- q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite. All other inputs use lossless AOM quantization and re-encode with the same source-aware `auto` chroma rule; request explicit 4:4:4 when subsampling a 4:2:0 or 4:2:2 source is unacceptable.
 
 Studio uses the same CLI pipeline in a child process. Its versioned ITEM/DETAIL stream reports item state, encoder, thread count, and decode/prepare/encode/write timing; retry runs use a compact run index that maps back to the original queue row.
 

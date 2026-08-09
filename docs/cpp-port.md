@@ -35,8 +35,9 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - 输出格式可选 AVIF、WebP、JXL 或 JPGLI。
 - `fast` / `balanced` / `best` / `extreme` 预设。
 - AVIF 默认 q70、WebP 默认 q95、JXL 默认 q85、JPGLI 默认 q90，仍支持 `q90` 风格质量参数。
-- 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通，其他输入使用 AOM 无损量化并按默认 420 重编码；默认 420 仍可能产生 RGB/YUV 或 chroma 转换损耗，需显式 444 才避免色度子采样。
-- AVIF 采样支持 `auto/444/422/420`，`auto` 固定输出 YUV 420，不继承源图 422/444，也不输出 RGB；仅显式填写时使用 422/444。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`；显式 SVT 始终实际使用 420 chroma，且只支持 8/10-bit。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量；源图 CICP range 默认保持 PC/full 或 TV/limited，未知时使用 full。
+- 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通，其他输入使用 AOM 无损量化并按 `auto` 的 source-aware 色度规则重编码；源图为 420/422 时仍存在色度子采样，需要显式 444 才能避免。
+- AVIF 采样支持 `auto/444/422/420`，`auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。无损 444 会写入 identity matrix coefficients，即以 AVIF 的 444 容器直通存储原始 RGB，不做 RGB↔YUV 色彩转换。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`；显式 SVT 始终实际使用 420 chroma，且只支持 8/10-bit。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量。
+- CICP 优先级为“用户显式值 > 源图值 > 兜底”。BT.2020、PQ、HLG 等 HDR 源的 primaries/transfer/matrix 会原样保留，只有源图和用户都没有提供 CICP 时才回退 BT.709/sRGB；color range 默认保持 PC/full 或 TV/limited，未知时使用 full。
 - JXL 不支持手动 chroma sampling，位深留空保持原片，可通过 native libjxl effort/speed 控制压缩成本。
 - WebP 固定 8-bit；有损 WebP 为 Y'CbCr 4:2:0，无损 WebP 为 ARGB。
 - JPGLI 固定 8-bit RGB JPEG 兼容输出，不提供手动 chroma/alpha 输出入口；ICC、EXIF、XMP 按现有保留/剥离规则处理。

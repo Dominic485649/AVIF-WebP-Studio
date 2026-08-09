@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-1.0.0 release notes (Chinese): [RELEASE_NOTES_1.0.0.md](RELEASE_NOTES_1.0.0.md)
+1.0.0 release notes: [GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0)
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -35,7 +35,27 @@ cmake --preset windows-msvc-x64-release
 cmake --build --preset windows-msvc-x64-release --target AWJ AWJ-com
 ```
 
-Linux (WSL local tree, preferred `/home/dominic/Code/Cpp/AWJimage`; avoid building on `/mnt/d`):
+Linux — the portable presets bind no private toolchain; the compiler and vcpkg both come from the environment:
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+export CC=gcc-16 CXX=g++-16      # only if the default cc/c++ lacks C++23 modules
+cmake --preset linux-x64-release
+cmake --build --preset linux-x64-release --target AWJ
+```
+
+Prerequisites:
+
+- A C++23-modules-capable compiler (GCC 16+ or Clang 20+), plus Ninja and CMake 3.30+
+- vcpkg with `VCPKG_ROOT` pointing at the checkout; dependencies come from the `vcpkg.json` manifest
+- Linux system build tools: `autoconf`, `autoconf-archive`, `automake`, and `libtool` (required when vcpkg builds libsodium)
+- Rust toolchain (`cargo` on `PATH`) to build `third_party/zenravif-bridge` as a static library; pass `-DAWJ_ENABLE_ZENRAVIF=OFF` to skip it
+- Vulkan via `find_package(Vulkan REQUIRED)`, satisfied by vcpkg `vulkan-headers` / `vulkan-loader`
+- DXC to compile the visual_quality shader to SPIR-V at build time; vcpkg `directx-dxc` is preferred, otherwise `dxc` from `PATH`
+
+Use `linux-x64-debug` for Debug. The `linux-gcc-x64-*` and `linux-clang-x64-*` presets are maintainer-only: they hardcode `$HOME/.local/gcc-16.1-deb/wrappers/*-awj` and `$HOME/.local/vcpkg`. Use the portable presets everywhere else.
+
+Maintainer flow (WSL local tree, preferred `/home/dominic/Code/Cpp/AWJimage`; avoid building on `/mnt/d`):
 
 ```bash
 cd /home/dominic/Code/Cpp/AWJimage
@@ -43,30 +63,58 @@ cmake --preset linux-gcc-x64-release
 cmake --build --preset linux-gcc-x64-release --target AWJ
 ```
 
-`linux-gcc-x64-release` uses `-O3`, IPO/LTO, `-march=x86-64-v3`, section GC/strip, and statically links `libstdc++` / `libgcc`. Only `AWJ` is produced; there is no `AWJ.com`.
+Both portable and maintainer Release presets use `-O3`, IPO/LTO, `-march=x86-64-v3`, section GC/strip, and statically link `libstdc++` / `libgcc`. Only `AWJ` is produced; there is no `AWJ.com`.
 
 Windows release script:
 
 ```powershell
-.\release.ps1
+# Local/development build without publishing an update manifest
+.\release.ps1 -SkipUpdateManifest
 ```
 
-Versioning is controlled by the root `VERSION` file. Release flow:
+Versioning is controlled by the root `VERSION` file. A real release must use an Ed25519 seed stored outside the repository and compile the corresponding public key into the client. Never commit the seed, copy it into the output directory, or print it in logs. Release flow:
 
 ```powershell
-Set-Content VERSION "1.0.0"
+Set-Content VERSION "1.0.1"
 .\scripts\Update-VcpkgVersion.ps1
-git add VERSION vcpkg.json CHANGELOG.md
-git commit -m "release: 1.0.0"
-git tag 1.0.0
-.\release.ps1
 
-# Run from bin\x64\Release. Each archive must contain only these files.
-7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ -m0=lzma2 -mx=9 -mmt=1 -mf=off
-7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com -m0=lzma2 -mx=9 -mmt=1 -mf=off
+cmake --build build\x64\Release --config Release --target awj_update_manifest_sign
+$PublicKey = (& .\bin\x64\Release\awj_update_manifest_sign.exe `
+    --print-public-key 'E:\AWJ-secrets\update-ed25519-seed.hex').Trim()
+
+git add VERSION vcpkg.json CHANGELOG.md CHANGELOG.en.md
+git commit -m "release: 1.0.1"
+git tag 1.0.1
+
+# Build the Windows assets and create the deterministic signed manifest.
+# Build and validate the Linux AWJ asset first.
+.\release.ps1 `
+  -UpdateManifestSequence 1 `
+  -UpdatePublishedAtUtc '2026-08-09T12:00:00Z' `
+  -UpdatePublicKeyHex $PublicKey `
+  -UpdateSigningSeedFile 'E:\AWJ-secrets\update-ed25519-seed.hex' `
+  -LinuxAssetPath 'D:\release-assets\AWJ'
+
+# Run from bin\x64\Release. Both archives must carry the license and build-provenance files.
+7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
+7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
 7z t ..\..\..\build\release\AWJ_Linux.7z
 7z t ..\..\..\build\release\AWJ_Win.7z
+
+# Verify the listing so the license files are provably present.
+7z l ..\..\..\build\release\AWJ_Linux.7z
+7z l ..\..\..\build\release\AWJ_Win.7z
 ```
+
+After uploading the raw `AWJ.exe`, `AWJ.com`, and `AWJ` assets plus both archives, commit the generated `update-manifest.json` and `.sig` to `master`. The script rejects a non-increasing sequence, reused/cross-channel versions, missing bilingual changelogs, a seed that does not match the embedded public key, and Cargo license-inventory drift. Never republish a version already recorded in the manifest with different bytes.
+
+The statically linked third-party libraries require their license texts to travel with the binary, so `LICENSE` and `THIRD_PARTY_NOTICES.txt` belong in the archives rather than the executables alone. `BUILD_INFO.txt` records the version, commit, and dependency versions for reproducibility and audit.
+
+## Automatic updates
+
+1.0.1 is the first release with the complete update foundation, so 1.0.0 users must install it manually once. The client consumes only the repository's static `update-manifest.json`; a candidate is trusted only after the embedded Ed25519 key, monotonic sequence, strict three-part version, host allowlist, declared sizes, and SHA-256 values validate. Cached changelog text is never execution authority. Windows downloads and transactionally replaces `AWJ.exe` and `AWJ.com` as one unit and rolls both back if the new build misses its startup health check. The first Linux implementation only checks and opens the candidate Release page.
+
+Use `1.0.2 prerelease` for the first real virtual-machine update test. Stable users must not see it; 1.0.1 users who explicitly enable prereleases should upgrade through the full Windows flow. Do not later promote the same 1.0.2 number to stable; the next stable release must be 1.0.3 or higher. The repository's default CMake configuration embeds the formal public key; the release script still requires `-DAWJ_UPDATE_PUBLIC_KEY_HEX=<64 lowercase hex characters>` explicitly and checks it against the public key derived from the external seed. Builds without a configured key fail closed and refuse online updates.
 
 ## visual_quality GPU metrics
 
@@ -87,7 +135,7 @@ AVIF inputs over the single-image limits (AOM 65536 edge / `2^30` pixels; SVT 16
 
 Studio no longer has a separate large-image page; automatic large-image status stays in the main queue. Inputs above 10 MP but still under single-image limits stay in the ordinary queue tail so one large memory estimate cannot throttle every small-file worker. They still use the ordinary encoder, and batches above 12 files keep one encoder thread per file in the ordinary, deferred, and large-image stages. Grid supports smaller right/bottom edge cells for non-divisible dimensions while preserving the original output size.
 
-`--alpha auto` retains non-opaque alpha automatically. AVIF color and alpha both use the requested quality or visual-quality result; `--chroma auto` preserves YUV 4:2:0/4:2:2/4:4:4 sources, maps RGB/RGBA to YUV 4:4:4, and uses 4:2:0 for grayscale or unknown sources while always producing YUV. q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite; all other inputs use lossless AOM quantization and those auto rules. Source CICP range is retained by default (PC/full or TV/limited); unknown range uses full. `--alpha off` removes alpha.
+`--alpha auto` retains non-opaque alpha automatically. AVIF color and alpha both use the requested quality or visual-quality result; `--chroma auto` preserves the source representation: YUV 4:2:0/4:2:2/4:4:4 sources are kept as-is, RGB/RGBA sources use 4:4:4, and grayscale or unknown sources use 4:2:0. Lossless 4:4:4 writes identity matrix coefficients, storing the original RGB directly with no RGB/YUV conversion. q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite; all other inputs use lossless AOM quantization and those auto rules. CICP precedence is explicit user value, then source value, then fallback, so BT.2020/PQ/HLG HDR sources keep their own CICP and BT.709/sRGB applies only when neither supplies one. Source CICP range is retained by default (PC/full or TV/limited); unknown range uses full. `--alpha off` removes alpha.
 
 CLI session unlock (not written to `AWJ.jsonc`):
 - `--large-image-priority zenrav1e|grid`

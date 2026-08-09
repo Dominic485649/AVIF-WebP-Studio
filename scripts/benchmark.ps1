@@ -320,8 +320,9 @@ if ($RunStrict) {
         $FfprobeExecutable = (Get-Command ffprobe -ErrorAction Stop).Source
     }
 }
+$ExpectedVersion = (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()
 if (-not $ResultsRoot) {
-    $ResultsRoot = Join-Path $Repo ('build\benchmarks\awj-0.10.4-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $ResultsRoot = Join-Path $Repo ("build\benchmarks\awj-$ExpectedVersion-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 }
 $ResultsRoot = [IO.Path]::GetFullPath($ResultsRoot)
 if (Test-Path -LiteralPath $ResultsRoot) {
@@ -342,8 +343,7 @@ if ($PowerSchemeGuid -and $Power.Guid -ne $PowerSchemeGuid.Trim('{}').ToLowerInv
 }
 $HardwareThreads = [Environment]::ProcessorCount
 $ThreadBudget = Get-AutomaticThreadBudget $HardwareThreads
-$Target = Get-AwjDescriptor 'AWJ 0.10.4' $AwjExecutable $false
-$ExpectedVersion = (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()
+$Target = Get-AwjDescriptor "AWJ $ExpectedVersion" $AwjExecutable $false
 if ($Target.Version -ne $ExpectedVersion) { throw "Target BUILD_INFO version is $($Target.Version), expected $ExpectedVersion." }
 $Legacy = $null
 if ($LegacyAwjExecutable) {
@@ -354,7 +354,7 @@ if ($LegacyAwjExecutable) {
 $DependencyBaseline = $null
 if ($DependencyBaselineAwjExecutable) {
     $DependencyBaselineAwjExecutable = Resolve-Executable $DependencyBaselineAwjExecutable '' ''
-    $DependencyBaseline = Get-AwjDescriptor 'AWJ 0.10.4 dependency baseline' $DependencyBaselineAwjExecutable $false
+    $DependencyBaseline = Get-AwjDescriptor 'AWJ dependency baseline' $DependencyBaselineAwjExecutable $false
 }
 $Ffmpeg = $null
 if ($RunStrict) {
@@ -852,7 +852,7 @@ if ($DependencyBaseline -and $RunRegression) {
 }
 
 $Report = [Collections.Generic.List[string]]::new()
-$Report.Add('# AWJimage 0.10.4 CLI AVIF benchmark')
+$Report.Add("# AWJimage $ExpectedVersion CLI AVIF benchmark")
 $Report.Add('')
 $Report.Add("Generated: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz'))")
 $Report.Add("Power scheme: $($Power.Guid)")
@@ -913,7 +913,7 @@ $Metadata = [ordered]@{
     measured_runs = $MeasuredRuns
     cooldown_seconds = $CooldownSeconds
     profile = [ordered]@{
-        awj = 'AVIF default q70 speed6 420 automatic minimum 10-bit automatic memory'
+        awj = 'AVIF default q70 speed6 source-aware automatic chroma, automatic minimum 10-bit, automatic memory'
         ffmpeg = 'QP23 cpu-used6 allintra still-picture row-mt yuv420p10le threads1'
     }
     awj = $Target

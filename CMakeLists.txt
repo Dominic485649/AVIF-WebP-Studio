@@ -28,6 +28,8 @@ option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into AWJ" ON)
 option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into AWJ" ON)
 option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
+set(AWJ_UPDATE_PUBLIC_KEY_HEX "ebdb1a49b8686f34a5791f7c0f2a0215e4cdc03ad99281e5bf8606cb62fcf1b1" CACHE STRING
+    "Ed25519 update-manifest public key as 64 lowercase hexadecimal characters")
 set(AWJ_SVTAV1HDR_GIT_TAG "8b4b9f5624cb70c2363a7cebb553110c1447dd4c" CACHE STRING "svt-av1-hdr source commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
 set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING "libavif git tag or commit")
@@ -122,18 +124,37 @@ find_package(GIF REQUIRED)
 find_package(TIFF REQUIRED)
 find_package(libraw CONFIG REQUIRED)
 find_package(AOM CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(unofficial-sodium CONFIG QUIET)
+if(NOT TARGET unofficial-sodium::sodium)
+    if(WIN32)
+        message(FATAL_ERROR "libsodium package did not provide unofficial-sodium::sodium")
+    endif()
+    find_path(AWJ_SYSTEM_SODIUM_INCLUDE_DIR sodium.h REQUIRED)
+    find_library(AWJ_SYSTEM_SODIUM_LIBRARY NAMES sodium REQUIRED)
+    add_library(awj_system_sodium UNKNOWN IMPORTED)
+    set_target_properties(awj_system_sodium PROPERTIES
+        IMPORTED_LOCATION "${AWJ_SYSTEM_SODIUM_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${AWJ_SYSTEM_SODIUM_INCLUDE_DIR}")
+    add_library(unofficial-sodium::sodium ALIAS awj_system_sodium)
+endif()
 if(WIN32)
     find_package(libyuv CONFIG REQUIRED)
 endif()
 if(NOT WIN32)
     find_package(Threads REQUIRED)
+    find_package(CURL REQUIRED)
 endif()
 
 set(AWJ_SVTAV1HDR_AVAILABLE OFF)
 set(AWJ_SVTAV1HDR_STATIC_DEFINE 0)
 set(AWJ_JPEGLI_AVAILABLE OFF)
 
-set(AVIF_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TRIPLET}")
+if(VCPKG_INSTALLED_DIR)
+    set(AVIF_VCPKG_INSTALLED_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TRIPLET}")
+else()
+    set(AVIF_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TRIPLET}")
+endif()
 function(avif_find_vcpkg_library out_var library_name)
     find_library(${out_var}_RELEASE
         NAMES ${library_name}
@@ -868,7 +889,44 @@ target_sources(awj_pipeline
 add_library(awj_core INTERFACE)
 target_link_libraries(awj_core INTERFACE awj_pipeline)
 
+# 更新系统的纯逻辑核心：版本比较、渠道过滤、候选判定和检查调度。
+# 刻意不依赖 awj_base —— 这一层没有 I/O 也没有平台 API，独立成库才能让
+# 「stable 用户不该看到 prerelease」这类安全规则用最轻的测试目标覆盖。
+add_library(awj_update STATIC)
+avif_enable_common_options(awj_update)
+target_compile_definitions(awj_update PRIVATE
+    AWJ_BUILD_VERSION="${PROJECT_VERSION}"
+    AWJ_UPDATE_PUBLIC_KEY_HEX="${AWJ_UPDATE_PUBLIC_KEY_HEX}")
+target_link_libraries(awj_update PUBLIC
+    nlohmann_json::nlohmann_json
+    unofficial-sodium::sodium)
+if(WIN32)
+    target_link_libraries(awj_update PUBLIC winhttp)
+else()
+    target_link_libraries(awj_update PUBLIC CURL::libcurl)
+endif()
+target_sources(awj_update
+    PUBLIC
+        FILE_SET awj_update_modules TYPE CXX_MODULES FILES
+            src/update/update_model.ixx
+            src/update/update_manifest.ixx
+            src/update/update_runtime.ixx)
+if(WIN32)
+    target_sources(awj_update
+        PUBLIC
+            FILE_SET awj_update_windows_modules TYPE CXX_MODULES FILES
+                src/update/update_windows.ixx)
+endif()
+
 if(BUILD_TESTING)
+    add_executable(awj_update_model_tests tests/update_model_tests.cpp)
+    avif_enable_common_options(awj_update_model_tests)
+    target_link_libraries(awj_update_model_tests PRIVATE awj_update)
+
+    add_executable(awj_update_manifest_tests tests/update_manifest_tests.cpp)
+    avif_enable_common_options(awj_update_manifest_tests)
+    target_link_libraries(awj_update_manifest_tests PRIVATE awj_update)
+
     add_executable(awj_visual_quality_tests tests/visual_quality_tests.cpp)
     avif_enable_common_options(awj_visual_quality_tests)
     target_link_libraries(awj_visual_quality_tests PRIVATE awj_base)
@@ -988,6 +1046,8 @@ if(BUILD_TESTING)
     endforeach()
 
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
+    add_test(NAME update_model_core COMMAND awj_update_model_tests)
+    add_test(NAME update_manifest_security COMMAND awj_update_manifest_tests)
     add_test(NAME config_defaults_core COMMAND awj_config_defaults_tests)
     add_test(NAME process_core COMMAND awj_process_tests)
     add_test(NAME resource_planner_core COMMAND awj_resource_planner_tests)
@@ -1061,6 +1121,10 @@ if(BUILD_TESTING)
     endif()
 endif()
 
+add_executable(awj_update_manifest_sign scripts/update_manifest_sign.cpp)
+avif_enable_common_options(awj_update_manifest_sign)
+target_link_libraries(awj_update_manifest_sign PRIVATE unofficial-sodium::sodium)
+
 if(WIN32)
     add_executable(AWJ WIN32
         src/app/main.cpp
@@ -1084,12 +1148,15 @@ if(MSVC)
         COMPILE_OPTIONS "/wd4099;/wd4201;/wd4624")
 endif()
 avif_enable_common_options(AWJ)
-target_compile_definitions(AWJ PRIVATE AWJ_UNIFIED_EXE)
+target_compile_definitions(AWJ PRIVATE
+    AWJ_UNIFIED_EXE
+    AWJ_BUILD_VERSION="${PROJECT_VERSION}")
 if(MSVC)
     target_link_options(AWJ PRIVATE "/ENTRY:wmainCRTStartup")
 endif()
 target_link_libraries(AWJ PRIVATE
     awj_core
+    awj_update
     Slint::Slint)
 if(TARGET slint_cpp)
     add_dependencies(AWJ slint_cpp)

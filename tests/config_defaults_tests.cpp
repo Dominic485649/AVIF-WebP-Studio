@@ -324,5 +324,29 @@ int main() {
     return fail("help text does not reflect encoding defaults.");
   }
 
+  // 帮助文本必须描述实际实现，而不是历史行为。这三组断言对应三个曾经出现过的
+  // 契约漂移：auto 色度早已优先保留源表示，无损 444 走 identity 直通，clamped
+  // grid 边缘 cell 早已默认开启并被编码器接受；HDR 源的 CICP 也不会被 BT.709
+  // 覆盖。
+  if (help.find("按 auto 色度规则重编码") == std::string::npos ||
+      help.find("保留源 YUV 420/422/444") == std::string::npos ||
+      help.find("identity matrix") == std::string::npos ||
+      help.find("按默认 420 重编码") != std::string::npos) {
+    return fail("help text does not describe source-aware q100 auto chroma.");
+  }
+
+  if (help.find("含 PQ/HLG 等 HDR 传输函数") == std::string::npos ||
+      help.find("源与用户都没有时才回退 BT.709") == std::string::npos) {
+    return fail("help text does not describe HDR-preserving CICP precedence.");
+  }
+
+  static_assert(awj::encoding_defaults::default_experimental_clamped_grid_padding,
+                "clamped grid padding default changed; update the help text.");
+  if (help.find("较小的右列和底行 cell") == std::string::npos ||
+      help.find("--chroma 444") == std::string::npos ||
+      help.find("当前编码仍会拒绝") != std::string::npos) {
+    return fail("help text does not describe clamped grid edge cells.");
+  }
+
   return 0;
 }

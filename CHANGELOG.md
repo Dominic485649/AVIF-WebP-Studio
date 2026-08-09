@@ -1,5 +1,16 @@
 # 更新日志
 
+## 1.0.1 - 2026-08-09
+
+- 新增签名自动更新基础设施。客户端只接受内置 Ed25519 公钥验证通过的静态 `update-manifest.json`，签名覆盖确定性 UTF-8 原始字节；manifest 使用递增 sequence 防重放，版本严格按三段整数比较，并按 stable / prerelease 渠道过滤。
+- Studio 左侧新增可点击版本号、持久红点和与队列/参数/设置同级的更新日志页；设置页可选择更新渠道、隐藏日志页与悬停摘要、立即检查并查看上次成功时间。查看日志、切换页面、重启或检查失败都不会清除红点。
+- Windows 使用 WinHTTP 在线程中执行有限超时、响应大小上限和主机白名单检查；资产下载前重新获取并验签 manifest，随后核对声明大小和 SHA-256。编码任务运行时拒绝更新，安装目录不可写时不申请提权并回到 Release 页面。
+- Windows 自更新 helper 从父进程句柄推导安装目录，只能替换同目录 `AWJ.exe` / `AWJ.com`。它在 staging 中备份、写事务日志、替换两个文件并启动新版；健康检查未发信号、进程提前退出或任一步失败时终止新版并恢复整组旧文件，下次启动也能发现未完成事务并运行恢复 helper。
+- `AWJ.jsonc` 更新字段和常规 Studio 设置统一由 UI 线程提交；Windows 写入改为同目录临时文件、`FlushFileBuffers` 和原子替换，避免定时保存与更新线程相互覆盖。整数配置扩为 64 位，消除 Unix 时间戳的 2038 年溢出。
+- 修正 AVIF q100 / visual-quality 100、CICP 和 clamped grid 的帮助与文档，使其与 source-aware auto 色度、HDR 元数据优先级和较小边缘 cell 的实际实现一致；benchmark 的版本目录、标题和 profile 改为从 `VERSION` 派生。
+- 修正 Windows/Linux 公开构建与打包说明，发行归档纳入 `LICENSE`、`THIRD_PARTY_NOTICES.txt` 和 `BUILD_INFO.txt` 并要求校验清单；补充可移植 Linux preset 和维护者 wrapper 预设的边界说明。
+- 修正 `zenravif 0.1.3` 的 AGPL-3.0-only / 商业双许可证声明，并把更新器新增的 libsodium、nlohmann JSON 纳入第三方通知。发布脚本现在要求中英文 changelog、确定性 manifest、显式 sequence、签名 seed 与匹配的内置公钥。
+
 ## 1.0.0 - 2026-07-30
 
 - Studio 新增中文/English 即时切换，翻译随 Slint 资源编入可执行文件，不依赖 gettext、`.mo` 或额外运行时文件；配置保存界面语言，切换后无需重启。

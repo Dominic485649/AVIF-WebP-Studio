@@ -41,8 +41,49 @@
       }
     },
     {
+      "name": "linux-base",
+      "hidden": true,
+      "description": "Portable Linux base: toolchain comes from the environment. Set VCPKG_ROOT, and CC/CXX if the default cc/c++ is not a C++23-modules-capable compiler.",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays",
+        "AVIF_STATIC_MSVC_RUNTIME": "OFF",
+        "AVIF_STATIC_SLINT": "ON",
+        "AWJ_ENABLE_ZENRAVIF": "ON",
+        "AWJ_ENABLE_SVTAV1HDR": "ON",
+        "AWJ_ENABLE_JPEGLI": "ON",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "linux-x64-debug",
+      "displayName": "Linux x64 Debug (portable)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/linux-x64-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "AWJ_VCPKG_LIBRARY_CONFIG": "Debug"
+      }
+    },
+    {
+      "name": "linux-x64-release",
+      "displayName": "Linux x64 Release (portable)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/linux-x64-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "AWJ_VCPKG_LIBRARY_CONFIG": "Release",
+        "AVIF_ENABLE_RELEASE_IPO": "ON",
+        "AWJ_ENABLE_X64_V3": "ON"
+      }
+    },
+    {
       "name": "linux-gcc-x64-debug",
-      "displayName": "Linux GCC 16 x64 Debug",
+      "displayName": "Linux GCC 16 x64 Debug (maintainer wrappers)",
       "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-16.1-awj",
@@ -66,7 +107,7 @@
     },
     {
       "name": "linux-gcc-x64-release",
-      "displayName": "Linux GCC 16 x64 Release",
+      "displayName": "Linux GCC 16 x64 Release (maintainer wrappers)",
       "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "$env{HOME}/.local/gcc-16.1-deb/wrappers/gcc-16.1-awj",
@@ -145,6 +186,14 @@
       "name": "windows-msvc-x64-debug",
       "configurePreset": "windows-msvc-x64-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "linux-x64-debug",
+      "configurePreset": "linux-x64-debug"
+    },
+    {
+      "name": "linux-x64-release",
+      "configurePreset": "linux-x64-release"
     },
     {
       "name": "windows-msvc-x64-release",

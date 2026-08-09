@@ -606,3 +606,42 @@ msgstr "Open output folder"
 msgctxt "button"
 msgid "关闭"
 msgstr "Close"
+
+msgid "当前版本 "
+msgstr "Current version "
+
+msgid "发现新版本 "
+msgstr "New version available: "
+
+msgid "更新日志"
+msgstr "Changelog"
+
+msgid "可更新到 "
+msgstr "Update available: "
+
+msgid "当前没有可用更新。可在设置中立即重新检查。"
+msgstr "No update is currently available. Check again from Settings at any time."
+
+msgid "自动更新"
+msgstr "Automatic updates"
+
+msgid "更新渠道"
+msgstr "Update channel"
+
+msgid "仅稳定版"
+msgstr "Stable only"
+
+msgid "稳定版和 prerelease"
+msgstr "Stable and prerelease"
+
+msgid "显示更新日志"
+msgstr "Show changelog"
+
+msgid "正在检查…"
+msgstr "Checking…"
+
+msgid "立即检查更新"
+msgstr "Check for updates now"
+
+msgid "上次成功检查："
+msgstr "Last successful check: "

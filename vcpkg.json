@@ -1,6 +1,6 @@
 {
   "name": "awjimage",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "dependencies": [
     "aom",
     "dav1d",
@@ -8,9 +8,18 @@
       "name": "directx-dxc",
       "platform": "!windows"
     },
+    {
+      "name": "curl",
+      "default-features": false,
+      "features": [
+        "ssl"
+      ],
+      "platform": "!windows"
+    },
     "giflib",
     "libjpeg-turbo",
     "libjxl",
+    "libsodium",
     "libpng",
     {
       "name": "libraw",
@@ -24,6 +33,7 @@
       "platform": "windows"
     },
     "scnlib",
+    "nlohmann-json",
     {
       "name": "tiff",
       "features": [

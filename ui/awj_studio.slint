@@ -522,6 +522,7 @@ component NavItem inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
     in property <int> tab-index: 0;
+    in property <bool> enabled: true;
     in property <brush> normal-background: transparent;
     in property <brush> hover-background: #eef6ff;
     in property <brush> selected-background: #0f7c8c;
@@ -532,9 +533,11 @@ component NavItem inherits Rectangle {
     callback clicked();
     callback navigate(string);
 
-    height: 46px;
+    height: root.enabled ? 46px : 0px;
+    visible: root.enabled;
     forward-focus: nav-focus;
     accessible-role: tab;
+    accessible-enabled: root.enabled;
     accessible-label: root.label;
     accessible-item-index: root.tab-index;
     accessible-item-selectable: true;
@@ -566,12 +569,14 @@ component NavItem inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { nav-focus.focus(); root.clicked(); }
     }
 
     nav-focus := FocusScope {
         x: 0px;
         width: 0px;
+        enabled: root.enabled;
         key-pressed(event) => {
             if (event.text == " " || event.text == Key.Return) {
                 root.clicked();
@@ -781,6 +786,20 @@ export component AwjStudio inherits Window {
     in-out property <int> theme-index: 0;
     // 0 = 中文（msgid 原文），1 = English（bundled 翻译）。
     in-out property <int> language-index: 0;
+    in property <string> current-version: "";
+    in-out property <int> update-channel-index: 0;
+    in-out property <bool> show-update-changelog: true;
+    in-out property <bool> update-checking: false;
+    in-out property <bool> update-available: false;
+    in-out property <string> update-version: "";
+    in-out property <string> update-published-at: "";
+    in-out property <string> update-changelog-zh-cn: "";
+    in-out property <string> update-changelog-en: "";
+    in-out property <string> update-summary-zh-cn: "";
+    in-out property <string> update-summary-en: "";
+    in-out property <string> update-status: @tr("尚未检查");
+    in-out property <string> update-last-successful-check: @tr("从未");
+    in-out property <string> update-action-text: @tr("查看版本");
     in-out property <string> ui-font-family: "";
     in property <[ComboOption]> ui-font-options: [{ text: @tr("系统默认字体"), enabled: true }];
     in-out property <int> ui-font-index: 0;
@@ -919,6 +938,10 @@ export component AwjStudio inherits Window {
     callback combo-popup-finished();
     callback theme-selection-requested(int, length, length);
     callback language-selection-requested(int);
+    callback update-channel-selection-requested(int);
+    callback show-update-changelog-requested(bool);
+    callback check-update-requested();
+    callback version-clicked();
     callback browse-large-image-file();
     callback browse-large-image-folder();
     callback large-image-action-requested(int, string);
@@ -972,6 +995,12 @@ export component AwjStudio inherits Window {
         root.ui-font-family = root.ui-font-index > 0 && root.ui-font-index < root.ui-font-options.length
             ? root.ui-font-options[root.ui-font-index].text
             : "";
+    }
+
+    changed show-update-changelog => {
+        if (!root.show-update-changelog && root.selected-page == 4) {
+            root.selected-page = 2;
+        }
     }
 
     changed avif-encoder-index => {
@@ -1068,7 +1097,7 @@ export component AwjStudio inherits Window {
                     accessible-label: @tr("主导航");
 
                     Rectangle {
-                        height: 52px;
+                        height: 78px;
                         background: transparent;
                         VerticalLayout {
                             spacing: 4px;
@@ -1078,6 +1107,59 @@ export component AwjStudio inherits Window {
                                 height: 3px;
                                 border-radius: 1.5px;
                                 background: #0f7c8c;
+                            }
+                            version-control := Rectangle {
+                                width: 112px;
+                                height: 25px;
+                                border-radius: 5px;
+                                background: version-touch.has-hover ? root.accent-soft : transparent;
+                                accessible-role: button;
+                                accessible-label: @tr("当前版本 ") + root.current-version;
+                                accessible-action-default => { root.version-clicked(); }
+                                Text {
+                                    x: 7px;
+                                    width: parent.width - 14px;
+                                    text: "v" + root.current-version;
+                                    color: root.accent-strong;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                if root.update-available: Rectangle {
+                                    x: parent.width - 9px;
+                                    y: 2px;
+                                    width: 7px;
+                                    height: 7px;
+                                    border-radius: 3.5px;
+                                    background: #e5484d;
+                                }
+                                version-touch := TouchArea {
+                                    clicked => { root.version-clicked(); }
+                                }
+                                if version-touch.has-hover && root.update-available && root.show-update-changelog: Rectangle {
+                                    x: 0px;
+                                    y: parent.height + 4px;
+                                    width: root.nav-width - root.page-gap * 2;
+                                    height: 78px;
+                                    z: 20;
+                                    border-radius: 7px;
+                                    background: root.panel-bg;
+                                    border-width: 1px;
+                                    border-color: root.panel-border;
+                                    VerticalLayout {
+                                        padding: 9px;
+                                        spacing: 4px;
+                                        Text { text: @tr("发现新版本 ") + root.update-version; color: root.text-strong; font-size: 12px; font-weight: 800; }
+                                        Text {
+                                            text: root.language-index == 1 ? root.update-summary-en : root.update-summary-zh-cn;
+                                            color: root.text-muted;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                            max-height: 42px;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1129,6 +1211,24 @@ export component AwjStudio inherits Window {
                         clicked => { root.selected-page = 3; }
                         navigate(action) => {
                             if (action == "up") { params-nav.focus(); }
+                            if (action == "down") { if (root.show-update-changelog) { changelog-nav.focus(); } else { settings-nav.focus(); } }
+                            if (action == "end") { settings-nav.focus(); }
+                            if (action == "home") { queue-nav.focus(); }
+                        }
+                    }
+                    changelog-nav := NavItem {
+                        label: @tr("更新日志");
+                        enabled: root.show-update-changelog;
+                        tab-index: 3;
+                        selected: root.selected-page == 4;
+                        normal-background: transparent;
+                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
+                        selected-background: root.dark-mode ? #188697 : #0f7c8c;
+                        normal-text: root.text-body;
+                        selected-text: #ffffff;
+                        clicked => { root.selected-page = 4; }
+                        navigate(action) => {
+                            if (action == "up") { menu-nav.focus(); }
                             if (action == "down" || action == "end") { settings-nav.focus(); }
                             if (action == "home") { queue-nav.focus(); }
                         }
@@ -1137,7 +1237,7 @@ export component AwjStudio inherits Window {
 
                     settings-nav := NavItem {
                         label: @tr("设置");
-                        tab-index: 3;
+                        tab-index: 4;
                         selected: root.selected-page == 2;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -1146,7 +1246,7 @@ export component AwjStudio inherits Window {
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 2; }
                         navigate(action) => {
-                            if (action == "up") { menu-nav.focus(); }
+                            if (action == "up") { if (root.show-update-changelog) { changelog-nav.focus(); } else { menu-nav.focus(); } }
                             if (action == "home") { queue-nav.focus(); }
                             if (action == "down" || action == "end") { settings-nav.focus(); }
                         }
@@ -1867,7 +1967,53 @@ export component AwjStudio inherits Window {
                     }
                 }
 
-if root.selected-page == 2: ScrollView {
+                if root.selected-page == 4 && root.show-update-changelog: ScrollView {
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    viewport-width: parent.width;
+                    Rectangle {
+                        border-radius: 8px;
+                        background: root.panel-bg;
+                        border-color: root.panel-border;
+                        border-width: 1px;
+                        min-height: parent.height;
+                        VerticalLayout {
+                            padding: 24px;
+                            spacing: 14px;
+                            Text { text: @tr("更新日志"); color: root.text-strong; font-size: 22px; font-weight: 800; }
+                            Text {
+                                text: root.update-available
+                                    ? @tr("可更新到 ") + root.update-version + (root.update-published-at.is-empty ? "" : " · " + root.update-published-at)
+                                    : @tr("当前版本 ") + root.current-version;
+                                color: root.update-available ? root.accent-strong : root.success;
+                                font-size: 14px;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.update-available
+                                    ? (root.language-index == 1 ? root.update-changelog-en : root.update-changelog-zh-cn)
+                                    : @tr("当前没有可用更新。可在设置中立即重新检查。");
+                                color: root.text-body;
+                                font-size: 14px;
+                                wrap: word-wrap;
+                                min-width: 0px;
+                                width: 100%;
+                                horizontal-stretch: 1;
+                                height: self.preferred-height;
+                            }
+                            Rectangle { height: 4px; background: transparent; }
+                            SoftButton {
+                                text: root.update-action-text;
+                                enabled: !root.update-checking && !root.running;
+                                dark-mode: root.dark-mode;
+                                clicked => { root.version-clicked(); }
+                            }
+                        }
+                    }
+                }
+
+                if root.selected-page == 2: ScrollView {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
                     viewport-width: parent.width;
@@ -1966,6 +2112,68 @@ if root.selected-page == 2: ScrollView {
                                         muted-text: root.text-muted;
                                         selected-text: root.text-body;
                                     }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            border-radius: 8px;
+                            background: root.panel-bg;
+                            border-color: root.panel-border;
+                            border-width: 1px;
+                            animate background, border-color { duration: 180ms; easing: ease-out; }
+                            VerticalLayout {
+                                padding: 24px;
+                                spacing: root.page-gap;
+                                Text { text: @tr("自动更新"); color: root.text-strong; font-size: 18px; font-weight: 800; }
+                                HorizontalLayout {
+                                    spacing: root.page-gap;
+                                    Text { text: @tr("更新渠道"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                    SoftComboBox {
+                                        accessible-name: @tr("更新渠道");
+                                        viewport-height: root.height;
+                                        close-generation: root.combo-close-generation;
+                                        popup-requested => { root.combo-popup-requested(); }
+                                        popup-finished => { root.combo-popup-finished(); }
+                                        model: [{ text: @tr("仅稳定版"), enabled: true }, { text: @tr("稳定版和 prerelease"), enabled: true }];
+                                        current-index <=> root.update-channel-index;
+                                        enabled: !root.update-checking;
+                                        horizontal-stretch: 1;
+                                        normal-background: root.combo-bg;
+                                        hover-background: root.combo-bg-hover;
+                                        disabled-background: root.combo-bg-disabled;
+                                        selected-background: root.combo-selected-bg;
+                                        normal-border: root.combo-border;
+                                        hover-border: root.combo-border-hover;
+                                        normal-text: root.text-body;
+                                        disabled-text: root.text-soft;
+                                        muted-text: root.text-muted;
+                                        selected-text: root.accent-strong;
+                                        selection-accepted(index, click-x, click-y) => {
+                                            root.update-channel-selection-requested(index);
+                                        }
+                                    }
+                                }
+                                CheckBox {
+                                    text: @tr("显示更新日志");
+                                    checked <=> root.show-update-changelog;
+                                    toggled => { root.show-update-changelog-requested(self.checked); }
+                                }
+                                HorizontalLayout {
+                                    spacing: root.page-gap;
+                                    SoftButton {
+                                        text: root.update-checking ? @tr("正在检查…") : @tr("立即检查更新");
+                                        enabled: !root.update-checking;
+                                        dark-mode: root.dark-mode;
+                                        clicked => { root.check-update-requested(); }
+                                    }
+                                    Text { text: root.update-status; color: root.text-muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
+                                }
+                                Text {
+                                    text: @tr("上次成功检查：") + root.update-last-successful-check;
+                                    color: root.text-muted;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
                                 }
                             }
                         }

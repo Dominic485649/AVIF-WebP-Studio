@@ -14,6 +14,10 @@
 /third_party/imagemagick-src/
 /third_party/imagemagick-runtime/
 /third_party/zenravif-bridge/target/
+
+# Updater private signing material must never enter the repository.
+**/*update-ed25519-seed*.hex
+**/*update-ed25519*.seed
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 

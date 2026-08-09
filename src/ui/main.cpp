@@ -63,6 +63,9 @@ import awj.native_backend;
 import awj.pipeline;
 import awj.resource_planner;
 import awj.studio_defaults;
+import awj.update_model;
+import awj.update_runtime;
+import awj.update_windows;
 
 namespace {
 
@@ -216,11 +219,23 @@ struct StudioConfigSnapshot {
   std::string template_text{};
   std::array<MenuFormatParams, 5> menu_params{};
 
+  std::string update_channel{"stable"};
+  bool show_update_changelog{true};
+  std::int64_t last_successful_update_check_at{};
+  std::int64_t last_verified_manifest_sequence{};
+  std::string pending_update_version{};
+  std::string pending_update_channel{};
+  std::string pending_update_release_url{};
+  std::string pending_update_published_at{};
+  std::string pending_update_changelog_zh_cn{};
+  std::string pending_update_changelog_en{};
+
   bool operator==(const StudioConfigSnapshot&) const = default;
 };
 
 struct UiState {
   std::jthread worker{};
+  std::jthread update_worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::vector<QueueImageItem> queue_items{};
@@ -243,6 +258,20 @@ struct UiState {
   std::array<MenuFormatParams, 5> menu_params{};
   int last_format_index{};
   int last_menu_format_index{};
+
+  std::string update_channel{"stable"};
+  bool show_update_changelog{true};
+  std::int64_t last_successful_update_check_at{};
+  std::int64_t last_verified_manifest_sequence{};
+  std::string pending_update_version{};
+  std::string pending_update_channel{};
+  std::string pending_update_release_url{};
+  std::string pending_update_published_at{};
+  std::string pending_update_changelog_zh_cn{};
+  std::string pending_update_changelog_en{};
+  bool update_check_active{};
+  std::string update_status_zh{"尚未检查"};
+  std::string update_status_en{"Not checked yet"};
 };
 
 LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
@@ -677,7 +706,7 @@ std::array<MenuFormatParams, 5> menu_params_snapshot(const AwjStudio& app,
 StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
                                            const UiState* state = nullptr) {
   const auto [window_width, window_height] = current_studio_window_size(app);
-  return StudioConfigSnapshot{
+  StudioConfigSnapshot snapshot{
       .window_width = window_width,
       .window_height = window_height,
       .input_mode_index = app.get_input_mode_index(),
@@ -691,6 +720,23 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .write_log = app.get_write_log(),
       .template_text = shared_to_string(app.get_template_text()),
       .menu_params = menu_params_snapshot(app, state)};
+  // 后台状态只在 UiState 中维护；所有写入仍由 UI 线程走统一的原子提交。
+  if (state != nullptr) {
+    snapshot.update_channel = state->update_channel;
+    snapshot.show_update_changelog = state->show_update_changelog;
+    snapshot.last_successful_update_check_at =
+        state->last_successful_update_check_at;
+    snapshot.last_verified_manifest_sequence =
+        state->last_verified_manifest_sequence;
+    snapshot.pending_update_version = state->pending_update_version;
+    snapshot.pending_update_channel = state->pending_update_channel;
+    snapshot.pending_update_release_url = state->pending_update_release_url;
+    snapshot.pending_update_published_at = state->pending_update_published_at;
+    snapshot.pending_update_changelog_zh_cn =
+        state->pending_update_changelog_zh_cn;
+    snapshot.pending_update_changelog_en = state->pending_update_changelog_en;
+  }
+  return snapshot;
 }
 
 std::string strip_jsonc_comments(std::string_view text) {
@@ -745,7 +791,9 @@ struct JsonConfigValue {
   enum class Kind { boolean, integer, string };
   Kind kind{};
   bool boolean{};
-  int integer{};
+  // 用 64 位存整数：更新状态里有 Unix 时间戳，2038 年会超出 32 位 int。
+  // 取值时再按各自的合法区间收窄回 int。
+  std::int64_t integer{};
   std::string string{};
 };
 
@@ -838,7 +886,7 @@ std::expected<JsonConfigValue, std::string> parse_json_value(
   if (pos == start || (pos == start + 1 && text[start] == '-')) {
     return std::unexpected{"配置值只支持布尔、整数或字符串。"};
   }
-  const auto parsed = scn::scan_int<int>(text.substr(start, pos - start));
+  const auto parsed = scn::scan_int<std::int64_t>(text.substr(start, pos - start));
   if (!parsed) {
     return std::unexpected{"整数配置值无效。"};
   }
@@ -899,6 +947,26 @@ parse_jsonc_config(std::string_view source) {
 std::expected<int, std::string> config_int(
     const std::unordered_map<std::string, JsonConfigValue>& values,
     std::string_view key, int minimum, int maximum) {
+  const auto it = values.find(std::string{key});
+  if (it == values.end()) {
+    return std::unexpected{""};
+  }
+  if (it->second.kind != JsonConfigValue::Kind::integer) {
+    return std::unexpected{std::format("{} 必须是整数。", key)};
+  }
+  // 先按 64 位比较再收窄：值本身可能超出 int，直接转换是未定义行为。
+  if (it->second.integer < static_cast<std::int64_t>(minimum) ||
+      it->second.integer > static_cast<std::int64_t>(maximum)) {
+    return std::unexpected{
+        std::format("{} 范围必须在 {} 到 {} 之间。", key, minimum, maximum)};
+  }
+  return static_cast<int>(it->second.integer);
+}
+
+// 64 位整数配置项（Unix 时间戳、manifest 序号）。
+std::expected<std::int64_t, std::string> config_int64(
+    const std::unordered_map<std::string, JsonConfigValue>& values,
+    std::string_view key, std::int64_t minimum, std::int64_t maximum) {
   const auto it = values.find(std::string{key});
   if (it == values.end()) {
     return std::unexpected{""};
@@ -1172,6 +1240,67 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   if (auto result = apply_menu_config_values(*values, state.menu_params); !result) {
     return result;
   }
+
+  // 更新状态：读进 UiState 而不是 Slint 属性。缺失的键保持默认值——首次运行、
+  // 或旧版本写出的配置里没有这些键，都属于正常情况，不是错误。
+  {
+    const auto load_int64 =
+        [&](std::string_view key, std::int64_t minimum, std::int64_t maximum,
+            std::int64_t& target) -> std::expected<void, std::string> {
+      auto parsed = config_int64(*values, key, minimum, maximum);
+      if (parsed) {
+        target = *parsed;
+        return {};
+      }
+      return parsed.error().empty() ? std::expected<void, std::string>{}
+                                    : std::unexpected{parsed.error()};
+    };
+    const auto load_bool = [&](std::string_view key,
+                               bool& target) -> std::expected<void, std::string> {
+      auto parsed = config_bool(*values, key);
+      if (parsed) {
+        target = *parsed;
+        return {};
+      }
+      return parsed.error().empty() ? std::expected<void, std::string>{}
+                                    : std::unexpected{parsed.error()};
+    };
+    const auto load_string =
+        [&](std::string_view key,
+            std::string& target) -> std::expected<void, std::string> {
+      auto parsed = config_string(*values, key);
+      if (parsed) {
+        target = *parsed;
+        return {};
+      }
+      return parsed.error().empty() ? std::expected<void, std::string>{}
+                                    : std::unexpected{parsed.error()};
+    };
+
+    constexpr std::int64_t max_unix_seconds = 4102444800;  // 2100-01-01Z
+    if (auto r = load_string("update_channel", state.update_channel); !r) return r;
+    if (state.update_channel != "stable" && state.update_channel != "prerelease") {
+      return std::unexpected{"配置 update_channel 只能是 stable 或 prerelease。"};
+    }
+    if (auto r = load_bool("show_update_changelog", state.show_update_changelog); !r) return r;
+    if (auto r = load_int64("last_successful_update_check_at", 0,
+                            max_unix_seconds,
+                            state.last_successful_update_check_at); !r) return r;
+    if (auto r = load_int64("last_verified_manifest_sequence", 0,
+                            std::numeric_limits<std::int64_t>::max(),
+                            state.last_verified_manifest_sequence); !r) return r;
+    if (auto r = load_string("pending_update_version", state.pending_update_version); !r) return r;
+    if (auto r = load_string("pending_update_channel", state.pending_update_channel); !r) return r;
+    if (auto r = load_string("pending_update_release_url", state.pending_update_release_url); !r) return r;
+    if (auto r = load_string("pending_update_published_at", state.pending_update_published_at); !r) return r;
+    if (auto r = load_string("pending_update_changelog_zh_cn",
+                             state.pending_update_changelog_zh_cn); !r) return r;
+    if (auto r = load_string("pending_update_changelog_en",
+                             state.pending_update_changelog_en); !r) return r;
+  }
+
+  app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
+  app.set_show_update_changelog(state.show_update_changelog);
   load_menu_params_for_index(app, state, app.get_menu_format_index());
   return {};
 }
@@ -1209,6 +1338,74 @@ void append_json_config_line(std::vector<std::string>& lines,
   lines.push_back(std::format("  \"{}\": {}", key, value));
 }
 
+// ---------------------------------------------------------------------------
+// 原子写文件：同目录临时文件 → 刷新磁盘 → 原子替换。
+//
+// 三步缺一不可：
+//   * 临时文件必须和目标同目录，否则跨卷时替换退化成「复制+删除」，不再原子；
+//   * 替换前必须把数据刷到盘上，否则崩溃后可能得到一个大小正确但内容为零的文件
+//     （元数据先于数据落盘）；
+//   * 替换本身要用平台的原子接口，让读取方要么看到旧内容、要么看到新内容。
+//
+// 失败时清理临时文件，绝不动原文件——写失败的正确结果是「配置没变」，
+// 而不是「配置没了」。
+//
+// 这里是 main.cpp 的 Windows 半区；Linux Studio 有自己的同名实现，见文件后半段。
+// ---------------------------------------------------------------------------
+std::expected<void, std::string> write_file_atomically(
+    const std::filesystem::path& path, std::string_view content) {
+  std::error_code ec;
+  auto temp_path = path;
+  temp_path += L".tmp";
+
+  // 上一次失败可能留下残留，先清掉；这里失败不致命，创建时还会再报一次。
+  std::filesystem::remove(temp_path, ec);
+
+  {
+    const HANDLE file = CreateFileW(
+        temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+      return std::unexpected{"无法创建配置临时文件。"};
+    }
+    struct HandleCloser {
+      HANDLE handle{};
+      ~HandleCloser() {
+        if (handle != INVALID_HANDLE_VALUE) {
+          CloseHandle(handle);
+        }
+      }
+    } closer{file};
+
+    std::size_t written_total = 0;
+    while (written_total < content.size()) {
+      const auto chunk = static_cast<DWORD>(
+          std::min<std::size_t>(content.size() - written_total, 1u << 20));
+      DWORD written = 0;
+      if (WriteFile(file, content.data() + written_total, chunk, &written,
+                    nullptr) == FALSE ||
+          written == 0) {
+        std::filesystem::remove(temp_path, ec);
+        return std::unexpected{"写入配置临时文件失败。"};
+      }
+      written_total += written;
+    }
+    // 元数据可能先于数据落盘，必须显式 flush 才能保证替换后的文件内容完整。
+    if (FlushFileBuffers(file) == FALSE) {
+      std::filesystem::remove(temp_path, ec);
+      return std::unexpected{"刷新配置临时文件到磁盘失败。"};
+    }
+  }
+
+  // MoveFileEx 的替换在同卷上是原子的；WRITE_THROUGH 让目录项也落盘。
+  if (MoveFileExW(temp_path.c_str(), path.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+    std::filesystem::remove(temp_path, ec);
+    return std::unexpected{"替换程序同目录配置文件失败。"};
+  }
+  return {};
+}
+
 std::expected<void, std::string> write_studio_config_file(
     const StudioConfigSnapshot& current,
     const StudioConfigSnapshot& defaults) try {
@@ -1234,6 +1431,13 @@ std::expected<void, std::string> write_studio_config_file(
                               std::format("\"{}\"", json_escape(value)));
     }
   };
+  // Unix 时间戳和 manifest 序号都会超出 int，必须单独走 64 位。
+  const auto add_int64 = [&](std::string_view key, std::int64_t value,
+                             std::int64_t fallback) {
+    if (value != fallback) {
+      append_json_config_line(lines, key, std::format("{}", value));
+    }
+  };
 
   add_int("window_width", current.window_width, defaults.window_width);
   add_int("window_height", current.window_height, defaults.window_height);
@@ -1252,6 +1456,32 @@ std::expected<void, std::string> write_studio_config_file(
   add_bool("write_log", current.write_log, defaults.write_log);
 
   add_string("template_text", current.template_text, defaults.template_text);
+
+  add_string("update_channel", current.update_channel,
+             defaults.update_channel);
+  add_bool("show_update_changelog", current.show_update_changelog,
+           defaults.show_update_changelog);
+  add_int64("last_successful_update_check_at",
+            current.last_successful_update_check_at,
+            defaults.last_successful_update_check_at);
+  add_int64("last_verified_manifest_sequence",
+            current.last_verified_manifest_sequence,
+            defaults.last_verified_manifest_sequence);
+  add_string("pending_update_version", current.pending_update_version,
+             defaults.pending_update_version);
+  add_string("pending_update_channel", current.pending_update_channel,
+             defaults.pending_update_channel);
+  add_string("pending_update_release_url", current.pending_update_release_url,
+             defaults.pending_update_release_url);
+  add_string("pending_update_published_at",
+             current.pending_update_published_at,
+             defaults.pending_update_published_at);
+  add_string("pending_update_changelog_zh_cn",
+             current.pending_update_changelog_zh_cn,
+             defaults.pending_update_changelog_zh_cn);
+  add_string("pending_update_changelog_en",
+             current.pending_update_changelog_en,
+             defaults.pending_update_changelog_en);
 
   for (std::size_t i = 0; i < current.menu_params.size(); ++i) {
     const auto prefix = menu_config_prefixes[i];
@@ -1276,25 +1506,24 @@ std::expected<void, std::string> write_studio_config_file(
     add_string(menu_config_key(prefix, "max_short_edge_text"), value.max_short_edge_text, fallback.max_short_edge_text);
   }
 
-  std::ofstream output{path, std::ios::binary | std::ios::trunc};
-  if (!output) {
-    return std::unexpected{"无法写入程序同目录配置文件。"};
-  }
-  output << "{\n";
-  output << "  // AWJ Studio runtime config. Only values that differ from "
-            "built-in defaults are written.\n";
+  // 先在内存里拼出完整内容，再原子落盘。直接 truncate 写目标文件的话，进程在
+  // 写到一半时被杀（或断电）会留下一个被截断的 AWJ.jsonc —— 下次启动解析失败，
+  // 用户的全部设置一起丢。更新流程会往同一份配置里写待更新状态，出错代价更高。
+  std::string content;
+  content += "{\n";
+  content +=
+      "  // AWJ Studio runtime config. Only values that differ from "
+      "built-in defaults are written.\n";
   for (std::size_t i = 0; i < lines.size(); ++i) {
-    output << lines[i];
+    content += lines[i];
     if (i + 1 < lines.size()) {
-      output << ',';
+      content += ',';
     }
-    output << '\n';
+    content += '\n';
   }
-  output << "}\n";
-  if (!output) {
-    return std::unexpected{"程序同目录配置文件写入不完整。"};
-  }
-  return {};
+  content += "}\n";
+
+  return write_file_atomically(path, content);
 } catch (const std::bad_alloc&) {
   return std::unexpected{"写入 Studio 配置时内存不足。"};
 } catch (const std::length_error&) {
@@ -2233,11 +2462,17 @@ bool large_image_grid_available(const awj::BatchLargeImageItem& item) noexcept {
   if (!item.decision.available_grid) {
     return false;
   }
-  const auto plan =
-      awj::plan_grid(awj::GridPlanRequest{.width = item.dimensions.width,
-                                          .height = item.dimensions.height,
-                                          .mode = awj::GridMode::auto_grid});
-  return plan && !plan->uses_padding;
+  // 可用性判断必须和真正执行的 CLI 一致：手动 grid 会带上
+  // --experimental-clamped-grid-padding（Studio 不提供关闭入口，始终是默认值），
+  // 而 pipeline 的 try_grid 接受 clamped 计划，编码器也按右列/底行的真实剩余
+  // 尺寸切 tile。这里再拒绝 uses_padding 只会把 CLI 能做的事灰掉。
+  const auto plan = awj::plan_grid(awj::GridPlanRequest{
+      .width = item.dimensions.width,
+      .height = item.dimensions.height,
+      .mode = awj::GridMode::auto_grid,
+      .clamped_padding_enabled =
+          awj::encoding_defaults::default_experimental_clamped_grid_padding});
+  return plan.has_value();
 }
 
 bool large_image_zenrav1e_available(
@@ -5247,6 +5482,220 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
   }
 }
 
+struct UpdatePersistentState {
+  std::string channel{};
+  bool show_changelog{};
+  std::int64_t last_successful_check{};
+  std::int64_t last_verified_sequence{};
+  std::string version{};
+  std::string pending_channel{};
+  std::string release_url{};
+  std::string published_at{};
+  std::string changelog_zh_cn{};
+  std::string changelog_en{};
+};
+
+UpdatePersistentState capture_update_state(const UiState& state) {
+  return {.channel = state.update_channel,
+          .show_changelog = state.show_update_changelog,
+          .last_successful_check = state.last_successful_update_check_at,
+          .last_verified_sequence = state.last_verified_manifest_sequence,
+          .version = state.pending_update_version,
+          .pending_channel = state.pending_update_channel,
+          .release_url = state.pending_update_release_url,
+          .published_at = state.pending_update_published_at,
+          .changelog_zh_cn = state.pending_update_changelog_zh_cn,
+          .changelog_en = state.pending_update_changelog_en};
+}
+
+void restore_update_state(UiState& state, UpdatePersistentState value) {
+  state.update_channel = std::move(value.channel);
+  state.show_update_changelog = value.show_changelog;
+  state.last_successful_update_check_at = value.last_successful_check;
+  state.last_verified_manifest_sequence = value.last_verified_sequence;
+  state.pending_update_version = std::move(value.version);
+  state.pending_update_channel = std::move(value.pending_channel);
+  state.pending_update_release_url = std::move(value.release_url);
+  state.pending_update_published_at = std::move(value.published_at);
+  state.pending_update_changelog_zh_cn = std::move(value.changelog_zh_cn);
+  state.pending_update_changelog_en = std::move(value.changelog_en);
+}
+
+void clear_pending_update(UiState& state) {
+  state.pending_update_version.clear();
+  state.pending_update_channel.clear();
+  state.pending_update_release_url.clear();
+  state.pending_update_published_at.clear();
+  state.pending_update_changelog_zh_cn.clear();
+  state.pending_update_changelog_en.clear();
+}
+
+std::string update_summary(std::string_view changelog) {
+  const auto line_end = changelog.find_first_of("\r\n");
+  return std::string{changelog.substr(0, line_end)};
+}
+
+std::string format_update_check_time(std::int64_t unix_seconds) {
+  if (unix_seconds <= 0) return {};
+  const auto point = std::chrono::system_clock::time_point{
+      std::chrono::seconds{unix_seconds}};
+  return std::format("{:%Y-%m-%d %H:%M:%S} UTC",
+                     std::chrono::floor<std::chrono::seconds>(point));
+}
+
+bool pending_update_is_newer(const UiState& state) {
+  const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
+  const auto pending = awj::update::parse_version(state.pending_update_version);
+  const auto channel = awj::update::parse_channel(state.pending_update_channel);
+  const auto preference = state.update_channel == "prerelease"
+                              ? awj::update::ChannelPreference::stable_and_prerelease
+                              : awj::update::ChannelPreference::stable_only;
+  return current && pending && channel && *pending > *current &&
+         awj::update::channel_visible_to(*channel, preference);
+}
+
+void sync_update_ui(AwjStudio& app, const UiState& state) {
+  const bool english = app.get_language_index() == 1;
+  const bool available = pending_update_is_newer(state);
+  app.set_current_version(to_shared(AWJ_BUILD_VERSION));
+  app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
+  app.set_show_update_changelog(state.show_update_changelog);
+  app.set_update_available(available);
+  app.set_update_version(to_shared(available ? state.pending_update_version : ""));
+  app.set_update_published_at(
+      to_shared(available ? state.pending_update_published_at : ""));
+  app.set_update_changelog_zh_cn(
+      to_shared(available ? state.pending_update_changelog_zh_cn : ""));
+  app.set_update_changelog_en(
+      to_shared(available ? state.pending_update_changelog_en : ""));
+  app.set_update_summary_zh_cn(
+      to_shared(available ? update_summary(state.pending_update_changelog_zh_cn)
+                          : ""));
+  app.set_update_summary_en(
+      to_shared(available ? update_summary(state.pending_update_changelog_en)
+                          : ""));
+  const auto last = format_update_check_time(state.last_successful_update_check_at);
+  app.set_update_last_successful_check(
+      to_shared(last.empty() ? (english ? "Never" : "从未") : last));
+  app.set_update_status(
+      to_shared(english ? state.update_status_en : state.update_status_zh));
+#ifdef _WIN32
+  app.set_update_action_text(to_shared(
+      available ? (english ? "Download and install" : "下载并安装")
+                : (english ? "Open current release" : "打开当前版本页面")));
+#else
+  app.set_update_action_text(to_shared(
+      available ? (english ? "Open release page" : "打开候选版本页面")
+                : (english ? "Open current release" : "打开当前版本页面")));
+#endif
+}
+
+awj::update::ChannelPreference update_preference(const UiState& state) {
+  return state.update_channel == "prerelease"
+             ? awj::update::ChannelPreference::stable_and_prerelease
+             : awj::update::ChannelPreference::stable_only;
+}
+
+void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
+                        const std::shared_ptr<UiState>& state) {
+  if (state->update_check_active) return;
+  if (state->update_worker.joinable()) state->update_worker.join();
+  state->update_check_active = true;
+  if (auto app = weak.lock()) {
+    (*app)->set_update_checking(true);
+    state->update_status_zh = "正在检查更新…";
+    state->update_status_en = "Checking for updates...";
+    sync_update_ui(**app, *state);
+  }
+  const auto last_sequence = state->last_verified_manifest_sequence < 0
+                                 ? std::uint64_t{0}
+                                 : static_cast<std::uint64_t>(
+                                       state->last_verified_manifest_sequence);
+  const auto preference = update_preference(*state);
+  state->update_worker = std::jthread(
+      [weak, state, last_sequence, preference](std::stop_token token) {
+        auto fetched =
+            awj::update::fetch_verified_manifest(last_sequence, token);
+        post_to_ui(weak, [state, preference,
+                          fetched = std::move(fetched)](AwjStudio& app) mutable {
+          state->update_check_active = false;
+          app.set_update_checking(false);
+          if (!fetched) {
+            state->update_status_zh =
+                std::format("检查失败：{}", fetched.error());
+            state->update_status_en = "Update check failed.";
+            sync_update_ui(app, *state);
+            return;
+          }
+          if (fetched->manifest.sequence >
+              static_cast<std::uint64_t>(
+                  std::numeric_limits<std::int64_t>::max())) {
+            state->update_status_zh = "检查失败：manifest sequence 超出本机范围。";
+            state->update_status_en = "Update check failed: sequence is out of range.";
+            sync_update_ui(app, *state);
+            return;
+          }
+
+          const auto before = capture_update_state(*state);
+          if (const auto pending =
+                  awj::update::parse_version(state->pending_update_version);
+              pending && awj::update::should_clear_pending_for_revocation(
+                             fetched->manifest, *pending)) {
+            clear_pending_update(*state);
+          }
+          const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
+          if (!current) {
+            restore_update_state(*state, before);
+            state->update_status_zh = "检查失败：当前构建版本号非法。";
+            state->update_status_en = "Update check failed: invalid build version.";
+            sync_update_ui(app, *state);
+            return;
+          }
+          const auto candidate = awj::update::select_candidate(
+              fetched->manifest,
+              {.current_version = *current,
+               .updater_version = *current,
+               .preference = preference});
+          if (candidate) {
+            state->pending_update_version =
+                awj::update::to_string(candidate->version);
+            state->pending_update_channel =
+                std::string{awj::update::channel_name(candidate->channel)};
+            state->pending_update_release_url = candidate->release_url;
+            state->pending_update_published_at = candidate->published_at;
+            state->pending_update_changelog_zh_cn = candidate->changelog.zh_cn;
+            state->pending_update_changelog_en = candidate->changelog.en;
+          }
+          state->last_successful_update_check_at =
+              std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::system_clock::now().time_since_epoch())
+                  .count();
+          state->last_verified_manifest_sequence =
+              static_cast<std::int64_t>(fetched->manifest.sequence);
+          const bool retained_pending = !candidate && pending_update_is_newer(*state);
+          state->update_status_zh =
+              candidate ? "发现可用更新。"
+                        : retained_pending ? "检查成功；保留之前发现的更新。"
+                                           : "已是最新版。";
+          state->update_status_en =
+              candidate ? "An update is available."
+                        : retained_pending
+                              ? "Check succeeded; the previously found update remains available."
+                              : "Up to date.";
+
+          if (auto saved = persist_studio_config_if_changed(app, *state);
+              !saved) {
+            restore_update_state(*state, before);
+            state->update_status_zh =
+                std::format("检查失败：无法持久化状态：{}", saved.error());
+            state->update_status_en =
+                "Update check failed: state could not be saved.";
+          }
+          sync_update_ui(app, *state);
+        });
+      });
+}
+
 }  // namespace
 
 /// Probe whether the OpenGL driver exposes the functions FemtoVG needs
@@ -5314,7 +5763,8 @@ void ensure_slint_backend() {
   }
 }
 
-int run_studio_ui() {
+int run_studio_ui(const wchar_t* health_event,
+                  const wchar_t* installed_version) {
   try {
     ensure_slint_backend();
     auto app = AwjStudio::create();
@@ -5340,7 +5790,23 @@ int run_studio_ui() {
     // 配置已经读进 language_index，这里让 @tr() 立刻按存下来的语言重算。
     // 必须在组件创建之后调用，此时 AwjStudio::create() 早已完成。
     apply_ui_language(app->get_language_index());
+    bool health_check_ready = false;
+    if (health_event != nullptr && installed_version != nullptr &&
+        awj::wide_from_utf8(AWJ_BUILD_VERSION) == installed_version &&
+        state->pending_update_version == AWJ_BUILD_VERSION) {
+      clear_pending_update(*state);
+      if (auto saved = write_studio_config_file(
+              capture_studio_config(*app, state.get()),
+              *state->config_defaults);
+          saved) {
+        health_check_ready = true;
+      } else {
+        config_warning = std::format(
+            "更新已启动，但清除待更新状态失败：{}", saved.error());
+      }
+    }
     state->last_config_snapshot = capture_studio_config(*app, state.get());
+    sync_update_ui(*app, *state);
     if (auto warning = shell_context_menu_warning(state->menu_params)) {
       app->set_context_menu_warning(to_shared(*warning));
     }
@@ -5348,13 +5814,137 @@ int run_studio_ui() {
       app->set_status_text(to_shared(*config_warning));
     }
 
-    app->on_language_selection_requested([weak](int index) {
+    app->on_language_selection_requested([weak, state](int index) {
       run_ui_callback(weak, "切换界面语言失败", [&] {
         if (auto app = weak.lock()) {
           // 语言不受 running 限制：它只影响界面文字，不改变任何编码参数。
           (*app)->set_language_index(index);
           apply_ui_language(index);
+          sync_update_ui(**app, *state);
         }
+      });
+    });
+
+    app->on_update_channel_selection_requested([weak, state](int index) {
+      run_ui_callback(weak, "切换更新渠道失败", [&] {
+        auto app = weak.lock();
+        if (!app || (index != 0 && index != 1)) return;
+        const auto previous = state->update_channel;
+        state->update_channel = index == 1 ? "prerelease" : "stable";
+        (*app)->set_update_channel_index(index);
+        if (auto saved = persist_studio_config_if_changed(**app, *state);
+            !saved) {
+          state->update_channel = previous;
+          sync_update_ui(**app, *state);
+          (*app)->set_update_status(to_shared(
+              std::format("保存更新渠道失败：{}", saved.error())));
+          return;
+        }
+        start_update_check(weak, state);
+      });
+    });
+
+    app->on_show_update_changelog_requested([weak, state](bool visible) {
+      run_ui_callback(weak, "保存更新日志显示设置失败", [&] {
+        auto app = weak.lock();
+        if (!app) return;
+        const bool previous = state->show_update_changelog;
+        state->show_update_changelog = visible;
+        (*app)->set_show_update_changelog(visible);
+        if (!visible && (*app)->get_selected_page() == 4) {
+          (*app)->set_selected_page(2);
+        }
+        if (auto saved = persist_studio_config_if_changed(**app, *state);
+            !saved) {
+          state->show_update_changelog = previous;
+          sync_update_ui(**app, *state);
+          (*app)->set_update_status(to_shared(
+              std::format("保存更新日志设置失败：{}", saved.error())));
+        }
+      });
+    });
+
+    app->on_check_update_requested([weak, state] {
+      run_ui_callback(weak, "检查更新失败", [&] {
+        start_update_check(weak, state);
+      });
+    });
+
+    app->on_version_clicked([weak, state] {
+      run_ui_callback(weak, "处理版本操作失败", [&] {
+        auto app = weak.lock();
+        if (!app) return;
+        const auto open_release = [&](std::string_view url) {
+          const auto wide = awj::wide_from_utf8(url);
+          return reinterpret_cast<INT_PTR>(ShellExecuteW(
+              nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+        };
+        if (!pending_update_is_newer(*state)) {
+          const auto url = std::format(
+              "https://github.com/Dominic485649/AWJimage/releases/tag/{}",
+              AWJ_BUILD_VERSION);
+          if (const auto result = open_release(url); result <= 32) {
+            (*app)->set_update_status(to_shared(std::format(
+                "打开版本页面失败；ShellExecuteW 返回码 {}。", result)));
+          }
+          return;
+        }
+        if (worker_active(state) || (*app)->get_running()) {
+          (*app)->set_update_status(
+              to_shared("编码任务运行时禁止更新；请先等待任务完成或取消任务。"));
+          return;
+        }
+        if (state->update_check_active) {
+          (*app)->set_update_status(to_shared("更新检查或下载正在进行中。"));
+          return;
+        }
+        const auto confirmation = awj::wide_from_utf8(std::format(
+            "将下载、验证并安装 AWJ {}。\n\n"
+            "程序会在替换前关闭；启动健康检查失败时自动回滚。是否继续？",
+            state->pending_update_version));
+        if (MessageBoxW(nullptr, confirmation.c_str(), L"AWJ 自动更新",
+                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+          return;
+        }
+        if (state->update_worker.joinable()) state->update_worker.join();
+        const auto requested_version = state->pending_update_version;
+        const auto release_url = state->pending_update_release_url;
+        const auto preference = update_preference(*state);
+        const auto sequence = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, state->last_verified_manifest_sequence));
+        state->update_check_active = true;
+        state->update_status_zh = "正在重新验签并下载更新…";
+        state->update_status_en = "Verifying and downloading the update...";
+        (*app)->set_update_checking(true);
+        sync_update_ui(**app, *state);
+        state->update_worker = std::jthread(
+            [weak, state, requested_version, release_url, preference,
+             sequence](std::stop_token token) {
+              auto staged = awj::update::stage_and_launch_update(
+                  requested_version, preference, sequence, token);
+              post_to_ui(weak, [state, release_url,
+                                staged = std::move(staged)](AwjStudio& app) mutable {
+                state->update_check_active = false;
+                app.set_update_checking(false);
+                if (!staged) {
+                  state->update_status_zh =
+                      std::format("更新失败：{}", staged.error());
+                  state->update_status_en = "The update could not be installed.";
+                  sync_update_ui(app, *state);
+                  if (staged.error().starts_with("INSTALL_DIR_NOT_WRITABLE:")) {
+                    const auto wide = awj::wide_from_utf8(release_url);
+                    ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr,
+                                  nullptr, SW_SHOWNORMAL);
+                  }
+                  return;
+                }
+                state->update_status_zh = "更新 helper 已启动，正在关闭当前版本…";
+                state->update_status_en =
+                    "The update helper is ready; closing this version...";
+                sync_update_ui(app, *state);
+                app.window().hide();
+              });
+            });
       });
     });
 
@@ -5859,7 +6449,28 @@ int run_studio_ui() {
       });
     });
 
+    const auto now = std::chrono::system_clock::now();
+    const auto last_check = state->last_successful_update_check_at > 0
+                                ? std::optional{
+                                      std::chrono::system_clock::time_point{
+                                          std::chrono::seconds{
+                                              state->last_successful_update_check_at}}}
+                                : std::nullopt;
+    if (health_event == nullptr && awj::update::should_check_now(
+            {.trigger = awj::update::CheckTrigger::startup,
+             .last_successful_check = last_check,
+             .now = now})) {
+      start_update_check(weak, state);
+    }
+
     app->show();
+    if (health_check_ready) {
+      auto event = adopt_win32_handle(
+          OpenEventW(EVENT_MODIFY_STATE, FALSE, health_event));
+      if (event != nullptr) {
+        SetEvent(event.get());
+      }
+    }
     apply_title_bar_theme(app->window(), effective_studio_dark_mode(*app));
     constrain_window_to_work_area(app->window());
     DropBridge drop_bridge{app->window(), weak, state};
@@ -5870,6 +6481,9 @@ int run_studio_ui() {
     app->window().on_close_requested([weak, state] {
       run_ui_callback(weak, "关闭窗口时保存配置失败", [&] {
         force_stop_current_worker(state);
+        if (state->update_worker.joinable()) {
+          state->update_worker.request_stop();
+        }
         if (auto app = weak.lock()) {
           if (auto saved = persist_studio_config_if_changed(**app, *state);
               !saved) {
@@ -5890,6 +6504,10 @@ int run_studio_ui() {
     if (worker.joinable()) {
       worker.request_stop();
       worker.join();
+    }
+    if (state->update_worker.joinable()) {
+      state->update_worker.request_stop();
+      state->update_worker.join();
     }
     return 0;
   } catch (const std::exception&) {
@@ -6075,13 +6693,22 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
 #else
 
 #include <slint.h>
+#include <nlohmann/json.hpp>
+
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -6093,6 +6720,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
 #include <memory>
 #include <optional>
 #include <stop_token>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -6108,6 +6736,11 @@ import awj.core;
 import awj.encoding_defaults;
 import awj.large_image_plan;
 import awj.pipeline;
+import awj.update_manifest;
+import awj.update_model;
+import awj.update_runtime;
+
+extern char** environ;
 
 namespace {
 
@@ -6133,12 +6766,29 @@ struct LinuxMenuParams {
 
 struct LinuxUiState {
   std::jthread worker{};
+  std::jthread update_worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   std::vector<fs::path> failed_paths{};
   std::array<LinuxMenuParams, 5> menu_params{};
   int menu_format_index{};
+  fs::path config_path{};
+  nlohmann::ordered_json config_document{nlohmann::ordered_json::object()};
+  bool config_readable{true};
+  bool update_check_active{};
+  std::string update_channel{"stable"};
+  bool show_update_changelog{true};
+  std::int64_t last_successful_update_check_at{};
+  std::int64_t last_verified_manifest_sequence{};
+  std::string pending_update_version{};
+  std::string pending_update_channel{};
+  std::string pending_update_release_url{};
+  std::string pending_update_published_at{};
+  std::string pending_update_changelog_zh_cn{};
+  std::string pending_update_changelog_en{};
+  std::string update_status_zh{"尚未检查"};
+  std::string update_status_en{"Not checked yet"};
 };
 
 std::string trim_copy(std::string value) {
@@ -6273,6 +6923,419 @@ slint::SharedString to_shared(std::string_view text) {
 
 std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
+}
+
+struct LinuxUpdatePersistentState {
+  std::string channel{};
+  bool show_changelog{};
+  std::int64_t last_successful_check{};
+  std::int64_t last_verified_sequence{};
+  std::string version{};
+  std::string pending_channel{};
+  std::string release_url{};
+  std::string published_at{};
+  std::string changelog_zh_cn{};
+  std::string changelog_en{};
+};
+
+LinuxUpdatePersistentState capture_linux_update_state(
+    const LinuxUiState& state) {
+  return {.channel = state.update_channel,
+          .show_changelog = state.show_update_changelog,
+          .last_successful_check = state.last_successful_update_check_at,
+          .last_verified_sequence = state.last_verified_manifest_sequence,
+          .version = state.pending_update_version,
+          .pending_channel = state.pending_update_channel,
+          .release_url = state.pending_update_release_url,
+          .published_at = state.pending_update_published_at,
+          .changelog_zh_cn = state.pending_update_changelog_zh_cn,
+          .changelog_en = state.pending_update_changelog_en};
+}
+
+void restore_linux_update_state(LinuxUiState& state,
+                                LinuxUpdatePersistentState value) {
+  state.update_channel = std::move(value.channel);
+  state.show_update_changelog = value.show_changelog;
+  state.last_successful_update_check_at = value.last_successful_check;
+  state.last_verified_manifest_sequence = value.last_verified_sequence;
+  state.pending_update_version = std::move(value.version);
+  state.pending_update_channel = std::move(value.pending_channel);
+  state.pending_update_release_url = std::move(value.release_url);
+  state.pending_update_published_at = std::move(value.published_at);
+  state.pending_update_changelog_zh_cn = std::move(value.changelog_zh_cn);
+  state.pending_update_changelog_en = std::move(value.changelog_en);
+}
+
+void clear_linux_pending_update(LinuxUiState& state) {
+  state.pending_update_version.clear();
+  state.pending_update_channel.clear();
+  state.pending_update_release_url.clear();
+  state.pending_update_published_at.clear();
+  state.pending_update_changelog_zh_cn.clear();
+  state.pending_update_changelog_en.clear();
+}
+
+std::string linux_update_summary(std::string_view changelog) {
+  return std::string{changelog.substr(0, changelog.find_first_of("\r\n"))};
+}
+
+std::string linux_update_check_time(std::int64_t unix_seconds) {
+  if (unix_seconds <= 0) return {};
+  const auto point = std::chrono::system_clock::time_point{
+      std::chrono::seconds{unix_seconds}};
+  return std::format("{:%Y-%m-%d %H:%M:%S} UTC",
+                     std::chrono::floor<std::chrono::seconds>(point));
+}
+
+bool linux_pending_update_is_newer(const LinuxUiState& state) {
+  const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
+  const auto pending = awj::update::parse_version(state.pending_update_version);
+  const auto channel = awj::update::parse_channel(state.pending_update_channel);
+  const auto preference = state.update_channel == "prerelease"
+                              ? awj::update::ChannelPreference::stable_and_prerelease
+                              : awj::update::ChannelPreference::stable_only;
+  return current && pending && channel && *pending > *current &&
+         awj::update::channel_visible_to(*channel, preference);
+}
+
+void sync_linux_update_ui(AwjStudio& app, const LinuxUiState& state) {
+  const bool english = app.get_language_index() == 1;
+  const bool available = linux_pending_update_is_newer(state);
+  app.set_current_version(to_shared(AWJ_BUILD_VERSION));
+  app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
+  app.set_show_update_changelog(state.show_update_changelog);
+  app.set_update_available(available);
+  app.set_update_version(to_shared(available ? state.pending_update_version : ""));
+  app.set_update_published_at(
+      to_shared(available ? state.pending_update_published_at : ""));
+  app.set_update_changelog_zh_cn(
+      to_shared(available ? state.pending_update_changelog_zh_cn : ""));
+  app.set_update_changelog_en(
+      to_shared(available ? state.pending_update_changelog_en : ""));
+  app.set_update_summary_zh_cn(to_shared(
+      available ? linux_update_summary(state.pending_update_changelog_zh_cn) : ""));
+  app.set_update_summary_en(to_shared(
+      available ? linux_update_summary(state.pending_update_changelog_en) : ""));
+  const auto last = linux_update_check_time(state.last_successful_update_check_at);
+  app.set_update_last_successful_check(
+      to_shared(last.empty() ? (english ? "Never" : "从未") : last));
+  app.set_update_status(
+      to_shared(english ? state.update_status_en : state.update_status_zh));
+  app.set_update_action_text(to_shared(
+      available ? (english ? "Open release page" : "打开候选版本页面")
+                : (english ? "Open current release" : "打开当前版本页面")));
+}
+
+std::expected<void, std::string> atomic_write_linux_file(
+    const fs::path& path, std::string_view bytes) {
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  auto temporary = path;
+  temporary += std::format(".tmp-{}-{}", static_cast<long long>(::getpid()),
+                           stamp);
+  const int descriptor = ::open(temporary.c_str(),
+                                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+  if (descriptor < 0) {
+    return std::unexpected{std::format("无法创建配置临时文件：{}",
+                                       std::strerror(errno))};
+  }
+  bool ok = true;
+  std::string error{};
+  std::size_t written = 0;
+  while (written < bytes.size()) {
+    const auto count = ::write(descriptor, bytes.data() + written,
+                               bytes.size() - written);
+    if (count < 0) {
+      if (errno == EINTR) continue;
+      ok = false;
+      error = std::format("写入配置失败：{}", std::strerror(errno));
+      break;
+    }
+    if (count == 0) {
+      ok = false;
+      error = "写入配置失败：未写入任何字节";
+      break;
+    }
+    written += static_cast<std::size_t>(count);
+  }
+  if (ok && ::fsync(descriptor) != 0) {
+    ok = false;
+    error = std::format("刷新配置失败：{}", std::strerror(errno));
+  }
+  if (::close(descriptor) != 0 && ok) {
+    ok = false;
+    error = std::format("关闭配置失败：{}", std::strerror(errno));
+  }
+  if (!ok) {
+    std::error_code ignored;
+    fs::remove(temporary, ignored);
+    return std::unexpected{std::move(error)};
+  }
+  if (::rename(temporary.c_str(), path.c_str()) != 0) {
+    const auto message = std::format("原子替换配置失败：{}", std::strerror(errno));
+    std::error_code ignored;
+    fs::remove(temporary, ignored);
+    return std::unexpected{message};
+  }
+  const int directory = ::open(path.parent_path().c_str(),
+                               O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (directory < 0) {
+    return std::unexpected{std::format("无法打开配置目录进行刷新：{}",
+                                       std::strerror(errno))};
+  }
+  const int sync_result = ::fsync(directory);
+  const auto sync_error = errno;
+  ::close(directory);
+  if (sync_result != 0) {
+    return std::unexpected{std::format("刷新配置目录失败：{}",
+                                       std::strerror(sync_error))};
+  }
+  return {};
+}
+
+std::int64_t linux_config_int64(const nlohmann::ordered_json& document,
+                                std::string_view key) {
+  const auto it = document.find(std::string{key});
+  if (it == document.end()) return 0;
+  try {
+    if (it->is_number_unsigned()) {
+      const auto value = it->get<std::uint64_t>();
+      return value <= static_cast<std::uint64_t>(
+                          std::numeric_limits<std::int64_t>::max())
+                 ? static_cast<std::int64_t>(value)
+                 : 0;
+    }
+    if (it->is_number_integer()) {
+      const auto value = it->get<std::int64_t>();
+      return value >= 0 ? value : 0;
+    }
+    return 0;
+  } catch (const nlohmann::json::exception&) {
+    return 0;
+  }
+}
+
+std::string linux_config_string(const nlohmann::ordered_json& document,
+                                std::string_view key) {
+  const auto it = document.find(std::string{key});
+  return it != document.end() && it->is_string() ? it->get<std::string>()
+                                                 : std::string{};
+}
+
+void load_linux_update_config(LinuxUiState& state) {
+  auto executable = awj::executable_path();
+  if (!executable) {
+    state.config_readable = false;
+    state.update_status_zh = std::format("无法定位 AWJ.jsonc：{}", executable.error());
+    state.update_status_en = "AWJ.jsonc could not be located.";
+    return;
+  }
+  state.config_path = executable->parent_path() / "AWJ.jsonc";
+  std::error_code ec;
+  if (!fs::exists(state.config_path, ec)) return;
+  try {
+    std::ifstream input{state.config_path, std::ios::binary};
+    if (!input) throw std::runtime_error{"无法读取配置文件"};
+    const std::string bytes{std::istreambuf_iterator<char>{input},
+                            std::istreambuf_iterator<char>{}};
+    state.config_document = nlohmann::ordered_json::parse(
+        bytes.begin(), bytes.end(), nullptr, true, true);
+    if (!state.config_document.is_object()) {
+      throw std::runtime_error{"配置根值不是对象"};
+    }
+  } catch (const std::exception& error) {
+    state.config_readable = false;
+    state.update_status_zh = std::format("AWJ.jsonc 无法安全读取：{}", error.what());
+    state.update_status_en = "AWJ.jsonc could not be read safely.";
+    return;
+  }
+  const auto channel = linux_config_string(state.config_document, "update_channel");
+  if (channel == "stable" || channel == "prerelease") {
+    state.update_channel = channel;
+  }
+  if (const auto it = state.config_document.find("show_update_changelog");
+      it != state.config_document.end() && it->is_boolean()) {
+    state.show_update_changelog = it->get<bool>();
+  }
+  state.last_successful_update_check_at =
+      linux_config_int64(state.config_document, "last_successful_update_check_at");
+  state.last_verified_manifest_sequence =
+      linux_config_int64(state.config_document, "last_verified_manifest_sequence");
+  state.pending_update_version =
+      linux_config_string(state.config_document, "pending_update_version");
+  state.pending_update_channel =
+      linux_config_string(state.config_document, "pending_update_channel");
+  state.pending_update_release_url =
+      linux_config_string(state.config_document, "pending_update_release_url");
+  state.pending_update_published_at =
+      linux_config_string(state.config_document, "pending_update_published_at");
+  state.pending_update_changelog_zh_cn =
+      linux_config_string(state.config_document, "pending_update_changelog_zh_cn");
+  state.pending_update_changelog_en =
+      linux_config_string(state.config_document, "pending_update_changelog_en");
+}
+
+std::expected<void, std::string> persist_linux_update_config(
+    LinuxUiState& state) {
+  if (!state.config_readable || state.config_path.empty()) {
+    return std::unexpected{"AWJ.jsonc 当前不可安全写入。"};
+  }
+  auto document = state.config_document;
+  document["update_channel"] = state.update_channel;
+  document["show_update_changelog"] = state.show_update_changelog;
+  document["last_successful_update_check_at"] =
+      state.last_successful_update_check_at;
+  document["last_verified_manifest_sequence"] =
+      state.last_verified_manifest_sequence;
+  document["pending_update_version"] = state.pending_update_version;
+  document["pending_update_channel"] = state.pending_update_channel;
+  document["pending_update_release_url"] = state.pending_update_release_url;
+  document["pending_update_published_at"] = state.pending_update_published_at;
+  document["pending_update_changelog_zh_cn"] =
+      state.pending_update_changelog_zh_cn;
+  document["pending_update_changelog_en"] = state.pending_update_changelog_en;
+  auto bytes = document.dump(2);
+  bytes.push_back('\n');
+  auto saved = atomic_write_linux_file(state.config_path, bytes);
+  if (!saved) return saved;
+  state.config_document = std::move(document);
+  return {};
+}
+
+awj::update::ChannelPreference linux_update_preference(
+    const LinuxUiState& state) {
+  return state.update_channel == "prerelease"
+             ? awj::update::ChannelPreference::stable_and_prerelease
+             : awj::update::ChannelPreference::stable_only;
+}
+
+std::expected<void, std::string> open_linux_url(std::string url) {
+  if (!awj::update::parse_allowed_https_url(url)) {
+    return std::unexpected{"拒绝打开不受信任的更新 URL。"};
+  }
+  const auto spawn = [&](const char* command, std::vector<char*> arguments)
+      -> std::optional<pid_t> {
+    pid_t child = 0;
+    arguments.push_back(nullptr);
+    if (::posix_spawnp(&child, command, nullptr, nullptr, arguments.data(),
+                       environ) != 0) {
+      return std::nullopt;
+    }
+    return child;
+  };
+  std::string xdg{"xdg-open"};
+  if (auto child = spawn(xdg.c_str(), {xdg.data(), url.data()})) {
+    std::thread{[pid = *child] { ::waitpid(pid, nullptr, 0); }}.detach();
+    return {};
+  }
+  std::string gio{"gio"};
+  std::string open{"open"};
+  if (auto child = spawn(gio.c_str(), {gio.data(), open.data(), url.data()})) {
+    std::thread{[pid = *child] { ::waitpid(pid, nullptr, 0); }}.detach();
+    return {};
+  }
+  return std::unexpected{"未找到可用的 URL 打开工具（xdg-open/gio）。"};
+}
+
+void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
+                              const std::shared_ptr<LinuxUiState>& state) {
+  if (state->update_check_active) return;
+  if (state->update_worker.joinable()) state->update_worker.join();
+  state->update_check_active = true;
+  if (auto app = weak.lock()) {
+    (*app)->set_update_checking(true);
+    state->update_status_zh = "正在检查更新…";
+    state->update_status_en = "Checking for updates...";
+    sync_linux_update_ui(**app, *state);
+  }
+  const auto last_sequence = state->last_verified_manifest_sequence < 0
+                                 ? std::uint64_t{0}
+                                 : static_cast<std::uint64_t>(
+                                       state->last_verified_manifest_sequence);
+  const auto preference = linux_update_preference(*state);
+  state->update_worker = std::jthread(
+      [weak, state, last_sequence, preference](std::stop_token token) {
+        auto fetched = awj::update::fetch_verified_manifest(last_sequence, token);
+        static_cast<void>(slint::invoke_from_event_loop(
+            [weak, state, preference, fetched = std::move(fetched)]() mutable {
+              auto app = weak.lock();
+              if (!app) return;
+              state->update_check_active = false;
+              (*app)->set_update_checking(false);
+              if (!fetched) {
+                state->update_status_zh =
+                    std::format("检查失败：{}", fetched.error());
+                state->update_status_en = "Update check failed.";
+                sync_linux_update_ui(**app, *state);
+                return;
+              }
+              if (fetched->manifest.sequence >
+                  static_cast<std::uint64_t>(
+                      std::numeric_limits<std::int64_t>::max())) {
+                state->update_status_zh =
+                    "检查失败：manifest sequence 超出本机范围。";
+                state->update_status_en =
+                    "Update check failed: sequence is out of range.";
+                sync_linux_update_ui(**app, *state);
+                return;
+              }
+              const auto before = capture_linux_update_state(*state);
+              if (const auto pending =
+                      awj::update::parse_version(state->pending_update_version);
+                  pending && awj::update::should_clear_pending_for_revocation(
+                                 fetched->manifest, *pending)) {
+                clear_linux_pending_update(*state);
+              }
+              const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
+              if (!current) {
+                restore_linux_update_state(*state, before);
+                state->update_status_zh = "检查失败：当前构建版本号非法。";
+                state->update_status_en =
+                    "Update check failed: invalid build version.";
+                sync_linux_update_ui(**app, *state);
+                return;
+              }
+              const auto candidate = awj::update::select_candidate(
+                  fetched->manifest,
+                  {.current_version = *current,
+                   .updater_version = *current,
+                   .preference = preference});
+              if (candidate) {
+                state->pending_update_version =
+                    awj::update::to_string(candidate->version);
+                state->pending_update_channel =
+                    std::string{awj::update::channel_name(candidate->channel)};
+                state->pending_update_release_url = candidate->release_url;
+                state->pending_update_published_at = candidate->published_at;
+                state->pending_update_changelog_zh_cn = candidate->changelog.zh_cn;
+                state->pending_update_changelog_en = candidate->changelog.en;
+              }
+              state->last_successful_update_check_at =
+                  std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+              state->last_verified_manifest_sequence =
+                  static_cast<std::int64_t>(fetched->manifest.sequence);
+              const bool retained =
+                  !candidate && linux_pending_update_is_newer(*state);
+              state->update_status_zh =
+                  candidate ? "发现可用更新。"
+                            : retained ? "检查成功；保留之前发现的更新。"
+                                       : "已是最新版。";
+              state->update_status_en =
+                  candidate ? "An update is available."
+                            : retained
+                                  ? "Check succeeded; the previously found update remains available."
+                                  : "Up to date.";
+              if (auto saved = persist_linux_update_config(*state); !saved) {
+                restore_linux_update_state(*state, before);
+                state->update_status_zh =
+                    std::format("检查失败：无法持久化状态：{}", saved.error());
+                state->update_status_en =
+                    "Update check failed: state could not be saved.";
+              }
+              sync_linux_update_ui(**app, *state);
+            }));
+      });
 }
 
 std::wstring wide_from_shared(const slint::SharedString& value) {
@@ -6519,11 +7582,14 @@ void add_large_image_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>
 
 bool linux_large_image_grid_available(const awj::BatchLargeImageItem& item) noexcept {
   if (!item.decision.available_grid) return false;
+  // 与 Windows 分支同因：clamped 边缘 cell 是 pipeline 已支持的默认路径。
   const auto plan = awj::plan_grid(awj::GridPlanRequest{
       .width = item.dimensions.width,
       .height = item.dimensions.height,
-      .mode = awj::GridMode::auto_grid});
-  return plan && !plan->uses_padding;
+      .mode = awj::GridMode::auto_grid,
+      .clamped_padding_enabled =
+          awj::encoding_defaults::default_experimental_clamped_grid_padding});
+  return plan.has_value();
 }
 
 bool linux_large_image_zenrav1e_available(const awj::BatchLargeImageItem& item) noexcept {
@@ -7060,6 +8126,8 @@ int run_studio_ui() {
     state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
     auto weak = slint::ComponentWeakHandle(app);
     initialize_ui(*app);
+    load_linux_update_config(*state);
+    sync_linux_update_ui(*app, *state);
     load_system_font_options(*app);
     for (int i = 0; i < 5; ++i) {
       state->menu_params[static_cast<std::size_t>(i)] = default_linux_menu_params(i);
@@ -7071,14 +8139,66 @@ int run_studio_ui() {
     app->set_selected_large_image_index(-1);
 
     // 与 Windows 分支同一套机制：0 = 中文 msgid 原文，1 = bundled 英文翻译。
-    // 这个分支没有 Studio 配置持久化，所以语言只在本次运行内有效。
-    app->on_language_selection_requested([weak](int index) {
+    // Linux 首轮只持久化更新状态；其余 Studio 设置仍保持当前会话语义。
+    app->on_language_selection_requested([weak, state](int index) {
       if (auto app = weak.lock()) {
         (*app)->set_language_index(index);
         try {
           static_cast<void>(
               slint::select_bundled_translation(index == 1 ? "en" : ""));
         } catch (...) {
+        }
+        sync_linux_update_ui(**app, *state);
+      }
+    });
+    app->on_update_channel_selection_requested([weak, state](int index) {
+      if (auto app = weak.lock()) {
+        const auto before = capture_linux_update_state(*state);
+        state->update_channel = index == 1 ? "prerelease" : "stable";
+        if (auto saved = persist_linux_update_config(*state); !saved) {
+          restore_linux_update_state(*state, before);
+          state->update_status_zh =
+              std::format("更新渠道保存失败：{}", saved.error());
+          state->update_status_en = "The update channel could not be saved.";
+          sync_linux_update_ui(**app, *state);
+          return;
+        }
+        state->update_status_zh = "更新渠道已保存，正在检查…";
+        state->update_status_en = "Update channel saved; checking...";
+        sync_linux_update_ui(**app, *state);
+        start_linux_update_check(weak, state);
+      }
+    });
+    app->on_show_update_changelog_requested([weak, state](bool visible) {
+      if (auto app = weak.lock()) {
+        const auto before = capture_linux_update_state(*state);
+        state->show_update_changelog = visible;
+        if (!visible && (*app)->get_selected_page() == 4) {
+          (*app)->set_selected_page(2);
+        }
+        if (auto saved = persist_linux_update_config(*state); !saved) {
+          restore_linux_update_state(*state, before);
+          state->update_status_zh =
+              std::format("更新日志设置保存失败：{}", saved.error());
+          state->update_status_en =
+              "The changelog setting could not be saved.";
+        }
+        sync_linux_update_ui(**app, *state);
+      }
+    });
+    app->on_check_update_requested(
+        [weak, state] { start_linux_update_check(weak, state); });
+    app->on_version_clicked([weak, state] {
+      if (auto app = weak.lock()) {
+        auto url = linux_pending_update_is_newer(*state)
+                       ? state->pending_update_release_url
+                       : std::format(
+                             "https://github.com/Dominic485649/AWJimage/releases/tag/{}",
+                             AWJ_BUILD_VERSION);
+        if (auto opened = open_linux_url(std::move(url)); !opened) {
+          state->update_status_zh = std::format("无法打开更新页面：{}", opened.error());
+          state->update_status_en = "The release page could not be opened.";
+          sync_linux_update_ui(**app, *state);
         }
       }
     });
@@ -7453,8 +8573,21 @@ int run_studio_ui() {
       });
     });
 
+    std::optional<std::chrono::system_clock::time_point> last_check{};
+    if (state->last_successful_update_check_at > 0) {
+      last_check = std::chrono::system_clock::time_point{
+          std::chrono::seconds{state->last_successful_update_check_at}};
+    }
+    if (awj::update::should_check_now(
+            {.trigger = awj::update::CheckTrigger::startup,
+             .last_successful_check = last_check,
+             .now = std::chrono::system_clock::now()})) {
+      start_linux_update_check(weak, state);
+    }
     app->run();
     state->worker.request_stop();
+    state->update_worker.request_stop();
+    if (state->update_worker.joinable()) state->update_worker.join();
     return 0;
   } catch (const std::exception& ex) {
     std::println(stderr, "[FAIL] 启动 Slint UI 失败: {}", ex.what());

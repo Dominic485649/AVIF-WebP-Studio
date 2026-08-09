@@ -830,8 +830,8 @@ std::string help_text() {
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
   -f, --format <png|avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；PNG 为无损 RGBA，JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
-  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入原始流直通，其他输入走 AOM 无损量化并按默认 420 重编码；显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入直通，其他输入走 AOM 无损量化并按默认 420 重编码；显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
+  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入原始流直通，其他输入走 AOM 无损量化并按 auto 色度规则重编码：保留源 YUV 420/422/444，RGB/RGBA 用 444 + identity matrix 直通存储原始 RGB 而不做色彩转换，灰度或未知为 420；显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入直通，其他输入走 AOM 无损量化并按 auto 色度规则重编码（保留源 YUV 420/422/444，RGB/RGBA 用 444 + identity matrix 直通，灰度或未知为 420）；显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
@@ -849,16 +849,16 @@ std::string help_text() {
   --svtav1hdr-tune <值>      svt-av1-hdr tune；默认 @SVTAV1HDR_TUNE@，UI 不提供修改入口
   --svtav1hdr-keyint <1-999999> svt-av1-hdr keyint；默认 @SVTAV1HDR_KEYINT@，UI 不提供修改入口
   --svtav1hdr-params <key=value> svt-av1-hdr 专家参数，可重复；按原样传给 --svtav1-params
-  --color-primaries <n>      AVIF CICP color primaries；AOM/libavif 与 svt-av1-hdr 可应用
-  --transfer-characteristics <n> AVIF CICP transfer characteristics；AOM/libavif 与 svt-av1-hdr 可应用
-  --matrix-coefficients <n>  AVIF CICP matrix coefficients；AOM/libavif 与 svt-av1-hdr 可应用
+  --color-primaries <n>      AVIF CICP color primaries；未指定时保留源值（含 BT.2020 等 HDR 源），源与用户都没有时才回退 BT.709；AOM/libavif 与 svt-av1-hdr 可应用
+  --transfer-characteristics <n> AVIF CICP transfer characteristics；未指定时保留源值（含 PQ/HLG 等 HDR 传输函数），源与用户都没有时才回退 sRGB；AOM/libavif 与 svt-av1-hdr 可应用
+  --matrix-coefficients <n>  AVIF CICP matrix coefficients；未指定时保留源值，无损 444 使用 identity 直通，源与用户都没有时才回退 BT.709；AOM/libavif 与 svt-av1-hdr 可应用
   --color-range <0|1>        AVIF color range；显式指定时覆盖源值，未指定时保留源 PC/full 或 TV/limited，未知源使用 full；AOM/libavif 与 svt-av1-hdr 可应用
   --mastering-display <值>   svt-av1-hdr mastering display metadata
   --content-light <值>       svt-av1-hdr content light metadata
   --experimental-encoders   启用实验 AVIF 编码器；默认开启，构建支持时可显式使用 zenrav1e
   --no-experimental-encoders 禁用实验 AVIF 编码器选项
-  --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时尝试 padding；当前编码仍会拒绝尚未能安全裁切的 padding 计划，默认关闭
-  --no-experimental-clamped-grid-padding 禁用 AVIF grid padding；不可整除分割会报错
+  --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时使用较小的右列和底行 cell，保持原始尺寸不变，默认开启；奇数输出尺寸或奇数 cell 尺寸与 420/422 色度仍不兼容，需要 --chroma 444
+  --no-experimental-clamped-grid-padding 禁用 AVIF grid 较小边缘 cell；不可整除分割会报错
   -p, --preset <名称>         fast / balanced / best / extreme；未指定时为自定义默认值；设置默认质量和编码超时，显式 --quality 可覆盖质量
   -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
   --memory-limit <auto|大小>  内存限制；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
