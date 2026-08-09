@@ -215,6 +215,29 @@ std::expected<void, std::string> flush_copy(
   return {};
 }
 
+// Stage files live under LocalAppData while the installed application may be
+// on another volume (for example D:\). MoveFileEx cannot cross volumes, so
+// copy into a same-volume temporary beside the target and atomically replace
+// from there. The temporary is removed on every failure path.
+std::expected<void, std::string> replace_from_stage(
+    const std::filesystem::path& source,
+    const std::filesystem::path& target) {
+  auto temporary = target;
+  temporary += std::format(L".awj-update-new-{}", GetCurrentProcessId());
+  std::error_code ec;
+  std::filesystem::remove(temporary, ec);
+  if (auto copied = flush_copy(source, temporary, true); !copied) {
+    return std::unexpected{copied.error()};
+  }
+  if (MoveFileExW(temporary.c_str(), target.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ==
+      FALSE) {
+    std::filesystem::remove(temporary, ec);
+    return std::unexpected{"替换已安装更新文件失败。"};
+  }
+  return {};
+}
+
 std::expected<PROCESS_INFORMATION, std::string> launch_process(
     std::wstring command_line, const std::filesystem::path& working_directory,
     DWORD flags = CREATE_NO_WINDOW) {
@@ -453,14 +476,12 @@ int run_update_helper(DWORD parent_pid) noexcept {
         !atomic_text_replace(stage / L"state.txt", "prepared")) {
       return 31;
     }
-    if (MoveFileExW(new_exe.c_str(), parent_path->c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+    if (!replace_from_stage(new_exe, *parent_path)) {
       (void)restore_backups(install, stage);
       return 32;
     }
     (void)atomic_text_replace(stage / L"state.txt", "exe-replaced");
-    if (MoveFileExW(new_com.c_str(), target_com.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+    if (!replace_from_stage(new_com, target_com)) {
       (void)restore_backups(install, stage);
       return 33;
     }
