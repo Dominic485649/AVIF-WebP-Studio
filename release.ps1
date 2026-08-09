@@ -538,8 +538,7 @@ if (-not $SkipUpdateManifest) {
                 throw "现有 update-manifest.json 包含非法条目或渠道。"
             }
             $EntryVersion = [string]$Entry.version
-            $EntryParts = @(Get-StrictUpdateVersionParts $EntryVersion
-                "update-manifest.json entry version")
+            $EntryParts = @(Get-StrictUpdateVersionParts $EntryVersion "update-manifest.json entry version")
             if ($SeenVersions.ContainsKey($EntryVersion)) {
                 throw "update-manifest.json 版本 $EntryVersion 重复；同一版本号不得重新发布或跨渠道复用。"
             }
