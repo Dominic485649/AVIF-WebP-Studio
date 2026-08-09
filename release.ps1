@@ -69,8 +69,10 @@ $GitCommit = (git -C $Repo rev-parse HEAD).Trim()
 $GitStatus = @(git -C $Repo status --porcelain=v1 --untracked-files=all)
 $GitDirty = @($GitStatus | Where-Object {
     $Path = $_.Substring(3).Trim('"').Replace('\', '/')
-    -not ($Path.StartsWith('bin/x64/Release/') -and
-          [IO.Path]::GetFileName($Path) -in $ReleaseFiles)
+    $GeneratedManifest = $Path -in @('update-manifest.json', 'update-manifest.json.sig')
+    $ReleaseOutput = $Path.StartsWith('bin/x64/Release/') -and
+        [IO.Path]::GetFileName($Path) -in $ReleaseFiles
+    -not ($GeneratedManifest -or $ReleaseOutput)
 }).Count -gt 0
 try {
     $GitTag = (git -C $Repo describe --tags --exact-match HEAD 2>$null).Trim()
