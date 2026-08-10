@@ -552,14 +552,8 @@ msgstr "When enabled and the build supports it, zenrav1e can be used in the auto
 msgid "关于后端"
 msgstr "About the backend"
 
-msgid "当前内置后端：原生编解码器"
-msgstr "Current built-in backend: native codecs"
-
 msgid "Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"
 msgstr "Studio output: libavif / AOM, svt-av1-hdr, experimental zenrav1e, WebP, JXL, JPGLI; PNG is CLI and context menu only."
-
-msgid "编码流程统一使用内置原生后端。"
-msgstr "The whole encode pipeline uses the built-in native backend."
 
 msgid "队列操作"
 msgstr "Queue actions"
@@ -615,12 +609,6 @@ msgstr "New version available: "
 
 msgid "更新日志"
 msgstr "Changelog"
-
-msgid "按版本记录全部已验证的发布日志。更新检查由程序自动完成。"
-msgstr "All verified release notes are listed by version. Update checks run automatically."
-
-msgid "尚未载入发布历史。程序将在自动检查后显示已验证记录。"
-msgstr "Release history is not loaded yet. Verified entries will appear after the automatic check."
 
 msgid "可更新到 "
 msgstr "Update available: "

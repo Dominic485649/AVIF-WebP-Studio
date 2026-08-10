@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "awj_studio.h"
+#include "changelog_history.h"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -5608,24 +5609,41 @@ void sync_update_history(
     const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
     const awj::update::Manifest& manifest) {
   if (!rows) return;
-  std::vector<const awj::update::ManifestEntry*> sorted;
-  sorted.reserve(manifest.entries.size());
-  for (const auto& entry : manifest.entries) sorted.push_back(&entry);
-  std::ranges::sort(sorted, [](const auto* lhs, const auto* rhs) {
-    return lhs->version > rhs->version;
-  });
-  std::vector<UpdateHistoryRow> history;
-  history.reserve(sorted.size());
-  for (const auto* entry : sorted) {
-    history.push_back(UpdateHistoryRow{
-        .version = to_shared(awj::update::to_string(entry->version)),
-        .channel = to_shared(awj::update::channel_name(entry->channel)),
-        .published_at = to_shared(entry->published_at),
-        .release_url = to_shared(entry->release_url),
-        .changelog_zh_cn = to_shared(entry->changelog.zh_cn),
-        .changelog_en = to_shared(entry->changelog.en)});
+  auto merged_history = awj::ui::embedded_changelog_history();
+  for (const auto& entry : manifest.entries) {
+    const auto version = awj::update::to_string(entry.version);
+    const auto signed_entry = awj::ui::ChangelogHistoryEntry{
+        .version = version,
+        .channel = std::string{awj::update::channel_name(entry.channel)},
+        .published_at = entry.published_at,
+        .release_url = entry.release_url,
+        .changelog_zh_cn = entry.changelog.zh_cn,
+        .changelog_en = entry.changelog.en};
+    const auto existing = std::ranges::find_if(
+        merged_history, [&](const auto& item) { return item.version == version; });
+    if (existing == merged_history.end()) {
+      merged_history.push_back(signed_entry);
+    } else {
+      *existing = signed_entry;
+    }
   }
-  rows->set_vector(std::move(history));
+  std::ranges::sort(merged_history, [](const auto& lhs, const auto& rhs) {
+    const auto left = awj::update::parse_version(lhs.version);
+    const auto right = awj::update::parse_version(rhs.version);
+    return left && right ? *left > *right : lhs.version > rhs.version;
+  });
+  std::vector<UpdateHistoryRow> history_rows;
+  history_rows.reserve(merged_history.size());
+  for (const auto& entry : merged_history) {
+    history_rows.push_back(UpdateHistoryRow{
+        .version = to_shared(entry.version),
+        .channel = to_shared(entry.channel),
+        .published_at = to_shared(entry.published_at),
+        .release_url = to_shared(entry.release_url),
+        .changelog_zh_cn = to_shared(entry.changelog_zh_cn),
+        .changelog_en = to_shared(entry.changelog_en)});
+  }
+  rows->set_vector(std::move(history_rows));
 }
 
 void restore_cached_update_history(UiState& state) {
@@ -5840,6 +5858,8 @@ int run_studio_ui(const wchar_t* health_event,
         std::make_shared<slint::VectorModel<LargeImageRow>>();
     state->update_history_rows =
         std::make_shared<slint::VectorModel<UpdateHistoryRow>>();
+    sync_update_history(state->update_history_rows,
+                        awj::update::Manifest{.schema = 1});
     auto weak = slint::ComponentWeakHandle(app);
 
     app->set_task_rows(state->task_rows);
@@ -6794,6 +6814,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
 #include <vector>
 
 #include "awj_studio.h"
+#include "changelog_history.h"
 
 import awj.config;
 import awj.core;
@@ -7100,24 +7121,41 @@ void sync_linux_update_history(
     const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
     const awj::update::Manifest& manifest) {
   if (!rows) return;
-  std::vector<const awj::update::ManifestEntry*> sorted;
-  sorted.reserve(manifest.entries.size());
-  for (const auto& entry : manifest.entries) sorted.push_back(&entry);
-  std::ranges::sort(sorted, [](const auto* lhs, const auto* rhs) {
-    return lhs->version > rhs->version;
-  });
-  std::vector<UpdateHistoryRow> history;
-  history.reserve(sorted.size());
-  for (const auto* entry : sorted) {
-    history.push_back(UpdateHistoryRow{
-        .version = to_shared(awj::update::to_string(entry->version)),
-        .channel = to_shared(awj::update::channel_name(entry->channel)),
-        .published_at = to_shared(entry->published_at),
-        .release_url = to_shared(entry->release_url),
-        .changelog_zh_cn = to_shared(entry->changelog.zh_cn),
-        .changelog_en = to_shared(entry->changelog.en)});
+  auto merged_history = awj::ui::embedded_changelog_history();
+  for (const auto& entry : manifest.entries) {
+    const auto version = awj::update::to_string(entry.version);
+    const auto signed_entry = awj::ui::ChangelogHistoryEntry{
+        .version = version,
+        .channel = std::string{awj::update::channel_name(entry.channel)},
+        .published_at = entry.published_at,
+        .release_url = entry.release_url,
+        .changelog_zh_cn = entry.changelog.zh_cn,
+        .changelog_en = entry.changelog.en};
+    const auto existing = std::ranges::find_if(
+        merged_history, [&](const auto& item) { return item.version == version; });
+    if (existing == merged_history.end()) {
+      merged_history.push_back(signed_entry);
+    } else {
+      *existing = signed_entry;
+    }
   }
-  rows->set_vector(std::move(history));
+  std::ranges::sort(merged_history, [](const auto& lhs, const auto& rhs) {
+    const auto left = awj::update::parse_version(lhs.version);
+    const auto right = awj::update::parse_version(rhs.version);
+    return left && right ? *left > *right : lhs.version > rhs.version;
+  });
+  std::vector<UpdateHistoryRow> history_rows;
+  history_rows.reserve(merged_history.size());
+  for (const auto& entry : merged_history) {
+    history_rows.push_back(UpdateHistoryRow{
+        .version = to_shared(entry.version),
+        .channel = to_shared(entry.channel),
+        .published_at = to_shared(entry.published_at),
+        .release_url = to_shared(entry.release_url),
+        .changelog_zh_cn = to_shared(entry.changelog_zh_cn),
+        .changelog_en = to_shared(entry.changelog_en)});
+  }
+  rows->set_vector(std::move(history_rows));
 }
 
 void restore_cached_linux_update_history(LinuxUiState& state) {
@@ -8254,6 +8292,8 @@ int run_studio_ui() {
     state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
     state->update_history_rows =
         std::make_shared<slint::VectorModel<UpdateHistoryRow>>();
+    sync_linux_update_history(state->update_history_rows,
+                              awj::update::Manifest{.schema = 1});
     auto weak = slint::ComponentWeakHandle(app);
     initialize_ui(*app);
     load_linux_update_config(*state);

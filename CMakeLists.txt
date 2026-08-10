@@ -1141,6 +1141,25 @@ else()
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
+
+set(AWJ_CHANGELOG_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/awj_changelog_data.h")
+add_custom_command(
+    OUTPUT "${AWJ_CHANGELOG_HEADER}"
+    COMMAND ${CMAKE_COMMAND}
+        "-DINPUT_ZH=${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.md"
+        "-DINPUT_EN=${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.en.md"
+        "-DOUTPUT=${AWJ_CHANGELOG_HEADER}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_changelog.cmake"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.md"
+        "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.en.md"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_changelog.cmake"
+    COMMENT "Embedding bilingual changelog history"
+    VERBATIM)
+add_custom_target(awj_changelog_data DEPENDS "${AWJ_CHANGELOG_HEADER}")
+add_dependencies(AWJ awj_changelog_data)
+target_sources(AWJ PRIVATE "${AWJ_CHANGELOG_HEADER}")
+target_include_directories(AWJ PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_sources(AWJ
     PRIVATE
         FILE_SET awj_studio_modules TYPE CXX_MODULES FILES

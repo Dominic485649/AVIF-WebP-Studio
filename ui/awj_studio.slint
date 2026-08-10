@@ -1109,6 +1109,7 @@ export component AwjStudio inherits Window {
                         background: transparent;
                         VerticalLayout {
                             spacing: 4px;
+                            cross-axis-alignment: center;
                             Text { text: "AWJ Studio"; color: root.text-strong; font-size: 24px; font-weight: 900; letter-spacing: 0px; }
                             Rectangle {
                                 width: 56px;
@@ -1117,7 +1118,7 @@ export component AwjStudio inherits Window {
                                 background: #0f7c8c;
                             }
                             version-control := Rectangle {
-                                width: 112px;
+                                width: 56px;
                                 height: 25px;
                                 border-radius: 5px;
                                 background: version-touch.has-hover ? root.accent-soft : transparent;
@@ -1989,22 +1990,6 @@ export component AwjStudio inherits Window {
                             padding: 24px;
                             spacing: 14px;
                             Text { text: @tr("更新日志"); color: root.text-strong; font-size: 22px; font-weight: 800; }
-                            Text {
-                                text: @tr("按版本记录全部已验证的发布日志。更新检查由程序自动完成。");
-                                color: root.text-body;
-                                font-size: 13px;
-                                wrap: word-wrap;
-                                min-width: 0px;
-                                width: 100%;
-                                horizontal-stretch: 1;
-                                height: self.preferred-height;
-                            }
-                            if root.update-history.length == 0: Text {
-                                text: @tr("尚未载入发布历史。程序将在自动检查后显示已验证记录。");
-                                color: root.text-muted;
-                                font-size: 14px;
-                                wrap: word-wrap;
-                            }
                             for entry in root.update-history: Rectangle {
                                 border-radius: 8px;
                                 background: root.panel-bg-soft;
@@ -2017,7 +2002,7 @@ export component AwjStudio inherits Window {
                                     HorizontalLayout {
                                         spacing: 8px;
                                         Text { text: "v" + entry.version; color: root.text-strong; font-size: 16px; font-weight: 800; }
-                                        Text { text: entry.channel; color: entry.channel == "prerelease" ? root.warning : root.success; font-size: 12px; font-weight: 800; vertical-alignment: center; }
+                                        if !entry.channel.is-empty: Text { text: entry.channel; color: entry.channel == "prerelease" ? root.warning : root.success; font-size: 12px; font-weight: 800; vertical-alignment: center; }
                                         Text { text: entry.published-at; color: root.text-muted; font-size: 12px; horizontal-stretch: 1; horizontal-alignment: right; vertical-alignment: center; }
                                     }
                                     Text {
@@ -2256,9 +2241,7 @@ export component AwjStudio inherits Window {
                                 padding: 24px;
                                 spacing: root.page-gap;
                                 Text { text: @tr("关于后端"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                Text { text: @tr("当前内置后端：原生编解码器"); color: root.text-body; font-size: 14px; wrap: word-wrap; min-width: 0px; width: 100%; }
                                 Text { text: @tr("Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"); color: root.text-body; font-size: 14px; wrap: word-wrap; min-width: 0px; width: 100%; }
-                                Text { text: @tr("编码流程统一使用内置原生后端。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; }
                             }
                         }
                     }
