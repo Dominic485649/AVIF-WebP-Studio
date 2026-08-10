@@ -238,6 +238,7 @@ struct UiState {
   std::jthread update_worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
+  std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
   std::vector<QueueImageItem> queue_items{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   slint::Timer theme_timer{};
@@ -5579,15 +5580,30 @@ void sync_update_ui(AwjStudio& app, const UiState& state) {
       to_shared(last.empty() ? (english ? "Never" : "从未") : last));
   app.set_update_status(
       to_shared(english ? state.update_status_en : state.update_status_zh));
-#ifdef _WIN32
-  app.set_update_action_text(to_shared(
-      available ? (english ? "Download and install" : "下载并安装")
-                : (english ? "Open current release" : "打开当前版本页面")));
-#else
-  app.set_update_action_text(to_shared(
-      available ? (english ? "Open release page" : "打开候选版本页面")
-                : (english ? "Open current release" : "打开当前版本页面")));
-#endif
+}
+
+void sync_update_history(
+    const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
+    const awj::update::Manifest& manifest) {
+  if (!rows) return;
+  std::vector<const awj::update::ManifestEntry*> sorted;
+  sorted.reserve(manifest.entries.size());
+  for (const auto& entry : manifest.entries) sorted.push_back(&entry);
+  std::ranges::sort(sorted, [](const auto* lhs, const auto* rhs) {
+    return lhs->version > rhs->version;
+  });
+  std::vector<UpdateHistoryRow> history;
+  history.reserve(sorted.size());
+  for (const auto* entry : sorted) {
+    history.push_back(UpdateHistoryRow{
+        .version = to_shared(awj::update::to_string(entry->version)),
+        .channel = to_shared(awj::update::channel_name(entry->channel)),
+        .published_at = to_shared(entry->published_at),
+        .release_url = to_shared(entry->release_url),
+        .changelog_zh_cn = to_shared(entry->changelog.zh_cn),
+        .changelog_en = to_shared(entry->changelog.en)});
+  }
+  rows->set_vector(std::move(history));
 }
 
 awj::update::ChannelPreference update_preference(const UiState& state) {
@@ -5690,6 +5706,8 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                 std::format("检查失败：无法持久化状态：{}", saved.error());
             state->update_status_en =
                 "Update check failed: state could not be saved.";
+          } else {
+            sync_update_history(state->update_history_rows, fetched->manifest);
           }
           sync_update_ui(app, *state);
         });
@@ -5772,10 +5790,13 @@ int run_studio_ui(const wchar_t* health_event,
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
     state->large_image_rows =
         std::make_shared<slint::VectorModel<LargeImageRow>>();
+    state->update_history_rows =
+        std::make_shared<slint::VectorModel<UpdateHistoryRow>>();
     auto weak = slint::ComponentWeakHandle(app);
 
     app->set_task_rows(state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
+    app->set_update_history(state->update_history_rows);
     initialize_ui_defaults(*app, *state);
     apply_system_ui_font(*app);
     app->set_threads_text({});
@@ -5861,12 +5882,6 @@ int run_studio_ui(const wchar_t* health_event,
           (*app)->set_update_status(to_shared(
               std::format("保存更新日志设置失败：{}", saved.error())));
         }
-      });
-    });
-
-    app->on_check_update_requested([weak, state] {
-      run_ui_callback(weak, "检查更新失败", [&] {
-        start_update_check(weak, state);
       });
     });
 
@@ -6769,6 +6784,7 @@ struct LinuxUiState {
   std::jthread update_worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
+  std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   std::vector<fs::path> failed_paths{};
   std::array<LinuxMenuParams, 5> menu_params{};
@@ -7021,9 +7037,30 @@ void sync_linux_update_ui(AwjStudio& app, const LinuxUiState& state) {
       to_shared(last.empty() ? (english ? "Never" : "从未") : last));
   app.set_update_status(
       to_shared(english ? state.update_status_en : state.update_status_zh));
-  app.set_update_action_text(to_shared(
-      available ? (english ? "Open release page" : "打开候选版本页面")
-                : (english ? "Open current release" : "打开当前版本页面")));
+}
+
+void sync_linux_update_history(
+    const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
+    const awj::update::Manifest& manifest) {
+  if (!rows) return;
+  std::vector<const awj::update::ManifestEntry*> sorted;
+  sorted.reserve(manifest.entries.size());
+  for (const auto& entry : manifest.entries) sorted.push_back(&entry);
+  std::ranges::sort(sorted, [](const auto* lhs, const auto* rhs) {
+    return lhs->version > rhs->version;
+  });
+  std::vector<UpdateHistoryRow> history;
+  history.reserve(sorted.size());
+  for (const auto* entry : sorted) {
+    history.push_back(UpdateHistoryRow{
+        .version = to_shared(awj::update::to_string(entry->version)),
+        .channel = to_shared(awj::update::channel_name(entry->channel)),
+        .published_at = to_shared(entry->published_at),
+        .release_url = to_shared(entry->release_url),
+        .changelog_zh_cn = to_shared(entry->changelog.zh_cn),
+        .changelog_en = to_shared(entry->changelog.en)});
+  }
+  rows->set_vector(std::move(history));
 }
 
 std::expected<void, std::string> atomic_write_linux_file(
@@ -7332,6 +7369,9 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                     std::format("检查失败：无法持久化状态：{}", saved.error());
                 state->update_status_en =
                     "Update check failed: state could not be saved.";
+              } else {
+                sync_linux_update_history(state->update_history_rows,
+                                          fetched->manifest);
               }
               sync_linux_update_ui(**app, *state);
             }));
@@ -8124,6 +8164,8 @@ int run_studio_ui() {
     auto state = std::make_shared<LinuxUiState>();
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
     state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
+    state->update_history_rows =
+        std::make_shared<slint::VectorModel<UpdateHistoryRow>>();
     auto weak = slint::ComponentWeakHandle(app);
     initialize_ui(*app);
     load_linux_update_config(*state);
@@ -8136,6 +8178,7 @@ int run_studio_ui() {
     apply_linux_menu_params(*app, state->menu_params.front());
     app->set_task_rows(state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
+    app->set_update_history(state->update_history_rows);
     app->set_selected_large_image_index(-1);
 
     // 与 Windows 分支同一套机制：0 = 中文 msgid 原文，1 = bundled 英文翻译。
@@ -8186,8 +8229,6 @@ int run_studio_ui() {
         sync_linux_update_ui(**app, *state);
       }
     });
-    app->on_check_update_requested(
-        [weak, state] { start_linux_update_check(weak, state); });
     app->on_version_clicked([weak, state] {
       if (auto app = weak.lock()) {
         auto url = linux_pending_update_is_newer(*state)

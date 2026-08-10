@@ -616,6 +616,12 @@ msgstr "New version available: "
 msgid "更新日志"
 msgstr "Changelog"
 
+msgid "按版本记录全部已验证的发布日志。更新检查由程序自动完成。"
+msgstr "All verified release notes are listed by version. Update checks run automatically."
+
+msgid "尚未载入发布历史。程序将在自动检查后显示已验证记录。"
+msgstr "Release history is not loaded yet. Verified entries will appear after the automatic check."
+
 msgid "可更新到 "
 msgstr "Update available: "
 
@@ -639,9 +645,6 @@ msgstr "Show changelog"
 
 msgid "正在检查…"
 msgstr "Checking…"
-
-msgid "立即检查更新"
-msgstr "Check for updates now"
 
 msgid "上次成功检查："
 msgstr "Last successful check: "

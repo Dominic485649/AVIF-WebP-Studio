@@ -28,6 +28,15 @@ export struct LargeImageRow {
     zenrav1e-available: bool,
 }
 
+export struct UpdateHistoryRow {
+    version: string,
+    channel: string,
+    published-at: string,
+    release-url: string,
+    changelog-zh-cn: string,
+    changelog-en: string,
+}
+
 export struct ComboOption {
     text: string,
     enabled: bool,
@@ -787,6 +796,7 @@ export component AwjStudio inherits Window {
     // 0 = 中文（msgid 原文），1 = English（bundled 翻译）。
     in-out property <int> language-index: 0;
     in property <string> current-version: "";
+    in property <[UpdateHistoryRow]> update-history;
     in-out property <int> update-channel-index: 0;
     in-out property <bool> show-update-changelog: true;
     in-out property <bool> update-checking: false;
@@ -799,7 +809,6 @@ export component AwjStudio inherits Window {
     in-out property <string> update-summary-en: "";
     in-out property <string> update-status: @tr("尚未检查");
     in-out property <string> update-last-successful-check: @tr("从未");
-    in-out property <string> update-action-text: @tr("查看版本");
     in-out property <string> ui-font-family: "";
     in property <[ComboOption]> ui-font-options: [{ text: @tr("系统默认字体"), enabled: true }];
     in-out property <int> ui-font-index: 0;
@@ -940,7 +949,6 @@ export component AwjStudio inherits Window {
     callback language-selection-requested(int);
     callback update-channel-selection-requested(int);
     callback show-update-changelog-requested(bool);
-    callback check-update-requested();
     callback version-clicked();
     callback browse-large-image-file();
     callback browse-large-image-folder();
@@ -1982,32 +1990,47 @@ export component AwjStudio inherits Window {
                             spacing: 14px;
                             Text { text: @tr("更新日志"); color: root.text-strong; font-size: 22px; font-weight: 800; }
                             Text {
-                                text: root.update-available
-                                    ? @tr("可更新到 ") + root.update-version + (root.update-published-at.is-empty ? "" : " · " + root.update-published-at)
-                                    : @tr("当前版本 ") + root.current-version;
-                                color: root.update-available ? root.accent-strong : root.success;
-                                font-size: 14px;
-                                font-weight: 700;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: root.update-available
-                                    ? (root.language-index == 1 ? root.update-changelog-en : root.update-changelog-zh-cn)
-                                    : @tr("当前没有可用更新。可在设置中立即重新检查。");
+                                text: @tr("按版本记录全部已验证的发布日志。更新检查由程序自动完成。");
                                 color: root.text-body;
-                                font-size: 14px;
+                                font-size: 13px;
                                 wrap: word-wrap;
                                 min-width: 0px;
                                 width: 100%;
                                 horizontal-stretch: 1;
                                 height: self.preferred-height;
                             }
-                            Rectangle { height: 4px; background: transparent; }
-                            SoftButton {
-                                text: root.update-action-text;
-                                enabled: !root.update-checking && !root.running;
-                                dark-mode: root.dark-mode;
-                                clicked => { root.version-clicked(); }
+                            if root.update-history.length == 0: Text {
+                                text: @tr("尚未载入发布历史。程序将在自动检查后显示已验证记录。");
+                                color: root.text-muted;
+                                font-size: 14px;
+                                wrap: word-wrap;
+                            }
+                            for entry in root.update-history: Rectangle {
+                                border-radius: 8px;
+                                background: root.panel-bg-soft;
+                                border-color: root.panel-border;
+                                border-width: 1px;
+                                min-height: 110px;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text { text: "v" + entry.version; color: root.text-strong; font-size: 16px; font-weight: 800; }
+                                        Text { text: entry.channel; color: entry.channel == "prerelease" ? root.warning : root.success; font-size: 12px; font-weight: 800; vertical-alignment: center; }
+                                        Text { text: entry.published-at; color: root.text-muted; font-size: 12px; horizontal-stretch: 1; horizontal-alignment: right; vertical-alignment: center; }
+                                    }
+                                    Text {
+                                        text: root.language-index == 1 ? entry.changelog-en : entry.changelog-zh-cn;
+                                        color: root.text-body;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                        min-width: 0px;
+                                        width: 100%;
+                                        horizontal-stretch: 1;
+                                        height: self.preferred-height;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2161,12 +2184,6 @@ export component AwjStudio inherits Window {
                                 }
                                 HorizontalLayout {
                                     spacing: root.page-gap;
-                                    SoftButton {
-                                        text: root.update-checking ? @tr("正在检查…") : @tr("立即检查更新");
-                                        enabled: !root.update-checking;
-                                        dark-mode: root.dark-mode;
-                                        clicked => { root.check-update-requested(); }
-                                    }
                                     Text { text: root.update-status; color: root.text-muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
                                 }
                                 Text {

@@ -104,12 +104,32 @@ std::shared_ptr<slint::VectorModel<TaskRow>> task_rows() {
   return std::make_shared<slint::VectorModel<TaskRow>>(std::move(rows));
 }
 
+std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows() {
+  std::vector<UpdateHistoryRow> rows;
+  rows.push_back(UpdateHistoryRow{
+      .version = "1.0.2",
+      .channel = "prerelease",
+      .published_at = "2026-08-10T00:00:00Z",
+      .release_url = "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.2",
+      .changelog_zh_cn = "更新测试版",
+      .changelog_en = "Update test build"});
+  rows.push_back(UpdateHistoryRow{
+      .version = "1.0.1",
+      .channel = "stable",
+      .published_at = "2026-08-09T00:00:00Z",
+      .release_url = "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.1",
+      .changelog_zh_cn = "稳定版测试记录",
+      .changelog_en = "Stable test release"});
+  return std::make_shared<slint::VectorModel<UpdateHistoryRow>>(std::move(rows));
+}
+
 int run_scale(const slint::ComponentHandle<AwjStudio>& app,
               float scale_factor) {
   app->window().window_handle().set_const_scale_factor(scale_factor);
   app->window().set_size(slint::LogicalSize({820.0f, 560.0f}));
   app->set_ui_font_options(font_options());
   app->set_task_rows(task_rows());
+  app->set_update_history(update_history_rows());
   app->set_queue_failed_count(1);
   app->set_queue_success_count(1);
   app->set_queue_failed_only(false);
@@ -122,7 +142,6 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   app->set_update_changelog_en("Update test build");
   app->set_update_summary_zh_cn("更新测试版");
   app->set_update_summary_en("Update test build");
-  app->set_update_action_text("打开候选版本页面");
   app->set_show_update_changelog(true);
   int retries = 0;
   int version_clicks = 0;
