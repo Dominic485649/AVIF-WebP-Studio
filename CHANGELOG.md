@@ -4,6 +4,7 @@
 
 - prerelease：修正 Windows 更新 staging 位于 LocalAppData、安装目录位于其他卷时的跨卷替换；先复制到安装目录同卷临时文件再原子替换，保留失败回滚语义。
 - prerelease：修正发布脚本续签已有 manifest 时的版本数组解析，确保后续 sequence/版本校验不会把字段说明误当作版本号。
+- prerelease：将全部测试可执行文件隔离到 `bin/x64/tests/<配置>`，避免跨平台构建和发布清理互相覆盖测试产物。
 
 ## 1.0.1 - 2026-08-09
 

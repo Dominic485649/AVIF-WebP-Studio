@@ -4,6 +4,7 @@
 
 - Prerelease: fixed Windows updates when LocalAppData staging and the installed application are on different volumes; the helper now copies to a same-volume temporary and atomically replaces the target while preserving rollback.
 - Prerelease: fixed release-script parsing when continuing an existing manifest so sequence/version validation does not treat the field label as a version component.
+- Prerelease: isolated all test executables under `bin/x64/tests/<configuration>` so cross-platform builds and release cleanup cannot overwrite test artifacts.
 
 ## 1.0.1 - 2026-08-09
 

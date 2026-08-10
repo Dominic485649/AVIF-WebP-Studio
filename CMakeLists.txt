@@ -1016,6 +1016,8 @@ if(BUILD_TESTING)
     endif()
 
     set(AWJ_TEST_TARGETS
+        awj_update_model_tests
+        awj_update_manifest_tests
         awj_visual_quality_tests
         awj_config_defaults_tests
         awj_process_tests
@@ -1212,6 +1214,7 @@ if(BUILD_TESTING)
             PROPERTIES COMPILE_OPTIONS
                 "/wd4060;/wd4099;/wd4201;/wd4244;/wd4267;/wd4305;/wd4458;/wd4624")
     endif()
+    awj_set_runtime_directory(awj_ui_smoke_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
     add_test(NAME ui_smoke COMMAND awj_ui_smoke_tests)
     set_tests_properties(ui_smoke PROPERTIES TIMEOUT 30)
 endif()
