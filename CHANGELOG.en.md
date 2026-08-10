@@ -6,6 +6,7 @@
 - Prerelease: fixed release-script parsing when continuing an existing manifest so sequence/version validation does not treat the field label as a version component.
 - Prerelease: isolated all test executables under `bin/x64/tests/<configuration>` so cross-platform builds and release cleanup cannot overwrite test artifacts.
 - Prerelease: changed the changelog page to show the complete version-sorted release history from the signed manifest; removed manual checking so update checks remain automatic.
+- Prerelease: atomically persist the latest verified manifest bytes and signature with the existing config, then re-verify them at startup so the complete history remains available offline between automatic checks.
 
 ## 1.0.1 - 2026-08-09
 

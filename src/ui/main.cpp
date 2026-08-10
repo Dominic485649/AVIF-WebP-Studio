@@ -229,6 +229,10 @@ struct StudioConfigSnapshot {
   std::string pending_update_published_at{};
   std::string pending_update_changelog_zh_cn{};
   std::string pending_update_changelog_en{};
+  // 已通过 Ed25519 验证的 manifest 缓存。启动时会重新验签后才用于
+  // 展示更新历史，避免把本地可写配置直接当成发布记录。
+  std::string update_manifest_raw{};
+  std::string update_manifest_signature{};
 
   bool operator==(const StudioConfigSnapshot&) const = default;
 };
@@ -270,6 +274,8 @@ struct UiState {
   std::string pending_update_published_at{};
   std::string pending_update_changelog_zh_cn{};
   std::string pending_update_changelog_en{};
+  std::string update_manifest_raw{};
+  std::string update_manifest_signature{};
   bool update_check_active{};
   std::string update_status_zh{"尚未检查"};
   std::string update_status_en{"Not checked yet"};
@@ -736,6 +742,8 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
     snapshot.pending_update_changelog_zh_cn =
         state->pending_update_changelog_zh_cn;
     snapshot.pending_update_changelog_en = state->pending_update_changelog_en;
+    snapshot.update_manifest_raw = state->update_manifest_raw;
+    snapshot.update_manifest_signature = state->update_manifest_signature;
   }
   return snapshot;
 }
@@ -1298,6 +1306,10 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
                              state.pending_update_changelog_zh_cn); !r) return r;
     if (auto r = load_string("pending_update_changelog_en",
                              state.pending_update_changelog_en); !r) return r;
+    if (auto r = load_string("update_manifest_raw", state.update_manifest_raw);
+        !r) return r;
+    if (auto r = load_string("update_manifest_signature",
+                             state.update_manifest_signature); !r) return r;
   }
 
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
@@ -1483,6 +1495,10 @@ std::expected<void, std::string> write_studio_config_file(
   add_string("pending_update_changelog_en",
              current.pending_update_changelog_en,
              defaults.pending_update_changelog_en);
+  add_string("update_manifest_raw", current.update_manifest_raw,
+             defaults.update_manifest_raw);
+  add_string("update_manifest_signature", current.update_manifest_signature,
+             defaults.update_manifest_signature);
 
   for (std::size_t i = 0; i < current.menu_params.size(); ++i) {
     const auto prefix = menu_config_prefixes[i];
@@ -5494,6 +5510,8 @@ struct UpdatePersistentState {
   std::string published_at{};
   std::string changelog_zh_cn{};
   std::string changelog_en{};
+  std::string manifest_raw{};
+  std::string manifest_signature{};
 };
 
 UpdatePersistentState capture_update_state(const UiState& state) {
@@ -5506,7 +5524,9 @@ UpdatePersistentState capture_update_state(const UiState& state) {
           .release_url = state.pending_update_release_url,
           .published_at = state.pending_update_published_at,
           .changelog_zh_cn = state.pending_update_changelog_zh_cn,
-          .changelog_en = state.pending_update_changelog_en};
+          .changelog_en = state.pending_update_changelog_en,
+          .manifest_raw = state.update_manifest_raw,
+          .manifest_signature = state.update_manifest_signature};
 }
 
 void restore_update_state(UiState& state, UpdatePersistentState value) {
@@ -5520,6 +5540,8 @@ void restore_update_state(UiState& state, UpdatePersistentState value) {
   state.pending_update_published_at = std::move(value.published_at);
   state.pending_update_changelog_zh_cn = std::move(value.changelog_zh_cn);
   state.pending_update_changelog_en = std::move(value.changelog_en);
+  state.update_manifest_raw = std::move(value.manifest_raw);
+  state.update_manifest_signature = std::move(value.manifest_signature);
 }
 
 void clear_pending_update(UiState& state) {
@@ -5606,6 +5628,30 @@ void sync_update_history(
   rows->set_vector(std::move(history));
 }
 
+void restore_cached_update_history(UiState& state) {
+  if (state.update_manifest_raw.empty() ||
+      state.update_manifest_signature.empty()) {
+    return;
+  }
+  auto manifest = awj::update::verify_and_parse_manifest(
+      state.update_manifest_raw, state.update_manifest_signature);
+  if (!manifest ||
+      manifest->sequence <
+          static_cast<std::uint64_t>(std::max<std::int64_t>(
+              state.last_verified_manifest_sequence, 0)) ||
+      manifest->sequence >
+          static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    // 缓存只用于展示；验签失败或序号倒退时丢弃，联网检查仍按原状态继续。
+    state.update_manifest_raw.clear();
+    state.update_manifest_signature.clear();
+    return;
+  }
+  state.last_verified_manifest_sequence =
+      std::max(state.last_verified_manifest_sequence,
+               static_cast<std::int64_t>(manifest->sequence));
+  sync_update_history(state.update_history_rows, *manifest);
+}
+
 awj::update::ChannelPreference update_preference(const UiState& state) {
   return state.update_channel == "prerelease"
              ? awj::update::ChannelPreference::stable_and_prerelease
@@ -5653,6 +5699,8 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
           }
 
           const auto before = capture_update_state(*state);
+          state->update_manifest_raw = fetched->raw_bytes;
+          state->update_manifest_signature = fetched->signature_base64;
           if (const auto pending =
                   awj::update::parse_version(state->pending_update_version);
               pending && awj::update::should_clear_pending_for_revocation(
@@ -5811,6 +5859,7 @@ int run_studio_ui(const wchar_t* health_event,
     // 配置已经读进 language_index，这里让 @tr() 立刻按存下来的语言重算。
     // 必须在组件创建之后调用，此时 AwjStudio::create() 早已完成。
     apply_ui_language(app->get_language_index());
+    restore_cached_update_history(*state);
     bool health_check_ready = false;
     if (health_event != nullptr && installed_version != nullptr &&
         awj::wide_from_utf8(AWJ_BUILD_VERSION) == installed_version &&
@@ -6803,6 +6852,8 @@ struct LinuxUiState {
   std::string pending_update_published_at{};
   std::string pending_update_changelog_zh_cn{};
   std::string pending_update_changelog_en{};
+  std::string update_manifest_raw{};
+  std::string update_manifest_signature{};
   std::string update_status_zh{"尚未检查"};
   std::string update_status_en{"Not checked yet"};
 };
@@ -6952,6 +7003,8 @@ struct LinuxUpdatePersistentState {
   std::string published_at{};
   std::string changelog_zh_cn{};
   std::string changelog_en{};
+  std::string manifest_raw{};
+  std::string manifest_signature{};
 };
 
 LinuxUpdatePersistentState capture_linux_update_state(
@@ -6965,7 +7018,9 @@ LinuxUpdatePersistentState capture_linux_update_state(
           .release_url = state.pending_update_release_url,
           .published_at = state.pending_update_published_at,
           .changelog_zh_cn = state.pending_update_changelog_zh_cn,
-          .changelog_en = state.pending_update_changelog_en};
+          .changelog_en = state.pending_update_changelog_en,
+          .manifest_raw = state.update_manifest_raw,
+          .manifest_signature = state.update_manifest_signature};
 }
 
 void restore_linux_update_state(LinuxUiState& state,
@@ -6980,6 +7035,8 @@ void restore_linux_update_state(LinuxUiState& state,
   state.pending_update_published_at = std::move(value.published_at);
   state.pending_update_changelog_zh_cn = std::move(value.changelog_zh_cn);
   state.pending_update_changelog_en = std::move(value.changelog_en);
+  state.update_manifest_raw = std::move(value.manifest_raw);
+  state.update_manifest_signature = std::move(value.manifest_signature);
 }
 
 void clear_linux_pending_update(LinuxUiState& state) {
@@ -7061,6 +7118,29 @@ void sync_linux_update_history(
         .changelog_en = to_shared(entry->changelog.en)});
   }
   rows->set_vector(std::move(history));
+}
+
+void restore_cached_linux_update_history(LinuxUiState& state) {
+  if (state.update_manifest_raw.empty() ||
+      state.update_manifest_signature.empty()) {
+    return;
+  }
+  auto manifest = awj::update::verify_and_parse_manifest(
+      state.update_manifest_raw, state.update_manifest_signature);
+  if (!manifest ||
+      manifest->sequence <
+          static_cast<std::uint64_t>(std::max<std::int64_t>(
+              state.last_verified_manifest_sequence, 0)) ||
+      manifest->sequence >
+          static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    state.update_manifest_raw.clear();
+    state.update_manifest_signature.clear();
+    return;
+  }
+  state.last_verified_manifest_sequence =
+      std::max(state.last_verified_manifest_sequence,
+               static_cast<std::int64_t>(manifest->sequence));
+  sync_linux_update_history(state.update_history_rows, *manifest);
 }
 
 std::expected<void, std::string> atomic_write_linux_file(
@@ -7209,6 +7289,10 @@ void load_linux_update_config(LinuxUiState& state) {
       linux_config_string(state.config_document, "pending_update_changelog_zh_cn");
   state.pending_update_changelog_en =
       linux_config_string(state.config_document, "pending_update_changelog_en");
+  state.update_manifest_raw =
+      linux_config_string(state.config_document, "update_manifest_raw");
+  state.update_manifest_signature =
+      linux_config_string(state.config_document, "update_manifest_signature");
 }
 
 std::expected<void, std::string> persist_linux_update_config(
@@ -7230,6 +7314,8 @@ std::expected<void, std::string> persist_linux_update_config(
   document["pending_update_changelog_zh_cn"] =
       state.pending_update_changelog_zh_cn;
   document["pending_update_changelog_en"] = state.pending_update_changelog_en;
+  document["update_manifest_raw"] = state.update_manifest_raw;
+  document["update_manifest_signature"] = state.update_manifest_signature;
   auto bytes = document.dump(2);
   bytes.push_back('\n');
   auto saved = atomic_write_linux_file(state.config_path, bytes);
@@ -7316,6 +7402,8 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                 return;
               }
               const auto before = capture_linux_update_state(*state);
+              state->update_manifest_raw = fetched->raw_bytes;
+              state->update_manifest_signature = fetched->signature_base64;
               if (const auto pending =
                       awj::update::parse_version(state->pending_update_version);
                   pending && awj::update::should_clear_pending_for_revocation(
@@ -8169,6 +8257,7 @@ int run_studio_ui() {
     auto weak = slint::ComponentWeakHandle(app);
     initialize_ui(*app);
     load_linux_update_config(*state);
+    restore_cached_linux_update_history(*state);
     sync_linux_update_ui(*app, *state);
     load_system_font_options(*app);
     for (int i = 0; i < 5; ++i) {
