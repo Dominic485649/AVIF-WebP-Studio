@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3 - 2026-08-19
+
+- Prerelease: fixed the lifetime of the current user's Windows proxy configuration during update requests, keeping manual proxy and PAC/auto-detected results valid for the whole request and safely falling back to direct routing when discovery is unavailable.
+- Prerelease: fixed update-channel focus after switching, keeping one blue focus ring the same width as the combo box instead of leaving a black border behind.
+
 ## 1.0.2 - 2026-08-10
 
 - Prerelease: when automatic proxy discovery (WPAD/PAC) is unavailable, fall back to WinHTTP's default route instead of rejecting a direct connection; an explicitly configured manual proxy still takes precedence.
