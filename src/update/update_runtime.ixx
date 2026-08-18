@@ -98,10 +98,31 @@ using GlobalWideString = std::unique_ptr<wchar_t, GlobalMemoryFree>;
 
 struct ProxyInfoMemory {
   WINHTTP_PROXY_INFO value{};
+  ProxyInfoMemory() = default;
+  ProxyInfoMemory(const ProxyInfoMemory&) = delete;
+  ProxyInfoMemory& operator=(const ProxyInfoMemory&) = delete;
+  ProxyInfoMemory(ProxyInfoMemory&& other) noexcept : value(other.value) {
+    other.value = {};
+  }
+  ProxyInfoMemory& operator=(ProxyInfoMemory&& other) noexcept {
+    if (this != &other) {
+      if (value.lpszProxy != nullptr) GlobalFree(value.lpszProxy);
+      if (value.lpszProxyBypass != nullptr) GlobalFree(value.lpszProxyBypass);
+      value = other.value;
+      other.value = {};
+    }
+    return *this;
+  }
   ~ProxyInfoMemory() {
     if (value.lpszProxy != nullptr) GlobalFree(value.lpszProxy);
     if (value.lpszProxyBypass != nullptr) GlobalFree(value.lpszProxyBypass);
   }
+};
+
+struct AppliedProxy {
+  GlobalWideString proxy{};
+  GlobalWideString bypass{};
+  ProxyInfoMemory resolved{};
 };
 
 std::expected<std::wstring, std::string> utf8_to_wide(std::string_view text) {
@@ -138,7 +159,7 @@ std::expected<std::string, std::string> wide_to_utf8(std::wstring_view text) {
 }
 
 std::expected<void, std::string> apply_current_user_proxy(
-    HINTERNET session, const std::wstring& url) {
+    HINTERNET session, const std::wstring& url, AppliedProxy& applied) {
   WINHTTP_CURRENT_USER_IE_PROXY_CONFIG ie{};
   if (WinHttpGetIEProxyConfigForCurrentUser(&ie) == FALSE) {
     // Keep WinHTTP's automatic proxy mode when the user has no readable
@@ -150,10 +171,12 @@ std::expected<void, std::string> apply_current_user_proxy(
   GlobalWideString bypass{ie.lpszProxyBypass};
 
   if (proxy && *proxy) {
+    applied.proxy.reset(proxy.release());
+    applied.bypass.reset(bypass.release());
     WINHTTP_PROXY_INFO info{
         .dwAccessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY,
-        .lpszProxy = proxy.get(),
-        .lpszProxyBypass = bypass.get(),
+        .lpszProxy = applied.proxy.get(),
+        .lpszProxyBypass = applied.bypass.get(),
     };
     if (WinHttpSetOption(session, WINHTTP_OPTION_PROXY, &info,
                          sizeof(info)) == FALSE) {
@@ -194,6 +217,7 @@ std::expected<void, std::string> apply_current_user_proxy(
                        sizeof(resolved.value)) == FALSE) {
     return std::unexpected{"应用 Windows 自动代理设置失败。"};
   }
+  applied.resolved = std::move(resolved);
   return {};
 }
 
@@ -201,6 +225,7 @@ struct OpenResponse {
   UniqueWinHttp session{};
   UniqueWinHttp connection{};
   UniqueWinHttp request{};
+  AppliedProxy proxy{};
   std::string final_url{};
 };
 
@@ -237,7 +262,9 @@ std::expected<OpenResponse, std::string> open_response(
   std::string current = std::move(initial_url);
   auto proxy_url = utf8_to_wide(current);
   if (!proxy_url) return std::unexpected{proxy_url.error()};
-  if (auto proxy = apply_current_user_proxy(session.get(), *proxy_url);
+  AppliedProxy proxy_storage;
+  if (auto proxy = apply_current_user_proxy(session.get(), *proxy_url,
+                                            proxy_storage);
       !proxy) {
     return std::unexpected{proxy.error()};
   }
@@ -265,9 +292,15 @@ std::expected<OpenResponse, std::string> open_response(
       return std::unexpected{"禁用 WinHTTP 自动重定向失败。"};
     }
     if (WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0) == FALSE ||
-        WinHttpReceiveResponse(request.get(), nullptr) == FALSE) {
-      return std::unexpected{"更新服务器请求失败或超时。"};
+                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0) == FALSE) {
+      return std::unexpected{std::format(
+          "更新服务器请求发送失败（WinHTTP {}，URL {}）。", GetLastError(),
+          current)};
+    }
+    if (WinHttpReceiveResponse(request.get(), nullptr) == FALSE) {
+      return std::unexpected{std::format(
+          "更新服务器响应失败（WinHTTP {}，URL {}）。", GetLastError(),
+          current)};
     }
     DWORD status = 0;
     DWORD status_bytes = sizeof(status);
@@ -281,6 +314,7 @@ std::expected<OpenResponse, std::string> open_response(
       return OpenResponse{.session = std::move(session),
                           .connection = std::move(connection),
                           .request = std::move(request),
+                          .proxy = std::move(proxy_storage),
                           .final_url = std::move(current)};
     }
     if (status != 301 && status != 302 && status != 303 && status != 307 &&
