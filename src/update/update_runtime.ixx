@@ -180,9 +180,14 @@ std::expected<void, std::string> apply_current_user_proxy(
   ProxyInfoMemory resolved;
   if (WinHttpGetProxyForUrl(session, url.c_str(), &options,
                             &resolved.value) == FALSE) {
-    // WPAD/PAC is optional; when discovery is unavailable, keep WinHTTP's
-    // default routing instead of turning a normal direct connection into a
-    // hard update failure.
+    // WPAD/PAC is optional; when discovery is unavailable, use a direct
+    // connection instead of turning a normal direct connection into a hard
+    // update failure or inheriting a stale machine-wide proxy.
+    WINHTTP_PROXY_INFO direct{.dwAccessType = WINHTTP_ACCESS_TYPE_NO_PROXY};
+    if (WinHttpSetOption(session, WINHTTP_OPTION_PROXY, &direct,
+                         sizeof(direct)) == FALSE) {
+      return std::unexpected{"应用直连更新设置失败。"};
+    }
     return {};
   }
   if (WinHttpSetOption(session, WINHTTP_OPTION_PROXY, &resolved.value,
