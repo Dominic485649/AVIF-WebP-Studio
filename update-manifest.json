@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sequence": 5,
+  "sequence": 6,
   "entries": [
     {
       "version": "1.0.1",
@@ -34,15 +34,15 @@
     {
       "version": "1.0.2",
       "channel": "prerelease",
-      "published_at": "2026-08-18T17:19:39Z",
+      "published_at": "2026-08-18T17:30:04Z",
       "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.2",
       "minimum_updater_version": "1.0.1",
       "revoked": false,
       "assets": {
         "windows_x64_exe": {
           "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.2/AWJ.exe",
-          "size": 42840064,
-          "sha256": "6e6763d5ba28f6b5cae24a21d9f48c068b137af469320a60154b63fb90a33989"
+          "size": 42854912,
+          "sha256": "dea9ee77ec99baa45ef49d2d8016c775df2ecdcf7098e6703e201397fdafeeb2"
         },
         "windows_x64_com": {
           "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.2/AWJ.com",
