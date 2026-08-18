@@ -61,6 +61,7 @@ component SoftComboBox inherits Rectangle {
     in property <color> selected-text: #0b5ed7;
     in property <int> close-generation: 0;
     in property <bool> defer-current-index: false;
+    in property <bool> retain-focus-when-disabled: false;
     in property <bool> center-text: false;
     in property <length> viewport-height: 100000px;
     in property <int> max-visible-items: 0;
@@ -248,7 +249,7 @@ component SoftComboBox inherits Rectangle {
     combo-focus := FocusScope {
         x: 0px;
         width: 0px;
-        enabled: root.enabled;
+        enabled: root.enabled || root.retain-focus-when-disabled;
         key-pressed(event) => {
             if (!root.enabled) {
                 return reject;
@@ -2146,6 +2147,7 @@ export component AwjStudio inherits Window {
                                         model: [{ text: @tr("仅稳定版"), enabled: true }, { text: @tr("稳定版和 prerelease"), enabled: true }];
                                         current-index <=> root.update-channel-index;
                                         enabled: !root.update-checking;
+                                        retain-focus-when-disabled: true;
                                         horizontal-stretch: 1;
                                         normal-background: root.combo-bg;
                                         hover-background: root.combo-bg-hover;

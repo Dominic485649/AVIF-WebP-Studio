@@ -89,6 +89,21 @@ struct WinHttpCloser {
 };
 using UniqueWinHttp = std::unique_ptr<void, WinHttpCloser>;
 
+struct GlobalMemoryFree {
+  void operator()(wchar_t* value) const noexcept {
+    if (value != nullptr) GlobalFree(value);
+  }
+};
+using GlobalWideString = std::unique_ptr<wchar_t, GlobalMemoryFree>;
+
+struct ProxyInfoMemory {
+  WINHTTP_PROXY_INFO value{};
+  ~ProxyInfoMemory() {
+    if (value.lpszProxy != nullptr) GlobalFree(value.lpszProxy);
+    if (value.lpszProxyBypass != nullptr) GlobalFree(value.lpszProxyBypass);
+  }
+};
+
 std::expected<std::wstring, std::string> utf8_to_wide(std::string_view text) {
   if (text.empty()) return std::wstring{};
   if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
@@ -122,6 +137,58 @@ std::expected<std::string, std::string> wide_to_utf8(std::wstring_view text) {
   return result;
 }
 
+std::expected<void, std::string> apply_current_user_proxy(
+    HINTERNET session, const std::wstring& url) {
+  WINHTTP_CURRENT_USER_IE_PROXY_CONFIG ie{};
+  if (WinHttpGetIEProxyConfigForCurrentUser(&ie) == FALSE) {
+    // Keep WinHTTP's automatic proxy mode when the user has no readable
+    // WinINet profile (for example, a service account or a fresh profile).
+    return {};
+  }
+  GlobalWideString auto_config{ie.lpszAutoConfigUrl};
+  GlobalWideString proxy{ie.lpszProxy};
+  GlobalWideString bypass{ie.lpszProxyBypass};
+
+  if (proxy && *proxy) {
+    WINHTTP_PROXY_INFO info{
+        .dwAccessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+        .lpszProxy = proxy.get(),
+        .lpszProxyBypass = bypass.get(),
+    };
+    if (WinHttpSetOption(session, WINHTTP_OPTION_PROXY, &info,
+                         sizeof(info)) == FALSE) {
+      return std::unexpected{"应用 Windows 用户代理设置失败。"};
+    }
+    return {};
+  }
+
+  const bool has_auto_config = auto_config && *auto_config;
+  if (!ie.fAutoDetect && !has_auto_config) return {};
+
+  WINHTTP_AUTOPROXY_OPTIONS options{};
+  if (ie.fAutoDetect) {
+    options.dwFlags |= WINHTTP_AUTOPROXY_AUTO_DETECT;
+    options.dwAutoDetectFlags = WINHTTP_AUTO_DETECT_TYPE_DHCP |
+                                WINHTTP_AUTO_DETECT_TYPE_DNS_A;
+  }
+  if (has_auto_config) {
+    options.dwFlags |= WINHTTP_AUTOPROXY_CONFIG_URL;
+    options.lpszAutoConfigUrl = auto_config.get();
+  }
+  options.fAutoLogonIfChallenged = TRUE;
+
+  ProxyInfoMemory resolved;
+  if (WinHttpGetProxyForUrl(session, url.c_str(), &options,
+                            &resolved.value) == FALSE) {
+    return std::unexpected{"解析 Windows 用户代理设置失败。"};
+  }
+  if (WinHttpSetOption(session, WINHTTP_OPTION_PROXY, &resolved.value,
+                       sizeof(resolved.value)) == FALSE) {
+    return std::unexpected{"应用 Windows 自动代理设置失败。"};
+  }
+  return {};
+}
+
 struct OpenResponse {
   UniqueWinHttp session{};
   UniqueWinHttp connection{};
@@ -152,7 +219,7 @@ std::expected<OpenResponse, std::string> open_response(
     std::string initial_url, std::stop_token token) {
   constexpr int maximum_redirects = 4;
   auto session = UniqueWinHttp{WinHttpOpen(
-      L"AWJimage updater/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+      L"AWJimage updater/1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
   if (!session) return std::unexpected{"初始化 WinHTTP 失败。"};
   if (WinHttpSetTimeouts(session.get(), 5000, 5000, 15000, 15000) == FALSE) {
@@ -160,6 +227,12 @@ std::expected<OpenResponse, std::string> open_response(
   }
 
   std::string current = std::move(initial_url);
+  auto proxy_url = utf8_to_wide(current);
+  if (!proxy_url) return std::unexpected{proxy_url.error()};
+  if (auto proxy = apply_current_user_proxy(session.get(), *proxy_url);
+      !proxy) {
+    return std::unexpected{proxy.error()};
+  }
   for (int redirect = 0; redirect <= maximum_redirects; ++redirect) {
     if (token.stop_requested()) return std::unexpected{"更新请求已取消。"};
     auto parsed = parse_allowed_https_url(current);

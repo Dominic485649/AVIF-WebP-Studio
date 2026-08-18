@@ -111,6 +111,7 @@ git tag 1.0.1
 .\release.ps1 `
   -UpdateManifestSequence 1 `
   -UpdatePublishedAtUtc '2026-08-09T12:00:00Z' `
+  -MinimumUpdaterVersion '1.0.1' `
   -UpdatePublicKeyHex $PublicKey `
   -UpdateSigningSeedFile 'E:\AWJ-secrets\update-ed25519-seed.hex' `
   -LinuxAssetPath 'D:\release-assets\AWJ'
