@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sequence": 6,
+  "sequence": 7,
   "entries": [
     {
       "version": "1.0.1",
@@ -58,6 +58,35 @@
       "changelog": {
         "zh-CN": "- prerelease：修正 Windows 更新 staging 位于 LocalAppData、安装目录位于其他卷时的跨卷替换；先复制到安装目录同卷临时文件再原子替换，保留失败回滚语义。\n- prerelease：修正发布脚本续签已有 manifest 时的版本数组解析，确保后续 sequence/版本校验不会把字段说明误当作版本号。\n- prerelease：将全部测试可执行文件隔离到 `bin/x64/tests/<配置>`，避免跨平台构建和发布清理互相覆盖测试产物。\n- prerelease：更新日志页改为展示签名 manifest 中按版本排序的完整发布历史；移除手动检查入口，更新检查继续由程序自动触发。\n- prerelease：更新日志页改为内嵌中英文大版本历史，并与已验签 manifest 条目合并；删除说明文字和空状态提示。\n- prerelease：将最近一次已验签的 manifest 原文与签名随现有配置原子保存，启动时重新验签恢复历史，未到下一次自动检查间隔时也能离线查看完整日志。\n- prerelease：发布构建在跳过 manifest 生成时保留内置 Ed25519 公钥；正式 Windows 资产可正常执行签名更新检查，并修正当前用户代理配置的 WinHTTP 访问方式。\n- prerelease：自动代理（WPAD/PAC）解析不可用时回退到 WinHTTP 默认路由，避免没有 WPAD 的直连环境被错误拒绝；手动代理仍优先生效。",
         "en": "- Prerelease: fixed Windows updates when LocalAppData staging and the installed application are on different volumes; the helper now copies to a same-volume temporary and atomically replaces the target while preserving rollback.\n- Prerelease: fixed release-script parsing when continuing an existing manifest so sequence/version validation does not treat the field label as a version component.\n- Prerelease: isolated all test executables under `bin/x64/tests/<configuration>` so cross-platform builds and release cleanup cannot overwrite test artifacts.\n- Prerelease: changed the changelog page to show the complete version-sorted release history from the signed manifest; removed manual checking so update checks remain automatic.\n- Prerelease: embedded the bilingual major-version history in the changelog page and merged it with verified manifest entries; removed explanatory and empty-state text.\n- Prerelease: atomically persist the latest verified manifest bytes and signature with the existing config, then re-verify them at startup so the complete history remains available offline between automatic checks.\n- Prerelease: release builds now retain the embedded Ed25519 public key when manifest generation is skipped; the final Windows assets can perform signed update checks, and WinHTTP now applies the current user's proxy configuration correctly.\n- Prerelease: when automatic proxy discovery (WPAD/PAC) is unavailable, fall back to WinHTTP's default route instead of rejecting a direct connection; an explicitly configured manual proxy still takes precedence."
+      }
+    },
+    {
+      "version": "1.0.3",
+      "channel": "prerelease",
+      "published_at": "2026-08-18T18:49:38Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.3",
+      "minimum_updater_version": "1.0.1",
+      "revoked": false,
+      "assets": {
+        "windows_x64_exe": {
+          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.3/AWJ.exe",
+          "size": 42854400,
+          "sha256": "04910d082ad27330a6fc5f536e558db61876df24807443d414f013c554201a57"
+        },
+        "windows_x64_com": {
+          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.3/AWJ.com",
+          "size": 451072,
+          "sha256": "ebac6d4192fcc3586e201e16397dd307bcd7ba77cc5a9f0ff405e2ce081239c0"
+        },
+        "linux_x64": {
+          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.3/AWJ",
+          "size": 64091720,
+          "sha256": "18da5c688763a231e8693ed63c9d5a3378222c35db03191368393a62159804e4"
+        }
+      },
+      "changelog": {
+        "zh-CN": "- prerelease：修正 Windows 更新请求中当前用户代理配置的生命周期，手动代理和 PAC/自动代理解析结果在整个请求期间保持有效；没有可用代理发现时继续安全回退到直连。\n- prerelease：修正更新渠道切换后的焦点状态，焦点环保持与下拉框同宽并使用统一的蓝色样式，不再残留黑色边框。",
+        "en": "- Prerelease: fixed the lifetime of the current user's Windows proxy configuration during update requests, keeping manual proxy and PAC/auto-detected results valid for the whole request and safely falling back to direct routing when discovery is unavailable.\n- Prerelease: fixed update-channel focus after switching, keeping one blue focus ring the same width as the combo box instead of leaving a black border behind."
       }
     }
   ]
