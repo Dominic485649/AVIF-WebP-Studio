@@ -3,6 +3,10 @@
 ###############################################################################
 * text=auto
 
+# Detached manifest signatures cover the exact UTF-8 bytes served by GitHub Raw.
+/update-manifest.json text eol=lf
+/update-manifest.json.sig text eol=lf
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #
