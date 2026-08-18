@@ -47,7 +47,7 @@
         "windows_x64_com": {
           "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.2/AWJ.com",
           "size": 451072,
-          "sha256": "400e2bd17baebbecf3b7c7fea319dcb9025d57bf5db6cc9ac4bd89c38bb1b1d1"
+          "sha256": "ebac6d4192fcc3586e201e16397dd307bcd7ba77cc5a9f0ff405e2ce081239c0"
         },
         "linux_x64": {
           "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.2/AWJ",
