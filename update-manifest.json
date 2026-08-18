@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sequence": 4,
+  "sequence": 5,
   "entries": [
     {
       "version": "1.0.1",
@@ -34,15 +34,15 @@
     {
       "version": "1.0.2",
       "channel": "prerelease",
-      "published_at": "2026-08-18T16:59:28Z",
+      "published_at": "2026-08-18T17:19:39Z",
       "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.2",
       "minimum_updater_version": "1.0.1",
       "revoked": false,
       "assets": {
         "windows_x64_exe": {
           "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.2/AWJ.exe",
-          "size": 42834432,
-          "sha256": "0f269581101045ded1f29a7df4ad48583e768223769385f48a39a48800e2bcb5"
+          "size": 42840064,
+          "sha256": "6e6763d5ba28f6b5cae24a21d9f48c068b137af469320a60154b63fb90a33989"
         },
         "windows_x64_com": {
           "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.2/AWJ.com",
@@ -56,8 +56,8 @@
         }
       },
       "changelog": {
-        "zh-CN": "- prerelease：修正 Windows 更新 staging 位于 LocalAppData、安装目录位于其他卷时的跨卷替换；先复制到安装目录同卷临时文件再原子替换，保留失败回滚语义。\n- prerelease：修正发布脚本续签已有 manifest 时的版本数组解析，确保后续 sequence/版本校验不会把字段说明误当作版本号。\n- prerelease：将全部测试可执行文件隔离到 `bin/x64/tests/<配置>`，避免跨平台构建和发布清理互相覆盖测试产物。\n- prerelease：更新日志页改为展示签名 manifest 中按版本排序的完整发布历史；移除手动检查入口，更新检查继续由程序自动触发。\n- prerelease：更新日志页改为内嵌中英文大版本历史，并与已验签 manifest 条目合并；删除说明文字和空状态提示。\n- prerelease：将最近一次已验签的 manifest 原文与签名随现有配置原子保存，启动时重新验签恢复历史，未到下一次自动检查间隔时也能离线查看完整日志。\n- prerelease：发布构建在跳过 manifest 生成时保留内置 Ed25519 公钥；正式 Windows 资产可正常执行签名更新检查，并修正当前用户代理配置的 WinHTTP 访问方式。",
-        "en": "- Prerelease: fixed Windows updates when LocalAppData staging and the installed application are on different volumes; the helper now copies to a same-volume temporary and atomically replaces the target while preserving rollback.\n- Prerelease: fixed release-script parsing when continuing an existing manifest so sequence/version validation does not treat the field label as a version component.\n- Prerelease: isolated all test executables under `bin/x64/tests/<configuration>` so cross-platform builds and release cleanup cannot overwrite test artifacts.\n- Prerelease: changed the changelog page to show the complete version-sorted release history from the signed manifest; removed manual checking so update checks remain automatic.\n- Prerelease: embedded the bilingual major-version history in the changelog page and merged it with verified manifest entries; removed explanatory and empty-state text.\n- Prerelease: atomically persist the latest verified manifest bytes and signature with the existing config, then re-verify them at startup so the complete history remains available offline between automatic checks.\n- Prerelease: release builds now retain the embedded Ed25519 public key when manifest generation is skipped; the final Windows assets can perform signed update checks, and WinHTTP now applies the current user's proxy configuration correctly."
+        "zh-CN": "- prerelease：修正 Windows 更新 staging 位于 LocalAppData、安装目录位于其他卷时的跨卷替换；先复制到安装目录同卷临时文件再原子替换，保留失败回滚语义。\n- prerelease：修正发布脚本续签已有 manifest 时的版本数组解析，确保后续 sequence/版本校验不会把字段说明误当作版本号。\n- prerelease：将全部测试可执行文件隔离到 `bin/x64/tests/<配置>`，避免跨平台构建和发布清理互相覆盖测试产物。\n- prerelease：更新日志页改为展示签名 manifest 中按版本排序的完整发布历史；移除手动检查入口，更新检查继续由程序自动触发。\n- prerelease：更新日志页改为内嵌中英文大版本历史，并与已验签 manifest 条目合并；删除说明文字和空状态提示。\n- prerelease：将最近一次已验签的 manifest 原文与签名随现有配置原子保存，启动时重新验签恢复历史，未到下一次自动检查间隔时也能离线查看完整日志。\n- prerelease：发布构建在跳过 manifest 生成时保留内置 Ed25519 公钥；正式 Windows 资产可正常执行签名更新检查，并修正当前用户代理配置的 WinHTTP 访问方式。\n- prerelease：自动代理（WPAD/PAC）解析不可用时回退到 WinHTTP 默认路由，避免没有 WPAD 的直连环境被错误拒绝；手动代理仍优先生效。",
+        "en": "- Prerelease: fixed Windows updates when LocalAppData staging and the installed application are on different volumes; the helper now copies to a same-volume temporary and atomically replaces the target while preserving rollback.\n- Prerelease: fixed release-script parsing when continuing an existing manifest so sequence/version validation does not treat the field label as a version component.\n- Prerelease: isolated all test executables under `bin/x64/tests/<configuration>` so cross-platform builds and release cleanup cannot overwrite test artifacts.\n- Prerelease: changed the changelog page to show the complete version-sorted release history from the signed manifest; removed manual checking so update checks remain automatic.\n- Prerelease: embedded the bilingual major-version history in the changelog page and merged it with verified manifest entries; removed explanatory and empty-state text.\n- Prerelease: atomically persist the latest verified manifest bytes and signature with the existing config, then re-verify them at startup so the complete history remains available offline between automatic checks.\n- Prerelease: release builds now retain the embedded Ed25519 public key when manifest generation is skipped; the final Windows assets can perform signed update checks, and WinHTTP now applies the current user's proxy configuration correctly.\n- Prerelease: when automatic proxy discovery (WPAD/PAC) is unavailable, fall back to WinHTTP's default route instead of rejecting a direct connection; an explicitly configured manual proxy still takes precedence."
       }
     }
   ]
