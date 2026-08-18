@@ -408,7 +408,9 @@ $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON'
 $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAWJ_ENABLE_ZENRAVIF=$(if ($DisableZenravif) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAWJ_ENABLE_SVTAV1HDR=$(if ($DisableSvtAv1Hdr) { 'OFF' } else { 'ON' })"
-$ConfigureArgs += "-DAWJ_UPDATE_PUBLIC_KEY_HEX=$UpdatePublicKeyHex"
+if ($UpdatePublicKeyHex) {
+    $ConfigureArgs += "-DAWJ_UPDATE_PUBLIC_KEY_HEX=$UpdatePublicKeyHex"
+}
 $ConfigureArgs += $FetchContentSourceOverrides
 
 if (Test-Path $OutputDir) {
