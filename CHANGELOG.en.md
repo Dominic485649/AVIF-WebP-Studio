@@ -2,6 +2,7 @@
 
 ## 1.0.2 - 2026-08-10
 
+- Prerelease: when automatic proxy discovery (WPAD/PAC) is unavailable, fall back to WinHTTP's default route instead of rejecting a direct connection; an explicitly configured manual proxy still takes precedence.
 - Prerelease: Windows update requests now honor the current user's manual proxy, PAC, and auto-detect settings; when the user profile is unavailable, WinHTTP's default proxy remains in effect and proxy addresses are never logged.
 - Prerelease: the update-channel combo keeps focus while automatic checking disables interaction, so focus no longer jumps to the “Show changelog” checkbox or paints a black focus border.
 - Prerelease: fixed Windows updates when LocalAppData staging and the installed application are on different volumes; the helper now copies to a same-volume temporary and atomically replaces the target while preserving rollback.
