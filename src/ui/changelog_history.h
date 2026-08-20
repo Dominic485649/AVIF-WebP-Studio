@@ -79,7 +79,10 @@ inline std::vector<ChangelogHistoryEntry> parse(std::string_view chinese,
         break;
       }
     }
-    if (english_body.empty()) continue;
+    // Keep the complete Chinese source history visible even while a legacy
+    // entry has not yet been translated. Dropping it made the English UI
+    // silently start at 1.0.0 instead of showing the full changelog.
+    if (english_body.empty()) english_body = std::string{section.body};
     history.push_back(ChangelogHistoryEntry{
         .version = std::string{version},
         .published_at = std::string{date},

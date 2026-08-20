@@ -32,7 +32,9 @@ module;
 export module awj.update_windows;
 
 import awj.update_manifest;
+import awj.update_manifest_v2;
 import awj.update_model;
+import awj.update_archive;
 import awj.update_runtime;
 
 export namespace awj::update {
@@ -309,8 +311,8 @@ std::expected<void, std::string> restore_backups(
 
 void cleanup_stage_after_success(const std::filesystem::path& stage) noexcept {
   std::error_code ec;
-  for (const auto* name : {L"AWJ.exe.old", L"AWJ.com.old", L"manifest.json",
-                           L"manifest.sig", L"version.txt", L"state.txt"}) {
+  for (const auto* name : {L"AWJ.exe.old", L"AWJ.com.old", L"manifest-v2.json",
+                           L"manifest-v2.sig", L"version.txt", L"state.txt"}) {
     std::filesystem::remove(stage / name, ec);
     ec.clear();
   }
@@ -332,11 +334,11 @@ std::expected<void, std::string> stage_and_launch_update(
       !writable) {
     return writable;
   }
-  auto fetched = fetch_verified_manifest(last_verified_sequence, token);
+  auto fetched = fetch_verified_archive_manifest_v2(last_verified_sequence, token);
   if (!fetched) return std::unexpected{fetched.error()};
   const auto current = parse_version(AWJ_BUILD_VERSION);
   if (!current) return std::unexpected{"当前构建版本号非法。"};
-  const auto candidate = select_candidate(
+  const auto candidate = select_archive_candidate_v2(
       fetched->manifest,
       {.current_version = *current,
        .updater_version = *current,
@@ -351,41 +353,67 @@ std::expected<void, std::string> stage_and_launch_update(
     std::error_code ec;
     std::filesystem::remove_all(*stage, ec);
   };
+  const auto* entry = find_archive_manifest_v2_entry(fetched->manifest,
+                                                       candidate->version);
+  if (entry == nullptr || entry->windows_x64_archive.members.empty()) {
+    cleanup_on_failure();
+    return std::unexpected{"签名 v2 manifest 缺少 Windows 归档成员。"};
+  }
+  const auto* exe_member = find_archive_member(entry->windows_x64_archive, "AWJ.exe");
+  const auto* com_member = find_archive_member(entry->windows_x64_archive, "AWJ.com");
+  if (exe_member == nullptr || com_member == nullptr) {
+    cleanup_on_failure();
+    return std::unexpected{"签名 v2 manifest 的 Windows 归档缺少 AWJ.exe 或 AWJ.com。"};
+  }
+  const auto archive_path = *stage / L"AWJ_Win.7z";
+  const auto unpacked = *stage / L"unpacked";
   const auto new_exe = *stage / L"AWJ.exe.new";
   const auto new_com = *stage / L"AWJ.com.new";
   if (auto downloaded = download_https_asset(
-          candidate->windows_x64_exe.url, new_exe,
-          candidate->windows_x64_exe.size_bytes, token);
+          entry->windows_x64_archive.archive.url, archive_path,
+          entry->windows_x64_archive.archive.size_bytes, token);
       !downloaded) {
     cleanup_on_failure();
     return downloaded;
   }
-  if (auto downloaded = download_https_asset(
-          candidate->windows_x64_com.url, new_com,
-          candidate->windows_x64_com.size_bytes, token);
-      !downloaded) {
+  if (auto extracted = extract_verified_7z_archive(
+          archive_path, entry->windows_x64_archive, unpacked);
+      !extracted) {
     cleanup_on_failure();
-    return downloaded;
+    return extracted;
   }
-  if (auto valid = verify_asset_file(
-          new_exe, candidate->windows_x64_exe);
-      !valid) {
+  if (auto copied = windows_detail::flush_copy(unpacked / L"AWJ.exe", new_exe, true);
+      !copied) {
+    cleanup_on_failure();
+    return copied;
+  }
+  if (auto copied = windows_detail::flush_copy(unpacked / L"AWJ.com", new_com, true);
+      !copied) {
+    cleanup_on_failure();
+    return copied;
+  }
+  if (auto valid = verify_asset_file(new_exe, exe_member->asset); !valid) {
     cleanup_on_failure();
     return valid;
   }
-  if (auto valid = verify_asset_file(
-          new_com, candidate->windows_x64_com);
-      !valid) {
+  if (auto valid = verify_asset_file(new_com, com_member->asset); !valid) {
     cleanup_on_failure();
     return valid;
   }
-  if (auto saved = windows_detail::write_text(*stage / L"manifest.json",
+  std::error_code extraction_cleanup_error;
+  std::filesystem::remove_all(unpacked, extraction_cleanup_error);
+  std::filesystem::remove(archive_path, extraction_cleanup_error);
+  if (extraction_cleanup_error) {
+    cleanup_on_failure();
+    return std::unexpected{"无法清理已校验的归档 staging 文件。"};
+  }
+  if (auto saved = windows_detail::write_text(*stage / L"manifest-v2.json",
                                                fetched->raw_bytes);
       !saved) {
     cleanup_on_failure();
     return saved;
   }
-  if (auto saved = windows_detail::write_text(*stage / L"manifest.sig",
+  if (auto saved = windows_detail::write_text(*stage / L"manifest-v2.sig",
                                                fetched->signature_base64);
       !saved) {
     cleanup_on_failure();
@@ -438,26 +466,26 @@ int run_update_helper(DWORD parent_pid) noexcept {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(target_com, ec) || ec) return 23;
     auto version = read_file(stage / L"version.txt", 64);
-    auto raw = read_file(stage / L"manifest.json", maximum_manifest_bytes);
-    auto signature = read_file(stage / L"manifest.sig", maximum_signature_bytes);
+    auto raw = read_file(stage / L"manifest-v2.json", maximum_manifest_bytes);
+    auto signature = read_file(stage / L"manifest-v2.sig", maximum_signature_bytes);
     if (!version || !raw || !signature) return 24;
     while (!version->empty() &&
            (version->back() == '\r' || version->back() == '\n')) {
       version->pop_back();
     }
-    auto manifest = verify_and_parse_manifest(*raw, *signature);
+    auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature);
     if (!manifest) return 25;
     const auto parsed_version = parse_version(*version);
     if (!parsed_version) return 26;
-    const auto entry_it = std::ranges::find_if(
-        manifest->entries, [&](const ManifestEntry& entry) {
-          return entry.version == *parsed_version && !entry.revoked;
-        });
-    if (entry_it == manifest->entries.end()) return 27;
+    const auto* entry = find_archive_manifest_v2_entry(*manifest, *parsed_version);
+    if (entry == nullptr || entry->revoked) return 27;
+    const auto* exe_member = find_archive_member(entry->windows_x64_archive, "AWJ.exe");
+    const auto* com_member = find_archive_member(entry->windows_x64_archive, "AWJ.com");
+    if (exe_member == nullptr || com_member == nullptr) return 27;
     const auto new_exe = stage / L"AWJ.exe.new";
     const auto new_com = stage / L"AWJ.com.new";
-    if (!verify_asset_file(new_exe, entry_it->windows_x64_exe) ||
-        !verify_asset_file(new_com, entry_it->windows_x64_com)) {
+    if (!verify_asset_file(new_exe, exe_member->asset) ||
+        !verify_asset_file(new_com, com_member->asset)) {
       return 28;
     }
     if (WaitForSingleObject(parent.get(), 60000) != WAIT_OBJECT_0) return 29;
@@ -585,7 +613,7 @@ int run_update_recovery_helper(DWORD parent_pid) noexcept {
       return 43;
     }
     std::error_code ec;
-    for (const auto* name : {L"manifest.json", L"manifest.sig", L"version.txt",
+    for (const auto* name : {L"manifest-v2.json", L"manifest-v2.sig", L"version.txt",
                              L"state.txt", L"AWJ.exe.new", L"AWJ.com.new"}) {
       std::filesystem::remove(stage / name, ec);
       ec.clear();

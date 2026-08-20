@@ -300,7 +300,7 @@ std::expected<Manifest, std::string> parse_manifest_json(
   }
 }
 
-std::expected<Manifest, std::string> verify_and_parse_manifest(
+std::expected<void, std::string> verify_manifest_signature(
     std::string_view raw_bytes, std::string_view signature_base64) {
   if (sodium_init() < 0) {
     return std::unexpected{"初始化 Ed25519 验签库失败。"};
@@ -342,6 +342,15 @@ std::expected<Manifest, std::string> verify_and_parse_manifest(
           static_cast<unsigned long long>(raw_bytes.size()),
           public_key.data()) != 0) {
     return std::unexpected{"update-manifest.json 的 Ed25519 签名验证失败。"};
+  }
+  return {};
+}
+
+std::expected<Manifest, std::string> verify_and_parse_manifest(
+    std::string_view raw_bytes, std::string_view signature_base64) {
+  if (auto verified = verify_manifest_signature(raw_bytes, signature_base64);
+      !verified) {
+    return std::unexpected{verified.error()};
   }
   return parse_manifest_json(raw_bytes);
 }

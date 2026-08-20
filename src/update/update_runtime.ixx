@@ -11,10 +11,13 @@ module;
 #include <winhttp.h>
 #else
 #include <curl/curl.h>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -35,12 +38,19 @@ module;
 export module awj.update_runtime;
 
 import awj.update_manifest;
+import awj.update_manifest_v2;
 import awj.update_model;
 
 export namespace awj::update {
 
 struct VerifiedManifest {
   Manifest manifest{};
+  std::string raw_bytes{};
+  std::string signature_base64{};
+};
+
+struct VerifiedArchiveManifestV2 {
+  ArchiveManifestV2 manifest{};
   std::string raw_bytes{};
   std::string signature_base64{};
 };
@@ -551,6 +561,31 @@ std::expected<VerifiedManifest, std::string> fetch_verified_manifest(
                           .signature_base64 = std::move(*signature)};
 }
 
+std::expected<VerifiedArchiveManifestV2, std::string>
+fetch_verified_archive_manifest_v2(std::uint64_t last_verified_sequence,
+                                   std::stop_token token = {}) {
+  if (!update_public_key_configured()) {
+    return std::unexpected{
+        "此构建未配置有效的更新公钥，已拒绝联网更新。"};
+  }
+  auto raw = runtime_detail::get_bytes(std::string{archive_manifest_v2_url},
+                                       maximum_manifest_bytes, token);
+  if (!raw) return std::unexpected{raw.error()};
+  auto signature = runtime_detail::get_bytes(
+      std::string{archive_manifest_v2_signature_url}, maximum_signature_bytes,
+      token);
+  if (!signature) return std::unexpected{signature.error()};
+  auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature);
+  if (!manifest) return std::unexpected{manifest.error()};
+  if (!is_archive_manifest_v2_fresh(*manifest, last_verified_sequence)) {
+    return std::unexpected{
+        "收到的签名 v2 manifest sequence 低于本机已验证序号，已拒绝重放。"};
+  }
+  return VerifiedArchiveManifestV2{.manifest = std::move(*manifest),
+                                   .raw_bytes = std::move(*raw),
+                                   .signature_base64 = std::move(*signature)};
+}
+
 std::expected<void, std::string> download_https_asset(
     std::string url, const std::filesystem::path& destination,
     std::uint64_t expected_size, std::stop_token token = {}) {
@@ -599,11 +634,36 @@ std::expected<void, std::string> download_https_asset(
   }
   return {};
 #else
-  (void)url;
-  (void)destination;
-  (void)expected_size;
-  (void)token;
-  return std::unexpected{"此 Linux 构建尚未启用资产下载。"};
+  if (expected_size == 0 || expected_size > maximum_asset_bytes) {
+    return std::unexpected{"下载资产声明大小超出限制。"};
+  }
+  auto bytes = runtime_detail::get_bytes(std::move(url), expected_size, token);
+  if (!bytes) return std::unexpected{bytes.error()};
+  if (bytes->size() != expected_size) {
+    return std::unexpected{"下载资产实际大小与 manifest 不一致。"};
+  }
+  const int fd = ::open(destination.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                        0600);
+  if (fd < 0) return std::unexpected{"无法创建更新 staging 文件。"};
+  std::size_t offset = 0;
+  while (offset < bytes->size()) {
+    const auto written = ::write(fd, bytes->data() + offset,
+                                 bytes->size() - offset);
+    if (written < 0) {
+      if (errno == EINTR) continue;
+      ::close(fd);
+      return std::unexpected{"写入更新 staging 文件失败。"};
+    }
+    if (written == 0) {
+      ::close(fd);
+      return std::unexpected{"写入更新 staging 文件失败。"};
+    }
+    offset += static_cast<std::size_t>(written);
+  }
+  const bool flushed = ::fsync(fd) == 0;
+  ::close(fd);
+  if (!flushed) return std::unexpected{"刷新更新 staging 文件失败。"};
+  return {};
 #endif
 }
 

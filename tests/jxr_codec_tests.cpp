@@ -138,8 +138,8 @@ int decode_and_check(const std::filesystem::path& path,
   if (decoded->image.bit_depth < min_bit_depth ||
       !decoded->image.source_info ||
       decoded->image.source_info->bit_depth < min_bit_depth ||
-      (min_bit_depth > 8 && !decoded->image.source_info->has_hdr_metadata)) {
-    return fail("JXR HDR decode metadata invalid.");
+      (min_bit_depth > 8 && decoded->image.source_info->has_hdr_metadata)) {
+    return fail("JXR high-bit-depth input was incorrectly classified as HDR.");
   }
   return 0;
 }

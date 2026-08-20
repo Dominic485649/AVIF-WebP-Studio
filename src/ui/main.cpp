@@ -62,9 +62,11 @@ import awj.encoding_defaults;
 import awj.large_image_plan;
 import awj.native_backend;
 import awj.pipeline;
+import awj.preset;
 import awj.resource_planner;
 import awj.studio_defaults;
 import awj.update_model;
+import awj.update_manifest_v2;
 import awj.update_runtime;
 import awj.update_windows;
 
@@ -204,26 +206,49 @@ struct MenuFormatParams {
   bool operator==(const MenuFormatParams&) const = default;
 };
 
+// 参数页的五组会话内参数。它们从不写入 AWJ.jsonc；队列在启动时只取选中
+// 格式的一个快照，因此切换“编辑格式”绝不会暗中改变队列输出格式。
+struct ParameterFormatParams {
+  std::string quality_text{};
+  std::string visual_quality_text{};
+  std::string bit_depth_text{};
+  std::string speed_text{};
+  int avif_encoder_index{};
+  int chroma_index{};
+  int alpha_policy_index{1};
+  int jpegli_progressive_index{2};
+  bool jpegli_optimize_huffman{true};
+  bool jpegli_xyb{};
+  std::string threads_text{};
+  std::string memory_limit_text{};
+  int size_limit_index{};
+  std::string max_width_text{};
+  std::string max_height_text{};
+  std::string max_long_edge_text{};
+  std::string max_short_edge_text{};
+};
+
 struct StudioConfigSnapshot {
-  int window_width{static_cast<int>(awj::studio_defaults::default_window_width)};
-  int window_height{static_cast<int>(awj::studio_defaults::default_window_height)};
-  int input_mode_index{};
-  int collision_index{};
   int theme_index{};
   // 界面语言：0 = 中文（.slint 里的 msgid 原文），1 = English（bundled 翻译）。
   int language_index{};
   std::string ui_font_family{};
   bool allow_wic_fallback{};
-  bool strip_metadata{};
-  bool write_summary{};
-  bool write_log{};
-  std::string template_text{};
+  bool visual_quality_gpu{true};
+  bool visual_quality_fallback{true};
+  bool experimental_encoders{true};
   std::array<MenuFormatParams, 5> menu_params{};
 
   std::string update_channel{"stable"};
   bool show_update_changelog{true};
+  bool hide_update_changelog_after_exit{true};
+  bool show_update_changelog_after_update{true};
+  std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
+  // schema 1 remains cached solely for already-installed 1.0.3 bridge
+  // clients; current Studio uses the independent v2 replay counter.
   std::int64_t last_verified_manifest_sequence{};
+  std::int64_t last_verified_manifest_v2_sequence{};
   std::string pending_update_version{};
   std::string pending_update_channel{};
   std::string pending_update_release_url{};
@@ -234,6 +259,8 @@ struct StudioConfigSnapshot {
   // 展示更新历史，避免把本地可写配置直接当成发布记录。
   std::string update_manifest_raw{};
   std::string update_manifest_signature{};
+  std::string update_manifest_v2_raw{};
+  std::string update_manifest_v2_signature{};
 
   bool operator==(const StudioConfigSnapshot&) const = default;
 };
@@ -260,15 +287,25 @@ struct UiState {
   std::uint64_t last_click_id{};
   std::chrono::steady_clock::time_point last_click_time{};
   bool drag_reordered{};
-  std::array<std::string, 5> format_quality_text{};
+  std::array<ParameterFormatParams, 5> builtin_params{};
+  // 用户预设在参数页内有独立的编辑缓冲；只有点击保存才写入 preset/*.jsonc，
+  // 因此它不会意外改变“内置默认”队列的会话参数。
+  std::array<ParameterFormatParams, 5> parameter_preset_params{};
   std::array<MenuFormatParams, 5> menu_params{};
+  std::vector<awj::UserPreset> user_presets{};
+  std::vector<std::string> user_preset_errors{};
+  int parameter_preset_index{};
   int last_format_index{};
   int last_menu_format_index{};
 
   std::string update_channel{"stable"};
   bool show_update_changelog{true};
+  bool hide_update_changelog_after_exit{true};
+  bool show_update_changelog_after_update{true};
+  std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
   std::int64_t last_verified_manifest_sequence{};
+  std::int64_t last_verified_manifest_v2_sequence{};
   std::string pending_update_version{};
   std::string pending_update_channel{};
   std::string pending_update_release_url{};
@@ -277,6 +314,8 @@ struct UiState {
   std::string pending_update_changelog_en{};
   std::string update_manifest_raw{};
   std::string update_manifest_signature{};
+  std::string update_manifest_v2_raw{};
+  std::string update_manifest_v2_signature{};
   bool update_check_active{};
   std::string update_status_zh{"尚未检查"};
   std::string update_status_en{"Not checked yet"};
@@ -328,6 +367,22 @@ struct CoTaskMemDeleter {
 
 std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
+}
+
+std::vector<std::string> native_drop_paths(const slint::SharedString& value) {
+  std::vector<std::string> paths;
+  const auto text = shared_to_string(value);
+  std::size_t begin = 0;
+  while (begin <= text.size()) {
+    const auto end = text.find('\n', begin);
+    auto path = text.substr(begin, end == std::string::npos ? std::string::npos
+                                                              : end - begin);
+    if (!path.empty() && path.back() == '\r') path.pop_back();
+    if (!path.empty()) paths.push_back(std::move(path));
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return paths;
 }
 
 slint::SharedString to_shared(std::string_view text);
@@ -713,29 +768,30 @@ std::array<MenuFormatParams, 5> menu_params_snapshot(const AwjStudio& app,
 
 StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
                                            const UiState* state = nullptr) {
-  const auto [window_width, window_height] = current_studio_window_size(app);
   StudioConfigSnapshot snapshot{
-      .window_width = window_width,
-      .window_height = window_height,
-      .input_mode_index = app.get_input_mode_index(),
-      .collision_index = app.get_collision_index(),
       .theme_index = app.get_theme_index(),
       .language_index = app.get_language_index(),
       .ui_font_family = shared_to_string(app.get_ui_font_family()),
       .allow_wic_fallback = app.get_allow_wic_fallback(),
-      .strip_metadata = app.get_strip_metadata(),
-      .write_summary = app.get_write_summary(),
-      .write_log = app.get_write_log(),
-      .template_text = shared_to_string(app.get_template_text()),
+      .visual_quality_gpu = app.get_visual_quality_gpu(),
+      .visual_quality_fallback = app.get_visual_quality_fallback(),
+      .experimental_encoders = app.get_experimental_encoders(),
       .menu_params = menu_params_snapshot(app, state)};
   // 后台状态只在 UiState 中维护；所有写入仍由 UI 线程走统一的原子提交。
   if (state != nullptr) {
     snapshot.update_channel = state->update_channel;
     snapshot.show_update_changelog = state->show_update_changelog;
+    snapshot.hide_update_changelog_after_exit =
+        state->hide_update_changelog_after_exit;
+    snapshot.show_update_changelog_after_update =
+        state->show_update_changelog_after_update;
+    snapshot.last_changelog_exit_version = state->last_changelog_exit_version;
     snapshot.last_successful_update_check_at =
         state->last_successful_update_check_at;
     snapshot.last_verified_manifest_sequence =
         state->last_verified_manifest_sequence;
+    snapshot.last_verified_manifest_v2_sequence =
+        state->last_verified_manifest_v2_sequence;
     snapshot.pending_update_version = state->pending_update_version;
     snapshot.pending_update_channel = state->pending_update_channel;
     snapshot.pending_update_release_url = state->pending_update_release_url;
@@ -745,6 +801,8 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
     snapshot.pending_update_changelog_en = state->pending_update_changelog_en;
     snapshot.update_manifest_raw = state->update_manifest_raw;
     snapshot.update_manifest_signature = state->update_manifest_signature;
+    snapshot.update_manifest_v2_raw = state->update_manifest_v2_raw;
+    snapshot.update_manifest_v2_signature = state->update_manifest_v2_signature;
   }
   return snapshot;
 }
@@ -1190,20 +1248,6 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
     return {};
   };
 
-  if (auto result = apply(apply_config_window_size(app, *values)); !result) {
-    return result;
-  }
-
-  if (auto result = apply(apply_config_int(app, *values, "input_mode_index", 0,
-                                           1, &AwjStudio::set_input_mode_index));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_int(app, *values, "collision_index", 0,
-                                           3, &AwjStudio::set_collision_index));
-      !result) {
-    return result;
-  }
   if (auto result = apply(apply_config_int(app, *values, "theme_index", 0, 2,
                                            &AwjStudio::set_theme_index));
       !result) {
@@ -1226,24 +1270,21 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
       !result) {
     return result;
   }
-  if (auto result = apply(apply_config_bool(app, *values, "strip_metadata",
-                                            &AwjStudio::set_strip_metadata));
+  if (auto result = apply(apply_config_bool(
+          app, *values, "visual_quality_gpu",
+          &AwjStudio::set_visual_quality_gpu));
       !result) {
     return result;
   }
-  if (auto result = apply(apply_config_bool(app, *values, "write_summary",
-                                            &AwjStudio::set_write_summary));
+  if (auto result = apply(apply_config_bool(
+          app, *values, "visual_quality_fallback",
+          &AwjStudio::set_visual_quality_fallback));
       !result) {
     return result;
   }
-  if (auto result = apply(apply_config_bool(app, *values, "write_log",
-                                            &AwjStudio::set_write_log));
-      !result) {
-    return result;
-  }
-
-  if (auto result = apply(apply_config_string(app, *values, "template_text",
-                                              &AwjStudio::set_template_text));
+  if (auto result = apply(apply_config_bool(
+          app, *values, "experimental_encoders",
+          &AwjStudio::set_experimental_encoders));
       !result) {
     return result;
   }
@@ -1293,12 +1334,21 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
       return std::unexpected{"配置 update_channel 只能是 stable 或 prerelease。"};
     }
     if (auto r = load_bool("show_update_changelog", state.show_update_changelog); !r) return r;
+    if (auto r = load_bool("hide_update_changelog_after_exit",
+                           state.hide_update_changelog_after_exit); !r) return r;
+    if (auto r = load_bool("show_update_changelog_after_update",
+                           state.show_update_changelog_after_update); !r) return r;
+    if (auto r = load_string("last_changelog_exit_version",
+                             state.last_changelog_exit_version); !r) return r;
     if (auto r = load_int64("last_successful_update_check_at", 0,
                             max_unix_seconds,
                             state.last_successful_update_check_at); !r) return r;
     if (auto r = load_int64("last_verified_manifest_sequence", 0,
                             std::numeric_limits<std::int64_t>::max(),
                             state.last_verified_manifest_sequence); !r) return r;
+    if (auto r = load_int64("last_verified_manifest_v2_sequence", 0,
+                            std::numeric_limits<std::int64_t>::max(),
+                            state.last_verified_manifest_v2_sequence); !r) return r;
     if (auto r = load_string("pending_update_version", state.pending_update_version); !r) return r;
     if (auto r = load_string("pending_update_channel", state.pending_update_channel); !r) return r;
     if (auto r = load_string("pending_update_release_url", state.pending_update_release_url); !r) return r;
@@ -1311,10 +1361,17 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
         !r) return r;
     if (auto r = load_string("update_manifest_signature",
                              state.update_manifest_signature); !r) return r;
+    if (auto r = load_string("update_manifest_v2_raw",
+                             state.update_manifest_v2_raw); !r) return r;
+    if (auto r = load_string("update_manifest_v2_signature",
+                             state.update_manifest_v2_signature); !r) return r;
   }
 
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
-  app.set_show_update_changelog(state.show_update_changelog);
+  app.set_hide_update_changelog_after_exit(
+      state.hide_update_changelog_after_exit);
+  app.set_show_update_changelog_after_update(
+      state.show_update_changelog_after_update);
   load_menu_params_for_index(app, state, app.get_menu_format_index());
   return {};
 }
@@ -1453,34 +1510,40 @@ std::expected<void, std::string> write_studio_config_file(
     }
   };
 
-  add_int("window_width", current.window_width, defaults.window_width);
-  add_int("window_height", current.window_height, defaults.window_height);
-
-  add_int("input_mode_index", current.input_mode_index,
-          defaults.input_mode_index);
-  add_int("collision_index", current.collision_index, defaults.collision_index);
   add_int("theme_index", current.theme_index, defaults.theme_index);
   add_int("language_index", current.language_index, defaults.language_index);
   add_string("ui_font_family", current.ui_font_family, defaults.ui_font_family);
 
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
            defaults.allow_wic_fallback);
-  add_bool("strip_metadata", current.strip_metadata, defaults.strip_metadata);
-  add_bool("write_summary", current.write_summary, defaults.write_summary);
-  add_bool("write_log", current.write_log, defaults.write_log);
-
-  add_string("template_text", current.template_text, defaults.template_text);
+  add_bool("visual_quality_gpu", current.visual_quality_gpu,
+           defaults.visual_quality_gpu);
+  add_bool("visual_quality_fallback", current.visual_quality_fallback,
+           defaults.visual_quality_fallback);
+  add_bool("experimental_encoders", current.experimental_encoders,
+           defaults.experimental_encoders);
 
   add_string("update_channel", current.update_channel,
              defaults.update_channel);
   add_bool("show_update_changelog", current.show_update_changelog,
            defaults.show_update_changelog);
+  add_bool("hide_update_changelog_after_exit",
+           current.hide_update_changelog_after_exit,
+           defaults.hide_update_changelog_after_exit);
+  add_bool("show_update_changelog_after_update",
+           current.show_update_changelog_after_update,
+           defaults.show_update_changelog_after_update);
+  add_string("last_changelog_exit_version", current.last_changelog_exit_version,
+             defaults.last_changelog_exit_version);
   add_int64("last_successful_update_check_at",
             current.last_successful_update_check_at,
             defaults.last_successful_update_check_at);
   add_int64("last_verified_manifest_sequence",
             current.last_verified_manifest_sequence,
             defaults.last_verified_manifest_sequence);
+  add_int64("last_verified_manifest_v2_sequence",
+            current.last_verified_manifest_v2_sequence,
+            defaults.last_verified_manifest_v2_sequence);
   add_string("pending_update_version", current.pending_update_version,
              defaults.pending_update_version);
   add_string("pending_update_channel", current.pending_update_channel,
@@ -1500,6 +1563,10 @@ std::expected<void, std::string> write_studio_config_file(
              defaults.update_manifest_raw);
   add_string("update_manifest_signature", current.update_manifest_signature,
              defaults.update_manifest_signature);
+  add_string("update_manifest_v2_raw", current.update_manifest_v2_raw,
+             defaults.update_manifest_v2_raw);
+  add_string("update_manifest_v2_signature", current.update_manifest_v2_signature,
+             defaults.update_manifest_v2_signature);
 
   for (std::size_t i = 0; i < current.menu_params.size(); ++i) {
     const auto prefix = menu_config_prefixes[i];
@@ -2118,13 +2185,13 @@ bool windows_prefers_dark_mode() {
 
 // 把界面语言切到 language_index 指定的语言。
 //
-// 0 = 中文，也就是 .slint 里 @tr() 的 msgid 原文，对应语言索引 0；
+// 0 = 中文，也就是 .slint 里 @tr() 的 msgid 原文和 bundled 默认语言；
 // 1 = English，对应 ui/translations/en/LC_MESSAGES/awj.po 这份 bundled 翻译。
 //
 // select_bundled_translation 写的是 translations_dirty 这个真实的 Slint 属性，
 // 所以每个 @tr() 绑定都会失效并在下一帧重算——不需要重启，也不需要自己去
 // 逐个属性重新赋值。两点约束：必须在第一个组件创建之后才能调用，否则拿不到
-// bundle；传空串会走"默认语言"分支回到索引 0。
+// bundle；传空串会明确回到 bundled 默认语言（中文 msgid）。
 //
 // 返回值刻意忽略：翻译缺失时回退到中文原文，是可接受的降级，不该阻断设置操作。
 void apply_ui_language(int language_index) noexcept {
@@ -2889,6 +2956,9 @@ std::vector<std::wstring> cli_arguments_from_config(
   args.push_back(cfg.strip_metadata ? L"--strip" : L"--keep-metadata");
   args.push_back(cfg.write_summary ? L"--summary" : L"--no-summary");
   args.push_back(cfg.write_log ? L"--log" : L"--no-log");
+  if (cfg.preserve_creation_time) args.push_back(L"--preserve-creation-time");
+  if (cfg.preserve_modification_time) args.push_back(L"--preserve-modification-time");
+  if (cfg.preserve_access_time) args.push_back(L"--preserve-access-time");
 
   if (cfg.output_format == awj::OutputFormat::avif) {
     push_cli_option(args, L"--avif-encoder",
@@ -3654,121 +3724,6 @@ bool reject_when_worker_active(AwjStudio& app,
   return true;
 }
 
-class DropBridge {
- public:
-  DropBridge(slint::Window& window,
-             slint::ComponentWeakHandle<AwjStudio> weak,
-             std::shared_ptr<UiState> state)
-      : hwnd_{window.win32_hwnd()}, weak_{std::move(weak)}, state_{std::move(state)} {
-    if (hwnd_ == nullptr) {
-      return;
-    }
-    SetPropW(hwnd_, awj::studio_defaults::drop_bridge_property_name.data(),
-             this);
-    previous_proc_ = reinterpret_cast<WNDPROC>(
-        SetWindowLongPtrW(hwnd_, GWLP_WNDPROC,
-                          reinterpret_cast<LONG_PTR>(&DropBridge::window_proc)));
-    if (previous_proc_ == nullptr) {
-      RemovePropW(hwnd_,
-                  awj::studio_defaults::drop_bridge_property_name.data());
-      hwnd_ = nullptr;
-      return;
-    }
-    ChangeWindowMessageFilterEx(hwnd_, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
-    DragAcceptFiles(hwnd_, TRUE);
-  }
-
-  DropBridge(const DropBridge&) = delete;
-  DropBridge& operator=(const DropBridge&) = delete;
-
-  ~DropBridge() {
-    if (hwnd_ == nullptr) {
-      return;
-    }
-    DragAcceptFiles(hwnd_, FALSE);
-    if (reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd_, GWLP_WNDPROC)) ==
-        &DropBridge::window_proc) {
-      SetWindowLongPtrW(hwnd_, GWLP_WNDPROC,
-                        reinterpret_cast<LONG_PTR>(previous_proc_));
-    }
-    RemovePropW(hwnd_, awj::studio_defaults::drop_bridge_property_name.data());
-  }
-
- private:
-  static LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM wparam,
-                                      LPARAM lparam) {
-    auto* self = static_cast<DropBridge*>(
-        GetPropW(hwnd, awj::studio_defaults::drop_bridge_property_name.data()));
-    if (self != nullptr && message == WM_DROPFILES) {
-      self->handle_drop(reinterpret_cast<HDROP>(wparam));
-      return 0;
-    }
-    if (self != nullptr && message == WM_DPICHANGED && lparam != 0) {
-      const auto* suggested = reinterpret_cast<const RECT*>(lparam);
-      SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, 0, 0,
-                   SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
-      return 0;
-    }
-    if (self != nullptr && self->previous_proc_ != nullptr) {
-      return CallWindowProcW(self->previous_proc_, hwnd, message, wparam,
-                             lparam);
-    }
-    return DefWindowProcW(hwnd, message, wparam, lparam);
-  }
-
-  void handle_drop(HDROP drop) {
-    std::vector<std::filesystem::path> paths;
-    const auto cleanup = std::unique_ptr<std::remove_pointer_t<HDROP>, void (*)(HDROP)>{
-        drop, [](HDROP value) {
-          if (value != nullptr) {
-            DragFinish(value);
-          }
-        }};
-    const UINT count = DragQueryFileW(drop, 0xFFFFFFFFu, nullptr, 0);
-    paths.reserve(count);
-    for (UINT i = 0; i < count; ++i) {
-      const UINT length = DragQueryFileW(drop, i, nullptr, 0);
-      if (length == 0) {
-        continue;
-      }
-      std::wstring path(length + 1, L'\0');
-      const UINT copied = DragQueryFileW(drop, i, path.data(), length + 1);
-      if (copied == 0) {
-        continue;
-      }
-      path.resize(copied);
-      paths.emplace_back(std::move(path));
-    }
-    if (paths.empty()) {
-      return;
-    }
-    auto weak = weak_;
-    auto state = state_;
-    slint::invoke_from_event_loop(
-        [weak, state, paths = std::move(paths)]() mutable {
-          run_ui_callback(weak, "拖入导入失败", [&] {
-            if (auto app = weak.lock()) {
-              if (reject_when_worker_active(**app, state,
-                                            "当前任务正在运行，无法拖入导入")) {
-                return;
-              }
-              for (const auto& path : paths) {
-                std::error_code ec;
-                const bool is_folder =
-                    std::filesystem::is_directory(path, ec) && !ec;
-                add_queue_from_path(**app, *state, path, is_folder);
-              }
-            }
-          });
-        });
-  }
-
-  HWND hwnd_{};
-  WNDPROC previous_proc_{};
-  slint::ComponentWeakHandle<AwjStudio> weak_;
-  std::shared_ptr<UiState> state_;
-};
-
 void trim_process_working_set() {
   SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1),
                            static_cast<SIZE_T>(-1));
@@ -3926,7 +3881,6 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
   cfg.output_format = format;
   cfg.output_policy = awj::OutputPolicy::shell;
   cfg.collision_mode = awj::CollisionMode::suffix_number;
-  cfg.preset = awj::Preset::custom;
   cfg.strip_metadata = params.strip_metadata;
   cfg.allow_wic_fallback = params.allow_wic_fallback;
 
@@ -3963,8 +3917,7 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
       params.max_long_edge_text, params.max_short_edge_text);
   if (!size_limit) return std::unexpected{size_limit.error()};
   cfg.image_size_limit = *size_limit;
-  if (auto valid = awj::finalize_config_defaults(cfg, true,
-                                                 cfg.preset != awj::Preset::custom); !valid) {
+  if (auto valid = awj::finalize_config_defaults(cfg, true, false); !valid) {
     return std::unexpected{valid.error()};
   }
   return cfg;
@@ -4000,42 +3953,109 @@ MenuFormatParams default_menu_params_for_index(int index) {
   return params;
 }
 
-void apply_format_defaults_to_ui(AwjStudio& app, int format_index, UiState& state) {
-  // Save quality for the format we're leaving
-  const int old_index = state.last_format_index;
-  if (old_index >= 0 && old_index < static_cast<int>(state.format_quality_text.size())) {
-    state.format_quality_text[static_cast<std::size_t>(old_index)] =
-        shared_to_string(app.get_quality_text());
+ParameterFormatParams default_parameter_params_for_index(int index) {
+  const auto format = output_format_from_index(index);
+  ParameterFormatParams params{};
+  params.quality_text = text_from_int(awj::default_quality_for(format));
+  if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
+      format == awj::OutputFormat::jxl) {
+    params.speed_text = text_from_int(awj::default_speed_for(format));
   }
-  if (format_index < 0 || format_index >= static_cast<int>(state.format_quality_text.size())) {
-    format_index = 0;
+  if (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli) {
+    params.bit_depth_text =
+        text_from_int(awj::encoding_defaults::default_webp_bit_depth);
   }
-  state.last_format_index = format_index;
+  params.jpegli_progressive_index =
+      awj::encoding_defaults::default_jpegli_progressive_level;
+  params.jpegli_optimize_huffman =
+      awj::encoding_defaults::default_jpegli_optimize_huffman;
+  params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  return params;
+}
+
+ParameterFormatParams capture_parameter_params_from_ui(const AwjStudio& app) {
+  return ParameterFormatParams{
+      .quality_text = shared_to_string(app.get_quality_text()),
+      .visual_quality_text = shared_to_string(app.get_visual_quality_text()),
+      .bit_depth_text = shared_to_string(app.get_bit_depth_text()),
+      .speed_text = shared_to_string(app.get_speed_text()),
+      .avif_encoder_index = app.get_avif_encoder_index(),
+      .chroma_index = app.get_chroma_index(),
+      .alpha_policy_index = app.get_alpha_policy_index(),
+      .jpegli_progressive_index = app.get_jpegli_progressive_index(),
+      .jpegli_optimize_huffman = app.get_jpegli_optimize_huffman(),
+      .jpegli_xyb = app.get_jpegli_xyb(),
+      .threads_text = shared_to_string(app.get_threads_text()),
+      .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
+      .size_limit_index = app.get_size_limit_index(),
+      .max_width_text = shared_to_string(app.get_max_width_text()),
+      .max_height_text = shared_to_string(app.get_max_height_text()),
+      .max_long_edge_text = shared_to_string(app.get_max_long_edge_text()),
+      .max_short_edge_text = shared_to_string(app.get_max_short_edge_text())};
+}
+
+void apply_parameter_params_to_ui(AwjStudio& app,
+                                  const ParameterFormatParams& params,
+                                  int format_index) {
+  app.set_quality_text(to_shared(params.quality_text));
+  app.set_visual_quality_text(to_shared(params.visual_quality_text));
+  app.set_bit_depth_text(to_shared(params.bit_depth_text));
+  app.set_speed_text(to_shared(params.speed_text));
   refresh_avif_encoder_options(app);
+  app.set_avif_encoder_index(params.avif_encoder_index);
+  app.set_chroma_index(params.chroma_index);
+  app.set_alpha_policy_index(params.alpha_policy_index);
+  app.set_jpegli_progressive_index(params.jpegli_progressive_index);
+  app.set_jpegli_optimize_huffman(params.jpegli_optimize_huffman);
+  app.set_jpegli_xyb(params.jpegli_xyb);
+  app.set_threads_text(to_shared(params.threads_text));
+  app.set_memory_limit_text(to_shared(params.memory_limit_text));
+  app.set_size_limit_index(params.size_limit_index);
+  app.set_max_width_text(to_shared(params.max_width_text));
+  app.set_max_height_text(to_shared(params.max_height_text));
+  app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
+  app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
   const auto format = output_format_from_index(format_index);
-  const auto& saved = state.format_quality_text[static_cast<std::size_t>(format_index)];
-  if (!saved.empty()) {
-    app.set_quality_text(to_shared(saved));
-    app.set_quality_follows_format(
-        saved == text_from_int(awj::default_quality_for(format)));
-  } else {
-    app.set_quality_text(
-        to_shared(text_from_int(awj::default_quality_for(format))));
-    app.set_quality_follows_format(true);
+  app.set_quality_follows_format(
+      params.quality_text == text_from_int(awj::default_quality_for(format)));
+  app.set_bit_depth_follows_format(
+      (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli)
+          ? params.bit_depth_text == text_from_int(
+                                      awj::encoding_defaults::default_webp_bit_depth)
+          : params.bit_depth_text.empty());
+}
+
+std::array<ParameterFormatParams, 5>& active_parameter_params(UiState& state) {
+  return state.parameter_preset_index == 0 ? state.builtin_params
+                                           : state.parameter_preset_params;
+}
+
+const std::array<ParameterFormatParams, 5>& active_parameter_params(
+    const UiState& state) {
+  return state.parameter_preset_index == 0 ? state.builtin_params
+                                           : state.parameter_preset_params;
+}
+
+void store_current_parameter_params(AwjStudio& app, UiState& state) {
+  const auto index = std::clamp(state.last_format_index, 0, 4);
+  auto params = capture_parameter_params_from_ui(app);
+  const auto format = output_format_from_index(index);
+  if ((format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
+       format == awj::OutputFormat::jxl) &&
+      trim_copy(params.speed_text).empty()) {
+    params.speed_text = text_from_int(awj::default_speed_for(format));
   }
-  if (format == awj::OutputFormat::webp ||
-      format == awj::OutputFormat::jpgli) {
-    app.set_bit_depth_text(to_shared(
-        text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
-    app.set_chroma_index(0);
-  } else {
-    if (app.get_bit_depth_follows_format()) {
-      app.set_bit_depth_text({});
-    }
-    if (format != awj::OutputFormat::avif) {
-      app.set_chroma_index(0);
-    }
-  }
+  active_parameter_params(state)[static_cast<std::size_t>(index)] =
+      std::move(params);
+}
+
+void apply_format_defaults_to_ui(AwjStudio& app, int format_index, UiState& state) {
+  store_current_parameter_params(app, state);
+  format_index = std::clamp(format_index, 0, 4);
+  state.last_format_index = format_index;
+  apply_parameter_params_to_ui(
+      app, active_parameter_params(state)[static_cast<std::size_t>(format_index)],
+      format_index);
 }
 
 void initialize_ui_defaults(AwjStudio& app, UiState& state) {
@@ -4044,8 +4064,6 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_input_mode_index(0);
   app.set_template_text(to_shared(text_from_wide(defaults.output_template)));
   const auto avif_default = awj::default_quality_for(awj::OutputFormat::avif);
-  app.set_quality_text(to_shared(text_from_int(avif_default)));
-  state.format_quality_text[0] = text_from_int(avif_default);
   state.last_format_index = 0;
   app.set_avif_quality_default(to_shared(text_from_int(avif_default)));
   app.set_webp_quality_default(to_shared(
@@ -4056,14 +4074,17 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
       text_from_int(awj::default_quality_for(awj::OutputFormat::jpgli))));
   app.set_webp_bit_depth_default(
       to_shared(text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
-  app.set_memory_limit_text({});
+  for (int i = 0; i < static_cast<int>(state.builtin_params.size()); ++i) {
+    state.builtin_params[static_cast<std::size_t>(i)] =
+        default_parameter_params_for_index(i);
+  }
+  apply_parameter_params_to_ui(app, state.builtin_params[0], 0);
   app.set_unlock_max_input_file_bytes(false);
   app.set_size_limit_index(0);
   app.set_max_width_text({});
   app.set_max_height_text({});
   app.set_max_long_edge_text({});
   app.set_max_short_edge_text({});
-  app.set_visual_quality_text({});
   app.set_format_index(0);
   app.set_experimental_encoders(defaults.enable_experimental_encoders);
   app.set_visual_quality_gpu(defaults.visual_quality_gpu);
@@ -4081,6 +4102,12 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_alpha_policy_index(1);
   app.set_quality_follows_format(true);
   app.set_bit_depth_follows_format(true);
+  app.set_queue_format_index(0);
+  app.set_queue_preset_index(0);
+  app.set_strip_metadata(false);
+  app.set_preserve_creation_time(false);
+  app.set_preserve_modification_time(false);
+  app.set_preserve_access_time(false);
   for (int i = 0; i < static_cast<int>(state.menu_params.size()); ++i) {
     state.menu_params[static_cast<std::size_t>(i)] = default_menu_params_for_index(i);
   }
@@ -4089,26 +4116,264 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   load_menu_params_for_index(app, state, 0);
 }
 
-std::expected<awj::AppConfig, std::string> config_from_ui(
-    const AwjStudio& app) try {
-  awj::AppConfig cfg = awj::default_app_config();
-  cfg.input_path = awj::wide_from_utf8(shared_to_string(app.get_input_path()));
-  if (cfg.input_path.empty()) {
-    return std::unexpected{"输入路径为空，请选择或输入一个图片文件/文件夹。"};
+void reload_user_preset_options(AwjStudio& app, UiState& state) {
+  auto catalog = awj::list_user_presets();
+  if (!catalog) {
+    state.user_presets.clear();
+    state.user_preset_errors = {catalog.error()};
+    const std::vector<ComboOption> builtin_only{
+        {.text = to_shared("内置默认"), .enabled = true}};
+    app.set_queue_preset_options(
+        std::make_shared<slint::VectorModel<ComboOption>>(builtin_only));
+    app.set_parameter_preset_options(
+        std::make_shared<slint::VectorModel<ComboOption>>(builtin_only));
+    app.set_queue_preset_index(0);
+    state.parameter_preset_index = 0;
+    app.set_parameter_preset_index(0);
+    app.set_parameter_preset_description({});
+    return;
   }
-  cfg.output_dir = awj::wide_from_utf8(shared_to_string(app.get_output_dir()));
+  state.user_presets = std::move(catalog->presets);
+  state.user_preset_errors = std::move(catalog->errors);
+  std::vector<ComboOption> options;
+  options.reserve(state.user_presets.size() + 1);
+  options.push_back(ComboOption{.text = to_shared("内置默认"), .enabled = true});
+  for (const auto& preset : state.user_presets) {
+    options.push_back(ComboOption{.text = to_shared(preset.name), .enabled = true});
+  }
+  app.set_queue_preset_options(
+      std::make_shared<slint::VectorModel<ComboOption>>(options));
+  app.set_parameter_preset_options(
+      std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
+  if (app.get_queue_preset_index() >
+      static_cast<int>(state.user_presets.size())) {
+    app.set_queue_preset_index(0);
+  }
+  if (state.parameter_preset_index >
+      static_cast<int>(state.user_presets.size())) {
+    state.parameter_preset_index = 0;
+  }
+  app.set_parameter_preset_index(state.parameter_preset_index);
+  app.set_parameter_preset_description(
+      state.parameter_preset_index == 0
+          ? slint::SharedString{}
+          : to_shared(state.user_presets[static_cast<std::size_t>(
+                                         state.parameter_preset_index - 1)]
+                          .description));
+}
+
+std::expected<awj::AppConfig, std::string> config_from_parameter_params(
+    awj::OutputFormat format, const ParameterFormatParams& params) {
+  MenuFormatParams menu{
+      .quality_text = params.quality_text,
+      .bit_depth_text = params.bit_depth_text,
+      .speed_text = params.speed_text,
+      .avif_encoder_index = params.avif_encoder_index,
+      .chroma_index = params.chroma_index,
+      .alpha_policy_index = params.alpha_policy_index,
+      .jpegli_progressive_index = params.jpegli_progressive_index,
+      .jpegli_optimize_huffman = params.jpegli_optimize_huffman,
+      .jpegli_xyb = params.jpegli_xyb,
+      .size_limit_index = params.size_limit_index,
+      .max_width_text = params.max_width_text,
+      .max_height_text = params.max_height_text,
+      .max_long_edge_text = params.max_long_edge_text,
+      .max_short_edge_text = params.max_short_edge_text};
+  auto config = config_from_menu_params(format, menu);
+  if (!config) return std::unexpected{config.error()};
+  const auto visual_quality = parse_visual_quality_field(params.visual_quality_text);
+  if (!visual_quality) return std::unexpected{visual_quality.error()};
+  config->visual_quality = *visual_quality;
+  const auto jobs = parse_jobs_field(params.threads_text);
+  if (!jobs) return std::unexpected{jobs.error()};
+  config->max_jobs = *jobs;
+  const auto memory = parse_memory_limit_field(params.memory_limit_text);
+  if (!memory) return std::unexpected{memory.error()};
+  config->memory_limit_bytes = *memory;
+  config->output_policy = awj::OutputPolicy::normal;
+  return config;
+}
+
+int avif_encoder_index_from_mode(awj::AvifEncoderMode mode) noexcept {
+  switch (mode) {
+    case awj::AvifEncoderMode::svt:
+      return 1;
+    case awj::AvifEncoderMode::aom:
+      return 2;
+    case awj::AvifEncoderMode::zenrav1e:
+      return 3;
+    case awj::AvifEncoderMode::automatic:
+    default:
+      return 0;
+  }
+}
+
+int chroma_index_from_mode(awj::ChromaMode mode) noexcept {
+  switch (mode) {
+    case awj::ChromaMode::yuv444:
+      return 1;
+    case awj::ChromaMode::yuv422:
+      return 2;
+    case awj::ChromaMode::yuv420:
+      return 3;
+    case awj::ChromaMode::auto_keep:
+    default:
+      return 0;
+  }
+}
+
+int alpha_policy_index_from_mode(awj::AlphaModePolicy mode) noexcept {
+  switch (mode) {
+    case awj::AlphaModePolicy::force:
+      return 0;
+    case awj::AlphaModePolicy::off:
+      return 2;
+    case awj::AlphaModePolicy::automatic:
+    default:
+      return 1;
+  }
+}
+
+ParameterFormatParams parameter_params_from_config(const awj::AppConfig& config) {
+  const auto format = config.output_format;
+  ParameterFormatParams params = default_parameter_params_for_index(
+      std::clamp(static_cast<int>(format), 0, 4));
+  const auto optional_text = [](const std::optional<int>& value) {
+    return value ? text_from_int(*value) : std::string{};
+  };
+  params.quality_text = text_from_int(config.quality);
+  params.visual_quality_text = optional_text(config.visual_quality);
+  params.bit_depth_text = optional_text(config.bit_depth);
+  if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
+      format == awj::OutputFormat::jxl) {
+    params.speed_text = text_from_int(
+        config.speed.value_or(awj::default_speed_for(format)));
+  }
+  params.avif_encoder_index = avif_encoder_index_from_mode(config.avif_encoder);
+  params.chroma_index = chroma_index_from_mode(config.chroma_mode);
+  params.alpha_policy_index = alpha_policy_index_from_mode(config.alpha_policy);
+  params.jpegli_progressive_index = config.jpegli_progressive_level;
+  params.jpegli_optimize_huffman = config.jpegli_optimize_huffman;
+  params.jpegli_xyb = config.jpegli_xyb;
+  params.threads_text = config.max_jobs == awj::default_max_jobs()
+                            ? std::string{}
+                            : text_from_int(config.max_jobs);
+  if (config.memory_limit_bytes != 0) {
+    params.memory_limit_text = text_from_int(static_cast<int>(
+        (config.memory_limit_bytes + awj::studio_defaults::bytes_per_gib - 1) /
+        awj::studio_defaults::bytes_per_gib));
+  }
+  switch (config.image_size_limit.mode) {
+    case awj::ImageSizeLimitMode::none:
+      params.size_limit_index = 1;
+      break;
+    case awj::ImageSizeLimitMode::manual:
+      params.size_limit_index = 2;
+      break;
+    case awj::ImageSizeLimitMode::automatic:
+    default:
+      params.size_limit_index = 0;
+      break;
+  }
+  params.max_width_text = optional_text(config.image_size_limit.max_width);
+  params.max_height_text = optional_text(config.image_size_limit.max_height);
+  params.max_long_edge_text = optional_text(config.image_size_limit.max_long_edge);
+  params.max_short_edge_text = optional_text(config.image_size_limit.max_short_edge);
+  return params;
+}
+
+std::array<ParameterFormatParams, 5> parameter_params_from_user_preset(
+    const awj::UserPreset& preset) {
+  std::array<ParameterFormatParams, 5> params{};
+  for (int index = 0; index < static_cast<int>(params.size()); ++index) {
+    const auto format = output_format_from_index(index);
+    params[static_cast<std::size_t>(index)] = parameter_params_from_config(
+        awj::config_from_user_preset(preset, format));
+  }
+  return params;
+}
+
+std::expected<awj::UserPreset, std::string> user_preset_from_parameter_params(
+    std::string name, std::string description,
+    const std::array<ParameterFormatParams, 5>& params) {
+  awj::UserPreset preset = awj::default_user_preset();
+  preset.name = std::move(name);
+  preset.description = std::move(description);
+  for (int index = 0; index < static_cast<int>(params.size()); ++index) {
+    const auto format = output_format_from_index(index);
+    auto config = config_from_parameter_params(
+        format, params[static_cast<std::size_t>(index)]);
+    if (!config) {
+      return std::unexpected{std::format("{} 预设参数错误：{}",
+                                         awj::output_format_name(format),
+                                         config.error())};
+    }
+    preset.formats[static_cast<std::size_t>(index)] =
+        awj::preset_format_from_config(*config);
+  }
+  return preset;
+}
+
+void select_parameter_preset(AwjStudio& app, UiState& state, int index) {
+  store_current_parameter_params(app, state);
+  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()));
+  state.parameter_preset_index = index;
+  if (index > 0) {
+    state.parameter_preset_params = parameter_params_from_user_preset(
+        state.user_presets[static_cast<std::size_t>(index - 1)]);
+  }
+  app.set_parameter_preset_index(index);
+  app.set_parameter_preset_description(
+      index == 0
+          ? slint::SharedString{}
+          : to_shared(state.user_presets[static_cast<std::size_t>(index - 1)]
+                          .description));
+  const auto format_index = std::clamp(app.get_format_index(), 0, 4);
+  state.last_format_index = format_index;
+  apply_parameter_params_to_ui(
+      app, active_parameter_params(state)[static_cast<std::size_t>(format_index)],
+      format_index);
+}
+
+std::expected<awj::AppConfig, std::string> config_from_ui(
+    AwjStudio& app, UiState& state) try {
+  store_current_parameter_params(app, state);
+  const int queue_format_index = std::clamp(app.get_queue_format_index(), 0, 4);
+  const auto format = output_format_from_index(queue_format_index);
+  const int preset_index = app.get_queue_preset_index();
+  awj::AppConfig cfg;
+  if (preset_index == 0) {
+    auto parsed = config_from_parameter_params(
+        format, state.builtin_params[static_cast<std::size_t>(queue_format_index)]);
+    if (!parsed) return std::unexpected{parsed.error()};
+    cfg = std::move(*parsed);
+  } else {
+    const auto user_index = preset_index - 1;
+    if (user_index < 0 || static_cast<std::size_t>(user_index) >=
+                              state.user_presets.size()) {
+      return std::unexpected{"选中的用户预设已不存在，请重新选择。"};
+    }
+    cfg = awj::config_from_user_preset(
+        state.user_presets[static_cast<std::size_t>(user_index)], format);
+  }
+  const auto input_path = awj::normalize_path_argument(
+      awj::wide_from_utf8(shared_to_string(app.get_input_path())), "输入路径");
+  if (!input_path) return std::unexpected{input_path.error()};
+  cfg.input_path = *input_path;
+  const auto output_text = shared_to_string(app.get_output_dir());
+  if (!output_text.empty()) {
+    const auto output_path = awj::normalize_path_argument(
+        awj::wide_from_utf8(output_text), "输出目录");
+    if (!output_path) return std::unexpected{output_path.error()};
+    cfg.output_dir = *output_path;
+  }
   cfg.output_template =
       awj::wide_from_utf8(shared_to_string(app.get_template_text()));
   if (cfg.output_template.empty()) {
     cfg.output_template = awj::encoding_defaults::default_output_template;
   }
   cfg.allow_wic_fallback = app.get_allow_wic_fallback();
-  cfg.preset = awj::Preset::custom;
-
-  cfg.output_format = output_format_from_index(app.get_format_index());
-  cfg.avif_encoder = cfg.output_format == awj::OutputFormat::avif
-                         ? avif_encoder_from_index(app.get_avif_encoder_index())
-                         : awj::AvifEncoderMode::automatic;
+  cfg.output_format = format;
   cfg.enable_experimental_encoders = app.get_experimental_encoders();
   if (cfg.avif_encoder == awj::AvifEncoderMode::zenrav1e) {
     const auto capabilities = awj::avif_encoder_capabilities_for_current_build(
@@ -4122,101 +4387,16 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
     }
   }
   cfg.collision_mode = collision_from_index(app.get_collision_index());
-
-  const auto visual_quality = parse_visual_quality_field(
-      shared_to_string(app.get_visual_quality_text()));
-  if (!visual_quality) {
-    return std::unexpected{visual_quality.error()};
-  }
-  cfg.visual_quality = *visual_quality;
   cfg.visual_quality_gpu = app.get_visual_quality_gpu();
-  cfg.visual_quality_fallback =
-      cfg.visual_quality.has_value() && app.get_visual_quality_fallback();
-
-  std::optional<int> quality;
-  if (!cfg.visual_quality) {
-    const auto parsed_quality =
-        parse_quality_field(shared_to_string(app.get_quality_text()));
-    if (!parsed_quality) {
-      return std::unexpected{parsed_quality.error()};
-    }
-    quality = *parsed_quality;
-    cfg.quality = *quality;
-  }
-
-  const auto bit_depth =
-      cfg.output_format == awj::OutputFormat::webp ||
-              cfg.output_format == awj::OutputFormat::jpgli
-          ? std::expected<std::optional<int>, std::string>{std::optional<int>{
-                awj::encoding_defaults::default_webp_bit_depth}}
-          : (cfg.output_format == awj::OutputFormat::jxl
-                 ? std::expected<std::optional<int>,
-                                 std::string>{std::optional<int>{}}
-                 : parse_bit_depth_field(
-                       shared_to_string(app.get_bit_depth_text())));
-  if (!bit_depth) {
-    return std::unexpected{bit_depth.error()};
-  }
-  cfg.bit_depth = *bit_depth;
-
-  cfg.alpha_policy = cfg.output_format == awj::OutputFormat::avif
-                         ? alpha_policy_from_index(app.get_alpha_policy_index())
-                         : awj::AlphaModePolicy::automatic;
-  cfg.chroma_mode = (cfg.output_format == awj::OutputFormat::avif ||
-                     cfg.output_format == awj::OutputFormat::jpgli)
-                       ? chroma_from_index(app.get_chroma_index())
-                       : awj::ChromaMode::auto_keep;
-  cfg.jpegli_progressive_level = app.get_jpegli_progressive_index();
-  cfg.jpegli_optimize_huffman =
-      cfg.jpegli_progressive_level > 0 ? true : app.get_jpegli_optimize_huffman();
-  cfg.jpegli_xyb = app.get_jpegli_xyb();
-
-  const auto max_jobs =
-      parse_jobs_field(shared_to_string(app.get_threads_text()));
-  if (!max_jobs) {
-    return std::unexpected{max_jobs.error()};
-  }
-  cfg.max_jobs = *max_jobs;
-
-  const auto memory_limit =
-      parse_memory_limit_field(shared_to_string(app.get_memory_limit_text()));
-  if (!memory_limit) {
-    return std::unexpected{memory_limit.error()};
-  }
-  cfg.memory_limit_bytes = *memory_limit;
+  cfg.visual_quality_fallback = app.get_visual_quality_fallback();
   cfg.unlock_max_input_file_bytes = app.get_unlock_max_input_file_bytes();
   awj::encoding_defaults::unlock_max_input_file_bytes.store(cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
-
-  const auto size_limit = image_size_limit_from_fields(
-      app.get_size_limit_index(), shared_to_string(app.get_max_width_text()),
-      shared_to_string(app.get_max_height_text()),
-      shared_to_string(app.get_max_long_edge_text()),
-      shared_to_string(app.get_max_short_edge_text()));
-  if (!size_limit) {
-    return std::unexpected{size_limit.error()};
-  }
-  cfg.image_size_limit = *size_limit;
-
-  if (cfg.output_format == awj::OutputFormat::avif ||
-      cfg.output_format == awj::OutputFormat::webp ||
-      cfg.output_format == awj::OutputFormat::jxl) {
-    const auto speed = parse_optional_int_field(
-        shared_to_string(app.get_speed_text()), "speed", 0, 10);
-    if (!speed) {
-      return std::unexpected{speed.error()};
-    }
-    cfg.speed = *speed;
-  } else {
-    cfg.speed.reset();
-  }
-
-  if (quality) {
-    cfg.quality = *quality;
-  }
-
   cfg.strip_metadata = app.get_strip_metadata();
   cfg.write_summary = app.get_write_summary();
   cfg.write_log = app.get_write_log();
+  cfg.preserve_creation_time = app.get_preserve_creation_time();
+  cfg.preserve_modification_time = app.get_preserve_modification_time();
+  cfg.preserve_access_time = app.get_preserve_access_time();
 
   if (auto valid = awj::finalize_config_defaults(cfg, true, true); !valid) {
     return std::unexpected{valid.error()};
@@ -5503,8 +5683,12 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
 struct UpdatePersistentState {
   std::string channel{};
   bool show_changelog{};
+  bool hide_changelog_after_exit{};
+  bool show_changelog_after_update{};
+  std::string last_changelog_exit_version{};
   std::int64_t last_successful_check{};
   std::int64_t last_verified_sequence{};
+  std::int64_t last_verified_v2_sequence{};
   std::string version{};
   std::string pending_channel{};
   std::string release_url{};
@@ -5513,13 +5697,19 @@ struct UpdatePersistentState {
   std::string changelog_en{};
   std::string manifest_raw{};
   std::string manifest_signature{};
+  std::string manifest_v2_raw{};
+  std::string manifest_v2_signature{};
 };
 
 UpdatePersistentState capture_update_state(const UiState& state) {
   return {.channel = state.update_channel,
           .show_changelog = state.show_update_changelog,
+          .hide_changelog_after_exit = state.hide_update_changelog_after_exit,
+          .show_changelog_after_update = state.show_update_changelog_after_update,
+          .last_changelog_exit_version = state.last_changelog_exit_version,
           .last_successful_check = state.last_successful_update_check_at,
           .last_verified_sequence = state.last_verified_manifest_sequence,
+          .last_verified_v2_sequence = state.last_verified_manifest_v2_sequence,
           .version = state.pending_update_version,
           .pending_channel = state.pending_update_channel,
           .release_url = state.pending_update_release_url,
@@ -5527,14 +5717,20 @@ UpdatePersistentState capture_update_state(const UiState& state) {
           .changelog_zh_cn = state.pending_update_changelog_zh_cn,
           .changelog_en = state.pending_update_changelog_en,
           .manifest_raw = state.update_manifest_raw,
-          .manifest_signature = state.update_manifest_signature};
+          .manifest_signature = state.update_manifest_signature,
+          .manifest_v2_raw = state.update_manifest_v2_raw,
+          .manifest_v2_signature = state.update_manifest_v2_signature};
 }
 
 void restore_update_state(UiState& state, UpdatePersistentState value) {
   state.update_channel = std::move(value.channel);
   state.show_update_changelog = value.show_changelog;
+  state.hide_update_changelog_after_exit = value.hide_changelog_after_exit;
+  state.show_update_changelog_after_update = value.show_changelog_after_update;
+  state.last_changelog_exit_version = std::move(value.last_changelog_exit_version);
   state.last_successful_update_check_at = value.last_successful_check;
   state.last_verified_manifest_sequence = value.last_verified_sequence;
+  state.last_verified_manifest_v2_sequence = value.last_verified_v2_sequence;
   state.pending_update_version = std::move(value.version);
   state.pending_update_channel = std::move(value.pending_channel);
   state.pending_update_release_url = std::move(value.release_url);
@@ -5543,6 +5739,8 @@ void restore_update_state(UiState& state, UpdatePersistentState value) {
   state.pending_update_changelog_en = std::move(value.changelog_en);
   state.update_manifest_raw = std::move(value.manifest_raw);
   state.update_manifest_signature = std::move(value.manifest_signature);
+  state.update_manifest_v2_raw = std::move(value.manifest_v2_raw);
+  state.update_manifest_v2_signature = std::move(value.manifest_v2_signature);
 }
 
 void clear_pending_update(UiState& state) {
@@ -5578,12 +5776,35 @@ bool pending_update_is_newer(const UiState& state) {
          awj::update::channel_visible_to(*channel, preference);
 }
 
+bool changelog_first_start_for_current_version(const UiState& state) {
+  return state.last_changelog_exit_version != AWJ_BUILD_VERSION;
+}
+
+bool changelog_visible_for_current_session(const UiState& state) {
+  const bool first_start = changelog_first_start_for_current_version(state);
+  if (!state.show_update_changelog) {
+    // 总开关关闭时，升级后的首次启动仍临时显示一次，退出后即恢复隐藏。
+    return first_start;
+  }
+  return !state.hide_update_changelog_after_exit || first_start;
+}
+
+bool changelog_should_open_on_start(const UiState& state) {
+  return changelog_first_start_for_current_version(state) &&
+         (!state.show_update_changelog || state.show_update_changelog_after_update);
+}
+
 void sync_update_ui(AwjStudio& app, const UiState& state) {
   const bool english = app.get_language_index() == 1;
   const bool available = pending_update_is_newer(state);
   app.set_current_version(to_shared(AWJ_BUILD_VERSION));
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
-  app.set_show_update_changelog(state.show_update_changelog);
+  app.set_show_update_changelog_enabled(state.show_update_changelog);
+  app.set_show_update_changelog(changelog_visible_for_current_session(state));
+  app.set_hide_update_changelog_after_exit(
+      state.hide_update_changelog_after_exit);
+  app.set_show_update_changelog_after_update(
+      state.show_update_changelog_after_update);
   app.set_update_available(available);
   app.set_update_version(to_shared(available ? state.pending_update_version : ""));
   app.set_update_published_at(
@@ -5647,27 +5868,28 @@ void sync_update_history(
 }
 
 void restore_cached_update_history(UiState& state) {
-  if (state.update_manifest_raw.empty() ||
-      state.update_manifest_signature.empty()) {
+  if (state.update_manifest_v2_raw.empty() ||
+      state.update_manifest_v2_signature.empty()) {
     return;
   }
-  auto manifest = awj::update::verify_and_parse_manifest(
-      state.update_manifest_raw, state.update_manifest_signature);
+  auto manifest = awj::update::verify_and_parse_archive_manifest_v2(
+      state.update_manifest_v2_raw, state.update_manifest_v2_signature);
   if (!manifest ||
       manifest->sequence <
           static_cast<std::uint64_t>(std::max<std::int64_t>(
-              state.last_verified_manifest_sequence, 0)) ||
+              state.last_verified_manifest_v2_sequence, 0)) ||
       manifest->sequence >
           static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
     // 缓存只用于展示；验签失败或序号倒退时丢弃，联网检查仍按原状态继续。
-    state.update_manifest_raw.clear();
-    state.update_manifest_signature.clear();
+    state.update_manifest_v2_raw.clear();
+    state.update_manifest_v2_signature.clear();
     return;
   }
-  state.last_verified_manifest_sequence =
-      std::max(state.last_verified_manifest_sequence,
+  state.last_verified_manifest_v2_sequence =
+      std::max(state.last_verified_manifest_v2_sequence,
                static_cast<std::int64_t>(manifest->sequence));
-  sync_update_history(state.update_history_rows, *manifest);
+  sync_update_history(state.update_history_rows,
+                      awj::update::archive_manifest_v2_for_history(*manifest));
 }
 
 awj::update::ChannelPreference update_preference(const UiState& state) {
@@ -5687,15 +5909,15 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
     state->update_status_en = "Checking for updates...";
     sync_update_ui(**app, *state);
   }
-  const auto last_sequence = state->last_verified_manifest_sequence < 0
+  const auto last_sequence = state->last_verified_manifest_v2_sequence < 0
                                  ? std::uint64_t{0}
                                  : static_cast<std::uint64_t>(
-                                       state->last_verified_manifest_sequence);
+                                       state->last_verified_manifest_v2_sequence);
   const auto preference = update_preference(*state);
   state->update_worker = std::jthread(
       [weak, state, last_sequence, preference](std::stop_token token) {
-        auto fetched =
-            awj::update::fetch_verified_manifest(last_sequence, token);
+        auto fetched = awj::update::fetch_verified_archive_manifest_v2(
+            last_sequence, token);
         post_to_ui(weak, [state, preference,
                           fetched = std::move(fetched)](AwjStudio& app) mutable {
           state->update_check_active = false;
@@ -5717,12 +5939,13 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
           }
 
           const auto before = capture_update_state(*state);
-          state->update_manifest_raw = fetched->raw_bytes;
-          state->update_manifest_signature = fetched->signature_base64;
+          state->update_manifest_v2_raw = fetched->raw_bytes;
+          state->update_manifest_v2_signature = fetched->signature_base64;
           if (const auto pending =
                   awj::update::parse_version(state->pending_update_version);
               pending && awj::update::should_clear_pending_for_revocation(
-                             fetched->manifest, *pending)) {
+                             awj::update::archive_manifest_v2_for_history(
+                                 fetched->manifest), *pending)) {
             clear_pending_update(*state);
           }
           const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
@@ -5733,7 +5956,7 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
             sync_update_ui(app, *state);
             return;
           }
-          const auto candidate = awj::update::select_candidate(
+          const auto candidate = awj::update::select_archive_candidate_v2(
               fetched->manifest,
               {.current_version = *current,
                .updater_version = *current,
@@ -5752,7 +5975,7 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
               std::chrono::duration_cast<std::chrono::seconds>(
                   std::chrono::system_clock::now().time_since_epoch())
                   .count();
-          state->last_verified_manifest_sequence =
+          state->last_verified_manifest_v2_sequence =
               static_cast<std::int64_t>(fetched->manifest.sequence);
           const bool retained_pending = !candidate && pending_update_is_newer(*state);
           state->update_status_zh =
@@ -5773,7 +5996,9 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
             state->update_status_en =
                 "Update check failed: state could not be saved.";
           } else {
-            sync_update_history(state->update_history_rows, fetched->manifest);
+            sync_update_history(state->update_history_rows,
+                                awj::update::archive_manifest_v2_for_history(
+                                    fetched->manifest));
           }
           sync_update_ui(app, *state);
         });
@@ -5874,6 +6099,12 @@ int run_studio_ui(const wchar_t* health_event,
     if (auto loaded = apply_studio_config_file(*app, *state); !loaded) {
       config_warning = std::format("读取 Studio 配置失败：{}", loaded.error());
     }
+    reload_user_preset_options(*app, *state);
+    if (!state->user_preset_errors.empty() && !config_warning) {
+      config_warning = std::format("有 {} 个用户预设未加载：{}",
+                                   state->user_preset_errors.size(),
+                                   state->user_preset_errors.front());
+    }
     load_system_font_options(*app);
     sync_template_flags(*app);
     // 配置已经读进 language_index，这里让 @tr() 立刻按存下来的语言重算。
@@ -5897,6 +6128,10 @@ int run_studio_ui(const wchar_t* health_event,
     }
     state->last_config_snapshot = capture_studio_config(*app, state.get());
     sync_update_ui(*app, *state);
+    if (changelog_should_open_on_start(*state) &&
+        changelog_visible_for_current_session(*state)) {
+      app->set_selected_page(4);
+    }
     if (auto warning = shell_context_menu_warning(state->menu_params)) {
       app->set_context_menu_warning(to_shared(*warning));
     }
@@ -5940,8 +6175,9 @@ int run_studio_ui(const wchar_t* health_event,
         if (!app) return;
         const bool previous = state->show_update_changelog;
         state->show_update_changelog = visible;
-        (*app)->set_show_update_changelog(visible);
-        if (!visible && (*app)->get_selected_page() == 4) {
+        sync_update_ui(**app, *state);
+        if (!changelog_visible_for_current_session(*state) &&
+            (*app)->get_selected_page() == 4) {
           (*app)->set_selected_page(2);
         }
         if (auto saved = persist_studio_config_if_changed(**app, *state);
@@ -5953,6 +6189,42 @@ int run_studio_ui(const wchar_t* health_event,
         }
       });
     });
+
+    app->on_hide_update_changelog_after_exit_requested(
+        [weak, state](bool enabled) {
+          run_ui_callback(weak, "保存更新日志退出设置失败", [&] {
+            auto app = weak.lock();
+            if (!app) return;
+            const bool previous = state->hide_update_changelog_after_exit;
+            state->hide_update_changelog_after_exit = enabled;
+            sync_update_ui(**app, *state);
+            if (auto saved = persist_studio_config_if_changed(**app, *state);
+                !saved) {
+              state->hide_update_changelog_after_exit = previous;
+              sync_update_ui(**app, *state);
+              (*app)->set_update_status(to_shared(
+                  std::format("保存更新日志设置失败：{}", saved.error())));
+            }
+          });
+        });
+
+    app->on_show_update_changelog_after_update_requested(
+        [weak, state](bool enabled) {
+          run_ui_callback(weak, "保存更新日志更新设置失败", [&] {
+            auto app = weak.lock();
+            if (!app) return;
+            const bool previous = state->show_update_changelog_after_update;
+            state->show_update_changelog_after_update = enabled;
+            sync_update_ui(**app, *state);
+            if (auto saved = persist_studio_config_if_changed(**app, *state);
+                !saved) {
+              state->show_update_changelog_after_update = previous;
+              sync_update_ui(**app, *state);
+              (*app)->set_update_status(to_shared(
+                  std::format("保存更新日志设置失败：{}", saved.error())));
+            }
+          });
+        });
 
     app->on_version_clicked([weak, state] {
       run_ui_callback(weak, "处理版本操作失败", [&] {
@@ -5995,7 +6267,7 @@ int run_studio_ui(const wchar_t* health_event,
         const auto release_url = state->pending_update_release_url;
         const auto preference = update_preference(*state);
         const auto sequence = static_cast<std::uint64_t>(
-            std::max<std::int64_t>(0, state->last_verified_manifest_sequence));
+            std::max<std::int64_t>(0, state->last_verified_manifest_v2_sequence));
         state->update_check_active = true;
         state->update_status_zh = "正在重新验签并下载更新…";
         state->update_status_en = "Verifying and downloading the update...";
@@ -6085,7 +6357,7 @@ int run_studio_ui(const wchar_t* health_event,
                 awj::default_output_dir_for(*fallback_input))));
           }
         }
-        auto cfg = config_from_ui(**app);
+        auto cfg = config_from_ui(**app, *state);
         if (!cfg) {
           (*app)->set_status_text(
               to_shared(std::format("配置错误：{}", cfg.error())));
@@ -6104,6 +6376,102 @@ int run_studio_ui(const wchar_t* health_event,
           }
           apply_format_defaults_to_ui(**app, index, *state);
         }
+      });
+    });
+
+    app->on_parameter_preset_selected([weak, state](int index) {
+      run_ui_callback(weak, "切换参数预设失败", [&] {
+        if (auto app = weak.lock()) {
+          if (reject_when_worker_active(**app, state,
+                                        "当前任务正在运行，无法切换参数预设")) {
+            return;
+          }
+          select_parameter_preset(**app, *state, index);
+        }
+      });
+    });
+
+    app->on_open_preset_editor([weak, state] {
+      run_ui_callback(weak, "打开预设编辑器失败", [&] {
+        if (auto app = weak.lock()) {
+          if (reject_when_worker_active(**app, state,
+                                        "当前任务正在运行，无法保存参数预设")) {
+            return;
+          }
+          store_current_parameter_params(**app, *state);
+          const auto index = state->parameter_preset_index;
+          (*app)->set_preset_editor_name(
+              index == 0
+                  ? slint::SharedString{}
+                  : to_shared(state->user_presets[static_cast<std::size_t>(
+                                                     index - 1)]
+                                  .name));
+          (*app)->set_preset_editor_description(
+              index == 0
+                  ? slint::SharedString{}
+                  : to_shared(state->user_presets[static_cast<std::size_t>(
+                                                     index - 1)]
+                                  .description));
+          (*app)->set_preset_editor_error({});
+          (*app)->set_preset_editor_open(true);
+        }
+      });
+    });
+
+    app->on_cancel_preset_editor([weak] {
+      run_ui_callback(weak, "关闭预设编辑器失败", [&] {
+        if (auto app = weak.lock()) {
+          (*app)->set_preset_editor_open(false);
+          (*app)->set_preset_editor_error({});
+        }
+      });
+    });
+
+    app->on_save_parameter_preset([weak, state](slint::SharedString name,
+                                                 slint::SharedString description) {
+      run_ui_callback(weak, "保存用户预设失败", [&] {
+        auto app = weak.lock();
+        if (!app) return;
+        if (reject_when_worker_active(**app, state,
+                                      "当前任务正在运行，无法保存参数预设")) {
+          return;
+        }
+        store_current_parameter_params(**app, *state);
+        auto preset = user_preset_from_parameter_params(
+            shared_to_string(name), shared_to_string(description),
+            active_parameter_params(*state));
+        if (!preset) {
+          (*app)->set_preset_editor_error(to_shared(preset.error()));
+          return;
+        }
+        auto saved = awj::save_user_preset(*preset, false);
+        if (!saved && saved.error() == "同名预设已存在；请确认覆盖。") {
+          const auto question = awj::wide_from_utf8(
+              std::format("预设“{}”已存在。是否覆盖？", preset->name));
+          if (MessageBoxW(nullptr, question.c_str(), L"AWJ Studio",
+                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
+            saved = awj::save_user_preset(*preset, true);
+          } else {
+            (*app)->set_preset_editor_error(to_shared("已取消覆盖同名预设。"));
+            return;
+          }
+        }
+        if (!saved) {
+          (*app)->set_preset_editor_error(to_shared(saved.error()));
+          return;
+        }
+        reload_user_preset_options(**app, *state);
+        const auto found = std::ranges::find(state->user_presets, preset->name,
+                                             &awj::UserPreset::name);
+        if (found != state->user_presets.end()) {
+          select_parameter_preset(
+              **app, *state,
+              static_cast<int>(std::distance(state->user_presets.begin(), found)) +
+                  1);
+        }
+        (*app)->set_preset_editor_open(false);
+        (*app)->set_preset_editor_error({});
+        (*app)->set_status_text(to_shared("用户预设已保存。"));
       });
     });
 
@@ -6285,15 +6653,48 @@ int run_studio_ui(const wchar_t* health_event,
                                             "当前任务正在运行，无法添加队列")) {
                 return;
               }
-              auto text = trim_copy(shared_to_string(input_text));
-              if (text.empty()) {
-                (*app)->set_status_text(to_shared("输入路径为空。"));
+              const auto path = awj::normalize_path_argument(
+                  awj::wide_from_utf8(shared_to_string(input_text)), "输入路径");
+              if (!path) {
+                (*app)->set_status_text(to_shared(path.error()));
                 return;
               }
-              const auto path =
-                  std::filesystem::path{awj::wide_from_utf8(text)};
-              const bool pick_folder = (*app)->get_input_mode_index() != 0;
-              add_queue_from_path(**app, *state, path, pick_folder);
+              (*app)->set_input_path(to_shared(awj::path_to_utf8(*path)));
+              // 手工输入按真实文件系统类型判断，和旁边的选择器模式无关。
+              add_queue_from_path(**app, *state, *path, false);
+            }
+          });
+        });
+
+    app->on_input_path_dropped(
+        [weak, state](slint::language::DropEvent event) {
+          run_ui_callback(weak, "拖入输入路径失败", [&] {
+            if (auto app = weak.lock()) {
+              if (reject_when_worker_active(**app, state,
+                                            "当前任务正在运行，无法添加队列")) {
+                return;
+              }
+              const auto text = event.data.plain_text();
+              if (!text) {
+                (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
+                return;
+              }
+              const auto paths = native_drop_paths(*text);
+              if (paths.empty()) {
+                (*app)->set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
+                return;
+              }
+              for (const auto& raw : paths) {
+                const auto path = awj::normalize_path_argument(
+                    awj::wide_from_utf8(raw), "拖入输入路径");
+                if (!path) {
+                  (*app)->set_status_text(to_shared(path.error()));
+                  return;
+                }
+                std::error_code ec;
+                const bool folder = std::filesystem::is_directory(*path, ec) && !ec;
+                add_queue_from_path(**app, *state, *path, folder);
+              }
             }
           });
         });
@@ -6372,6 +6773,72 @@ int run_studio_ui(const wchar_t* health_event,
         }
       });
     });
+
+    app->on_output_path_accepted(
+        [weak, state](slint::SharedString output_text) {
+          run_ui_callback(weak, "输出目录校验失败", [&] {
+            if (auto app = weak.lock()) {
+              if (reject_when_worker_active(**app, state,
+                                            "当前任务正在运行，无法修改输出目录")) {
+                return;
+              }
+              const auto raw = shared_to_string(output_text);
+              if (trim_copy(raw).empty()) {
+                (*app)->set_output_dir({});
+                return;
+              }
+              const auto path = awj::normalize_path_argument(
+                  awj::wide_from_utf8(raw), "输出目录");
+              if (!path) {
+                (*app)->set_status_text(to_shared(path.error()));
+                return;
+              }
+              (*app)->set_output_dir(to_shared(awj::path_to_utf8(*path)));
+            }
+          });
+        });
+
+    app->on_output_path_dropped(
+        [weak, state](slint::language::DropEvent event) {
+          run_ui_callback(weak, "拖入输出目录失败", [&] {
+            if (auto app = weak.lock()) {
+              if (reject_when_worker_active(**app, state,
+                                            "当前任务正在运行，无法修改输出目录")) {
+                return;
+              }
+              const auto text = event.data.plain_text();
+              if (!text) {
+                (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
+                return;
+              }
+              const auto paths = native_drop_paths(*text);
+              if (paths.size() != 1) {
+                (*app)->set_status_text(to_shared("输出目录一次只能拖入一个文件或文件夹。"));
+                return;
+              }
+              const auto path = awj::normalize_path_argument(
+                  awj::wide_from_utf8(paths.front()), "拖入输出目录");
+              if (!path) {
+                (*app)->set_status_text(to_shared(path.error()));
+                return;
+              }
+              std::error_code ec;
+              if (!std::filesystem::exists(*path, ec) || ec) {
+                (*app)->set_status_text(to_shared("拖入的输出目标不存在或无法访问。"));
+                return;
+              }
+              const auto output = std::filesystem::is_directory(*path, ec) && !ec
+                                      ? *path
+                                      : path->parent_path();
+              if (output.empty()) {
+                (*app)->set_status_text(to_shared("无法从拖入目标确定输出目录。"));
+                return;
+              }
+              (*app)->set_output_dir(to_shared(awj::path_to_utf8(output)));
+              (*app)->set_status_text(to_shared("已更新输出目录。"));
+            }
+          });
+        });
 
     app->on_browse_large_image_file([weak, state] {
       run_ui_callback(weak, "添加大图文件失败", [&] {
@@ -6464,7 +6931,7 @@ int run_studio_ui(const wchar_t* health_event,
                 shared_to_string((*app)->get_input_path());
             (*app)->set_input_path(
                 to_shared(awj::path_to_utf8(item.file.path)));
-            auto cfg = config_from_ui(**app);
+            auto cfg = config_from_ui(**app, *state);
             (*app)->set_input_path(to_shared(previous_input));
             if (!cfg) {
               (*app)->set_status_text(
@@ -6521,7 +6988,7 @@ int run_studio_ui(const wchar_t* health_event,
           }
         }
 
-        auto cfg = config_from_ui(**app);
+        auto cfg = config_from_ui(**app, *state);
         if (!cfg) {
           (*app)->set_running(false);
           (*app)->set_status_text(
@@ -6557,7 +7024,6 @@ int run_studio_ui(const wchar_t* health_event,
     }
     apply_title_bar_theme(app->window(), effective_studio_dark_mode(*app));
     constrain_window_to_work_area(app->window());
-    DropBridge drop_bridge{app->window(), weak, state};
     // 关窗回调在事件循环里执行，而 persist_studio_config_if_changed 会经由
     // capture_studio_config 分配三十多个 std::string，下面的 std::format 也会分配。
     // 这里抛出的异常会穿回 Rust 侧的 winit 栈帧（panic="abort"），必须自己接住；
@@ -6569,6 +7035,7 @@ int run_studio_ui(const wchar_t* health_event,
           state->update_worker.request_stop();
         }
         if (auto app = weak.lock()) {
+          state->last_changelog_exit_version = AWJ_BUILD_VERSION;
           if (auto saved = persist_studio_config_if_changed(**app, *state);
               !saved) {
             set_status_text_noexcept(
@@ -6821,7 +7288,11 @@ import awj.core;
 import awj.encoding_defaults;
 import awj.large_image_plan;
 import awj.pipeline;
+import awj.preset;
+import awj.studio_defaults;
+import awj.update_linux;
 import awj.update_manifest;
+import awj.update_manifest_v2;
 import awj.update_model;
 import awj.update_runtime;
 
@@ -6849,6 +7320,28 @@ struct LinuxMenuParams {
   std::string max_short_edge_text{};
 };
 
+// 参数页按格式保存会话内的编辑值；普通队列只在开始时读取 queue-format
+// 指向的这一组，避免“切换编辑格式”悄悄改变输出格式。
+struct LinuxParameterParams {
+  std::string quality_text{};
+  std::string visual_quality_text{};
+  std::string bit_depth_text{};
+  std::string speed_text{};
+  int avif_encoder_index{};
+  int chroma_index{};
+  int alpha_policy_index{1};
+  int jpegli_progressive_index{2};
+  bool jpegli_optimize_huffman{true};
+  bool jpegli_xyb{};
+  std::string threads_text{};
+  std::string memory_limit_text{};
+  int size_limit_index{};
+  std::string max_width_text{};
+  std::string max_height_text{};
+  std::string max_long_edge_text{};
+  std::string max_short_edge_text{};
+};
+
 struct LinuxUiState {
   std::jthread worker{};
   std::jthread update_worker{};
@@ -6857,6 +7350,15 @@ struct LinuxUiState {
   std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   std::vector<fs::path> failed_paths{};
+  // Native DropArea can deliver each external file separately; retain the
+  // whole dropped set and hand it to run_batch as one queue snapshot.
+  std::vector<fs::path> dropped_input_paths{};
+  std::array<LinuxParameterParams, 5> builtin_params{};
+  std::array<LinuxParameterParams, 5> parameter_preset_params{};
+  std::vector<awj::UserPreset> user_presets{};
+  std::vector<std::string> user_preset_errors{};
+  int parameter_preset_index{};
+  int last_format_index{};
   std::array<LinuxMenuParams, 5> menu_params{};
   int menu_format_index{};
   fs::path config_path{};
@@ -6865,8 +7367,14 @@ struct LinuxUiState {
   bool update_check_active{};
   std::string update_channel{"stable"};
   bool show_update_changelog{true};
+  bool hide_update_changelog_after_exit{true};
+  bool show_update_changelog_after_update{true};
+  std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
+  // v1 remains only as cached state for 1.0.3 bridge compatibility. Linux
+  // Studio itself consumes the independent v2 counter and signed cache.
   std::int64_t last_verified_manifest_sequence{};
+  std::int64_t last_verified_manifest_v2_sequence{};
   std::string pending_update_version{};
   std::string pending_update_channel{};
   std::string pending_update_release_url{};
@@ -6875,9 +7383,75 @@ struct LinuxUiState {
   std::string pending_update_changelog_en{};
   std::string update_manifest_raw{};
   std::string update_manifest_signature{};
+  std::string update_manifest_v2_raw{};
+  std::string update_manifest_v2_signature{};
   std::string update_status_zh{"尚未检查"};
   std::string update_status_en{"Not checked yet"};
 };
+
+nlohmann::ordered_json linux_menu_params_json(const LinuxMenuParams& params) {
+  return {{"quality_text", params.quality_text},
+          {"bit_depth_text", params.bit_depth_text},
+          {"speed_text", params.speed_text},
+          {"avif_encoder_index", params.avif_encoder_index},
+          {"chroma_index", params.chroma_index},
+          {"alpha_policy_index", params.alpha_policy_index},
+          {"jpegli_progressive_index", params.jpegli_progressive_index},
+          {"jpegli_optimize_huffman", params.jpegli_optimize_huffman},
+          {"jpegli_xyb", params.jpegli_xyb},
+          {"strip_metadata", params.strip_metadata},
+          {"size_limit_index", params.size_limit_index},
+          {"max_width_text", params.max_width_text},
+          {"max_height_text", params.max_height_text},
+          {"max_long_edge_text", params.max_long_edge_text},
+          {"max_short_edge_text", params.max_short_edge_text}};
+}
+
+void load_linux_menu_params(const nlohmann::ordered_json& document,
+                            std::array<LinuxMenuParams, 5>& output) {
+  const auto found = document.find("menu_params");
+  if (found == document.end() || !found->is_array() || found->size() != output.size()) {
+    return;
+  }
+  for (std::size_t index = 0; index < output.size(); ++index) {
+    const auto& value = (*found)[index];
+    if (!value.is_object()) continue;
+    auto& params = output[index];
+    const auto text = [&](std::string_view key, std::string& target) {
+      const auto it = value.find(std::string{key});
+      if (it != value.end() && it->is_string()) target = it->get<std::string>();
+    };
+    const auto integer = [&](std::string_view key, int minimum, int maximum,
+                             int& target) {
+      const auto it = value.find(std::string{key});
+      if (it != value.end() && it->is_number_integer()) {
+        const auto candidate = it->get<long long>();
+        if (candidate >= minimum && candidate <= maximum) {
+          target = static_cast<int>(candidate);
+        }
+      }
+    };
+    const auto boolean = [&](std::string_view key, bool& target) {
+      const auto it = value.find(std::string{key});
+      if (it != value.end() && it->is_boolean()) target = it->get<bool>();
+    };
+    text("quality_text", params.quality_text);
+    text("bit_depth_text", params.bit_depth_text);
+    text("speed_text", params.speed_text);
+    integer("avif_encoder_index", 0, 3, params.avif_encoder_index);
+    integer("chroma_index", 0, 3, params.chroma_index);
+    integer("alpha_policy_index", 0, 2, params.alpha_policy_index);
+    integer("jpegli_progressive_index", 0, 2, params.jpegli_progressive_index);
+    boolean("jpegli_optimize_huffman", params.jpegli_optimize_huffman);
+    boolean("jpegli_xyb", params.jpegli_xyb);
+    boolean("strip_metadata", params.strip_metadata);
+    integer("size_limit_index", 0, 2, params.size_limit_index);
+    text("max_width_text", params.max_width_text);
+    text("max_height_text", params.max_height_text);
+    text("max_long_edge_text", params.max_long_edge_text);
+    text("max_short_edge_text", params.max_short_edge_text);
+  }
+}
 
 std::string trim_copy(std::string value) {
   const auto first = std::ranges::find_if_not(value, [](unsigned char ch) {
@@ -6930,6 +7504,7 @@ struct PcloseDeleter {
 };
 
 slint::SharedString to_shared(std::string_view text);
+std::string shared_to_string(const slint::SharedString& value);
 
 std::optional<std::string> run_capture(const std::string& command) {
   std::unique_ptr<FILE, PcloseDeleter> pipe{popen(command.c_str(), "r")};
@@ -6974,8 +7549,14 @@ void load_system_font_options(AwjStudio& app) {
     options.push_back(ComboOption{.text = to_shared(family), .enabled = true});
   }
   app.set_ui_font_options(std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
-  app.set_ui_font_index(0);
-  app.set_ui_font_family({});
+  const auto selected = shared_to_string(app.get_ui_font_family());
+  const auto found = std::ranges::find(sorted, selected);
+  if (found == sorted.end()) {
+    app.set_ui_font_index(0);
+    app.set_ui_font_family({});
+  } else {
+    app.set_ui_font_index(static_cast<int>(std::distance(sorted.begin(), found)) + 1);
+  }
 }
 
 std::expected<fs::path, std::string> choose_path(bool directory) {
@@ -7013,11 +7594,31 @@ std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
 }
 
+std::vector<std::string> native_drop_paths(const slint::SharedString& value) {
+  std::vector<std::string> paths;
+  const auto text = shared_to_string(value);
+  std::size_t begin = 0;
+  while (begin <= text.size()) {
+    const auto end = text.find('\n', begin);
+    auto path = text.substr(begin, end == std::string::npos ? std::string::npos
+                                                              : end - begin);
+    if (!path.empty() && path.back() == '\r') path.pop_back();
+    if (!path.empty()) paths.push_back(std::move(path));
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  return paths;
+}
+
 struct LinuxUpdatePersistentState {
   std::string channel{};
   bool show_changelog{};
+  bool hide_changelog_after_exit{};
+  bool show_changelog_after_update{};
+  std::string last_changelog_exit_version{};
   std::int64_t last_successful_check{};
   std::int64_t last_verified_sequence{};
+  std::int64_t last_verified_v2_sequence{};
   std::string version{};
   std::string pending_channel{};
   std::string release_url{};
@@ -7026,14 +7627,20 @@ struct LinuxUpdatePersistentState {
   std::string changelog_en{};
   std::string manifest_raw{};
   std::string manifest_signature{};
+  std::string manifest_v2_raw{};
+  std::string manifest_v2_signature{};
 };
 
 LinuxUpdatePersistentState capture_linux_update_state(
     const LinuxUiState& state) {
   return {.channel = state.update_channel,
           .show_changelog = state.show_update_changelog,
+          .hide_changelog_after_exit = state.hide_update_changelog_after_exit,
+          .show_changelog_after_update = state.show_update_changelog_after_update,
+          .last_changelog_exit_version = state.last_changelog_exit_version,
           .last_successful_check = state.last_successful_update_check_at,
           .last_verified_sequence = state.last_verified_manifest_sequence,
+          .last_verified_v2_sequence = state.last_verified_manifest_v2_sequence,
           .version = state.pending_update_version,
           .pending_channel = state.pending_update_channel,
           .release_url = state.pending_update_release_url,
@@ -7041,15 +7648,21 @@ LinuxUpdatePersistentState capture_linux_update_state(
           .changelog_zh_cn = state.pending_update_changelog_zh_cn,
           .changelog_en = state.pending_update_changelog_en,
           .manifest_raw = state.update_manifest_raw,
-          .manifest_signature = state.update_manifest_signature};
+          .manifest_signature = state.update_manifest_signature,
+          .manifest_v2_raw = state.update_manifest_v2_raw,
+          .manifest_v2_signature = state.update_manifest_v2_signature};
 }
 
 void restore_linux_update_state(LinuxUiState& state,
                                 LinuxUpdatePersistentState value) {
   state.update_channel = std::move(value.channel);
   state.show_update_changelog = value.show_changelog;
+  state.hide_update_changelog_after_exit = value.hide_changelog_after_exit;
+  state.show_update_changelog_after_update = value.show_changelog_after_update;
+  state.last_changelog_exit_version = std::move(value.last_changelog_exit_version);
   state.last_successful_update_check_at = value.last_successful_check;
   state.last_verified_manifest_sequence = value.last_verified_sequence;
+  state.last_verified_manifest_v2_sequence = value.last_verified_v2_sequence;
   state.pending_update_version = std::move(value.version);
   state.pending_update_channel = std::move(value.pending_channel);
   state.pending_update_release_url = std::move(value.release_url);
@@ -7058,6 +7671,8 @@ void restore_linux_update_state(LinuxUiState& state,
   state.pending_update_changelog_en = std::move(value.changelog_en);
   state.update_manifest_raw = std::move(value.manifest_raw);
   state.update_manifest_signature = std::move(value.manifest_signature);
+  state.update_manifest_v2_raw = std::move(value.manifest_v2_raw);
+  state.update_manifest_v2_signature = std::move(value.manifest_v2_signature);
 }
 
 void clear_linux_pending_update(LinuxUiState& state) {
@@ -7081,6 +7696,24 @@ std::string linux_update_check_time(std::int64_t unix_seconds) {
                      std::chrono::floor<std::chrono::seconds>(point));
 }
 
+bool linux_changelog_first_start_for_current_version(const LinuxUiState& state) {
+  return state.last_changelog_exit_version != AWJ_BUILD_VERSION;
+}
+
+bool linux_changelog_visible_for_current_session(const LinuxUiState& state) {
+  const bool first_start = linux_changelog_first_start_for_current_version(state);
+  if (!state.show_update_changelog) {
+    // 总开关关闭时，升级后的首次启动仍临时显示一次；该版本退出后隐藏。
+    return first_start;
+  }
+  return !state.hide_update_changelog_after_exit || first_start;
+}
+
+bool linux_changelog_should_open_on_start(const LinuxUiState& state) {
+  return linux_changelog_first_start_for_current_version(state) &&
+         (!state.show_update_changelog || state.show_update_changelog_after_update);
+}
+
 bool linux_pending_update_is_newer(const LinuxUiState& state) {
   const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
   const auto pending = awj::update::parse_version(state.pending_update_version);
@@ -7097,7 +7730,12 @@ void sync_linux_update_ui(AwjStudio& app, const LinuxUiState& state) {
   const bool available = linux_pending_update_is_newer(state);
   app.set_current_version(to_shared(AWJ_BUILD_VERSION));
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
-  app.set_show_update_changelog(state.show_update_changelog);
+  app.set_show_update_changelog_enabled(state.show_update_changelog);
+  app.set_show_update_changelog(linux_changelog_visible_for_current_session(state));
+  app.set_hide_update_changelog_after_exit(
+      state.hide_update_changelog_after_exit);
+  app.set_show_update_changelog_after_update(
+      state.show_update_changelog_after_update);
   app.set_update_available(available);
   app.set_update_version(to_shared(available ? state.pending_update_version : ""));
   app.set_update_published_at(
@@ -7159,26 +7797,28 @@ void sync_linux_update_history(
 }
 
 void restore_cached_linux_update_history(LinuxUiState& state) {
-  if (state.update_manifest_raw.empty() ||
-      state.update_manifest_signature.empty()) {
+  if (state.update_manifest_v2_raw.empty() ||
+      state.update_manifest_v2_signature.empty()) {
     return;
   }
-  auto manifest = awj::update::verify_and_parse_manifest(
-      state.update_manifest_raw, state.update_manifest_signature);
+  auto manifest = awj::update::verify_and_parse_archive_manifest_v2(
+      state.update_manifest_v2_raw, state.update_manifest_v2_signature);
   if (!manifest ||
       manifest->sequence <
           static_cast<std::uint64_t>(std::max<std::int64_t>(
-              state.last_verified_manifest_sequence, 0)) ||
+              state.last_verified_manifest_v2_sequence, 0)) ||
       manifest->sequence >
           static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-    state.update_manifest_raw.clear();
-    state.update_manifest_signature.clear();
+    state.update_manifest_v2_raw.clear();
+    state.update_manifest_v2_signature.clear();
     return;
   }
-  state.last_verified_manifest_sequence =
-      std::max(state.last_verified_manifest_sequence,
+  state.last_verified_manifest_v2_sequence =
+      std::max(state.last_verified_manifest_v2_sequence,
                static_cast<std::int64_t>(manifest->sequence));
-  sync_linux_update_history(state.update_history_rows, *manifest);
+  sync_linux_update_history(
+      state.update_history_rows,
+      awj::update::archive_manifest_v2_for_history(*manifest));
 }
 
 std::expected<void, std::string> atomic_write_linux_file(
@@ -7276,7 +7916,7 @@ std::string linux_config_string(const nlohmann::ordered_json& document,
                                                  : std::string{};
 }
 
-void load_linux_update_config(LinuxUiState& state) {
+void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   auto executable = awj::executable_path();
   if (!executable) {
     state.config_readable = false;
@@ -7303,6 +7943,42 @@ void load_linux_update_config(LinuxUiState& state) {
     state.update_status_en = "AWJ.jsonc could not be read safely.";
     return;
   }
+  const auto apply_int = [&](std::string_view key, int minimum, int maximum,
+                             auto setter) {
+    const auto it = state.config_document.find(std::string{key});
+    if (it == state.config_document.end() ||
+        !(it->is_number_integer() || it->is_number_unsigned())) {
+      return;
+    }
+    try {
+      const auto value = it->get<long long>();
+      if (value >= minimum && value <= maximum) {
+        (app.*setter)(static_cast<int>(value));
+      }
+    } catch (const nlohmann::json::exception&) {
+    }
+  };
+  const auto apply_bool = [&](std::string_view key, auto setter) {
+    const auto it = state.config_document.find(std::string{key});
+    if (it != state.config_document.end() && it->is_boolean()) {
+      (app.*setter)(it->get<bool>());
+    }
+  };
+  const auto font = state.config_document.find("ui_font_family");
+  if (font != state.config_document.end() && font->is_string()) {
+    app.set_ui_font_family(to_shared(font->get<std::string>()));
+  }
+  apply_int("theme_index", 0, 2, &AwjStudio::set_theme_index);
+  apply_int("language_index", 0, 1, &AwjStudio::set_language_index);
+  apply_bool("allow_wic_fallback", &AwjStudio::set_allow_wic_fallback);
+  apply_bool("visual_quality_gpu", &AwjStudio::set_visual_quality_gpu);
+  apply_bool("visual_quality_fallback", &AwjStudio::set_visual_quality_fallback);
+  apply_bool("experimental_encoders", &AwjStudio::set_experimental_encoders);
+  try {
+    static_cast<void>(slint::select_bundled_translation(
+        app.get_language_index() == 1 ? "en" : "zh-CN"));
+  } catch (...) {
+  }
   const auto channel = linux_config_string(state.config_document, "update_channel");
   if (channel == "stable" || channel == "prerelease") {
     state.update_channel = channel;
@@ -7311,10 +7987,22 @@ void load_linux_update_config(LinuxUiState& state) {
       it != state.config_document.end() && it->is_boolean()) {
     state.show_update_changelog = it->get<bool>();
   }
+  if (const auto it = state.config_document.find("hide_update_changelog_after_exit");
+      it != state.config_document.end() && it->is_boolean()) {
+    state.hide_update_changelog_after_exit = it->get<bool>();
+  }
+  if (const auto it = state.config_document.find("show_update_changelog_after_update");
+      it != state.config_document.end() && it->is_boolean()) {
+    state.show_update_changelog_after_update = it->get<bool>();
+  }
+  state.last_changelog_exit_version =
+      linux_config_string(state.config_document, "last_changelog_exit_version");
   state.last_successful_update_check_at =
       linux_config_int64(state.config_document, "last_successful_update_check_at");
   state.last_verified_manifest_sequence =
       linux_config_int64(state.config_document, "last_verified_manifest_sequence");
+  state.last_verified_manifest_v2_sequence = linux_config_int64(
+      state.config_document, "last_verified_manifest_v2_sequence");
   state.pending_update_version =
       linux_config_string(state.config_document, "pending_update_version");
   state.pending_update_channel =
@@ -7331,20 +8019,41 @@ void load_linux_update_config(LinuxUiState& state) {
       linux_config_string(state.config_document, "update_manifest_raw");
   state.update_manifest_signature =
       linux_config_string(state.config_document, "update_manifest_signature");
+  state.update_manifest_v2_raw =
+      linux_config_string(state.config_document, "update_manifest_v2_raw");
+  state.update_manifest_v2_signature = linux_config_string(
+      state.config_document, "update_manifest_v2_signature");
+  load_linux_menu_params(state.config_document, state.menu_params);
 }
 
 std::expected<void, std::string> persist_linux_update_config(
-    LinuxUiState& state) {
+    const AwjStudio& app, LinuxUiState& state) {
   if (!state.config_readable || state.config_path.empty()) {
     return std::unexpected{"AWJ.jsonc 当前不可安全写入。"};
   }
-  auto document = state.config_document;
+  // 根配置是白名单写入：迁移时故意不复制旧文档，以清理普通队列、路径、
+  // 窗口状态以及曾经持久化的参数页数据。
+  nlohmann::ordered_json document = nlohmann::ordered_json::object();
+  document["theme_index"] = app.get_theme_index();
+  document["language_index"] = app.get_language_index();
+  document["ui_font_family"] = shared_to_string(app.get_ui_font_family());
+  document["allow_wic_fallback"] = app.get_allow_wic_fallback();
+  document["visual_quality_gpu"] = app.get_visual_quality_gpu();
+  document["visual_quality_fallback"] = app.get_visual_quality_fallback();
+  document["experimental_encoders"] = app.get_experimental_encoders();
   document["update_channel"] = state.update_channel;
   document["show_update_changelog"] = state.show_update_changelog;
+  document["hide_update_changelog_after_exit"] =
+      state.hide_update_changelog_after_exit;
+  document["show_update_changelog_after_update"] =
+      state.show_update_changelog_after_update;
+  document["last_changelog_exit_version"] = state.last_changelog_exit_version;
   document["last_successful_update_check_at"] =
       state.last_successful_update_check_at;
   document["last_verified_manifest_sequence"] =
       state.last_verified_manifest_sequence;
+  document["last_verified_manifest_v2_sequence"] =
+      state.last_verified_manifest_v2_sequence;
   document["pending_update_version"] = state.pending_update_version;
   document["pending_update_channel"] = state.pending_update_channel;
   document["pending_update_release_url"] = state.pending_update_release_url;
@@ -7354,6 +8063,12 @@ std::expected<void, std::string> persist_linux_update_config(
   document["pending_update_changelog_en"] = state.pending_update_changelog_en;
   document["update_manifest_raw"] = state.update_manifest_raw;
   document["update_manifest_signature"] = state.update_manifest_signature;
+  document["update_manifest_v2_raw"] = state.update_manifest_v2_raw;
+  document["update_manifest_v2_signature"] = state.update_manifest_v2_signature;
+  document["menu_params"] = nlohmann::ordered_json::array();
+  for (const auto& params : state.menu_params) {
+    document["menu_params"].push_back(linux_menu_params_json(params));
+  }
   auto bytes = document.dump(2);
   bytes.push_back('\n');
   auto saved = atomic_write_linux_file(state.config_path, bytes);
@@ -7408,14 +8123,15 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
     state->update_status_en = "Checking for updates...";
     sync_linux_update_ui(**app, *state);
   }
-  const auto last_sequence = state->last_verified_manifest_sequence < 0
+  const auto last_sequence = state->last_verified_manifest_v2_sequence < 0
                                  ? std::uint64_t{0}
                                  : static_cast<std::uint64_t>(
-                                       state->last_verified_manifest_sequence);
+                                       state->last_verified_manifest_v2_sequence);
   const auto preference = linux_update_preference(*state);
   state->update_worker = std::jthread(
       [weak, state, last_sequence, preference](std::stop_token token) {
-        auto fetched = awj::update::fetch_verified_manifest(last_sequence, token);
+        auto fetched = awj::update::fetch_verified_archive_manifest_v2(
+            last_sequence, token);
         static_cast<void>(slint::invoke_from_event_loop(
             [weak, state, preference, fetched = std::move(fetched)]() mutable {
               auto app = weak.lock();
@@ -7440,12 +8156,14 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                 return;
               }
               const auto before = capture_linux_update_state(*state);
-              state->update_manifest_raw = fetched->raw_bytes;
-              state->update_manifest_signature = fetched->signature_base64;
+              state->update_manifest_v2_raw = fetched->raw_bytes;
+              state->update_manifest_v2_signature = fetched->signature_base64;
               if (const auto pending =
                       awj::update::parse_version(state->pending_update_version);
                   pending && awj::update::should_clear_pending_for_revocation(
-                                 fetched->manifest, *pending)) {
+                                 awj::update::archive_manifest_v2_for_history(
+                                     fetched->manifest),
+                                 *pending)) {
                 clear_linux_pending_update(*state);
               }
               const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
@@ -7457,7 +8175,7 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                 sync_linux_update_ui(**app, *state);
                 return;
               }
-              const auto candidate = awj::update::select_candidate(
+              const auto candidate = awj::update::select_archive_candidate_v2(
                   fetched->manifest,
                   {.current_version = *current,
                    .updater_version = *current,
@@ -7476,7 +8194,7 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                   std::chrono::duration_cast<std::chrono::seconds>(
                       std::chrono::system_clock::now().time_since_epoch())
                       .count();
-              state->last_verified_manifest_sequence =
+              state->last_verified_manifest_v2_sequence =
                   static_cast<std::int64_t>(fetched->manifest.sequence);
               const bool retained =
                   !candidate && linux_pending_update_is_newer(*state);
@@ -7489,15 +8207,17 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                             : retained
                                   ? "Check succeeded; the previously found update remains available."
                                   : "Up to date.";
-              if (auto saved = persist_linux_update_config(*state); !saved) {
+              if (auto saved = persist_linux_update_config(**app, *state); !saved) {
                 restore_linux_update_state(*state, before);
                 state->update_status_zh =
                     std::format("检查失败：无法持久化状态：{}", saved.error());
                 state->update_status_en =
                     "Update check failed: state could not be saved.";
               } else {
-                sync_linux_update_history(state->update_history_rows,
-                                          fetched->manifest);
+                sync_linux_update_history(
+                    state->update_history_rows,
+                    awj::update::archive_manifest_v2_for_history(
+                        fetched->manifest));
               }
               sync_linux_update_ui(**app, *state);
             }));
@@ -7562,6 +8282,10 @@ LinuxMenuParams default_linux_menu_params(int format_index) {
     }
   }();
   params.quality_text = std::format("{}", awj::default_quality_for(format));
+  if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
+      format == awj::OutputFormat::jxl) {
+    params.speed_text = std::format("{}", awj::default_speed_for(format));
+  }
   if (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli) {
     params.bit_depth_text = std::format("{}", awj::encoding_defaults::default_webp_bit_depth);
   }
@@ -7872,6 +8596,119 @@ std::wstring size_limit_arg(int index) {
   }
 }
 
+awj::OutputFormat linux_output_format_from_index(int index) noexcept {
+  switch (index) {
+    case 1: return awj::OutputFormat::webp;
+    case 2: return awj::OutputFormat::jxl;
+    case 3: return awj::OutputFormat::jpgli;
+    case 4: return awj::OutputFormat::png;
+    default: return awj::OutputFormat::avif;
+  }
+}
+
+LinuxParameterParams default_linux_parameter_params(int index) {
+  const auto format = linux_output_format_from_index(index);
+  LinuxParameterParams params{};
+  params.quality_text = std::format("{}", awj::default_quality_for(format));
+  if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
+      format == awj::OutputFormat::jxl) {
+    params.speed_text = std::format("{}", awj::default_speed_for(format));
+  }
+  if (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli) {
+    params.bit_depth_text = std::format("{}", awj::encoding_defaults::default_webp_bit_depth);
+  }
+  params.jpegli_progressive_index =
+      awj::encoding_defaults::default_jpegli_progressive_level;
+  params.jpegli_optimize_huffman =
+      awj::encoding_defaults::default_jpegli_optimize_huffman;
+  params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  return params;
+}
+
+LinuxParameterParams capture_linux_parameter_params(const AwjStudio& app) {
+  return {.quality_text = shared_to_string(app.get_quality_text()),
+          .visual_quality_text = shared_to_string(app.get_visual_quality_text()),
+          .bit_depth_text = shared_to_string(app.get_bit_depth_text()),
+          .speed_text = shared_to_string(app.get_speed_text()),
+          .avif_encoder_index = app.get_avif_encoder_index(),
+          .chroma_index = app.get_chroma_index(),
+          .alpha_policy_index = app.get_alpha_policy_index(),
+          .jpegli_progressive_index = app.get_jpegli_progressive_index(),
+          .jpegli_optimize_huffman = app.get_jpegli_optimize_huffman(),
+          .jpegli_xyb = app.get_jpegli_xyb(),
+          .threads_text = shared_to_string(app.get_threads_text()),
+          .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
+          .size_limit_index = app.get_size_limit_index(),
+          .max_width_text = shared_to_string(app.get_max_width_text()),
+          .max_height_text = shared_to_string(app.get_max_height_text()),
+          .max_long_edge_text = shared_to_string(app.get_max_long_edge_text()),
+          .max_short_edge_text = shared_to_string(app.get_max_short_edge_text())};
+}
+
+void apply_linux_parameter_params(AwjStudio& app,
+                                  const LinuxParameterParams& params,
+                                  int format_index) {
+  app.set_quality_text(to_shared(params.quality_text));
+  app.set_visual_quality_text(to_shared(params.visual_quality_text));
+  app.set_bit_depth_text(to_shared(params.bit_depth_text));
+  app.set_speed_text(to_shared(params.speed_text));
+  app.set_avif_encoder_index(params.avif_encoder_index);
+  app.set_chroma_index(params.chroma_index);
+  app.set_alpha_policy_index(params.alpha_policy_index);
+  app.set_jpegli_progressive_index(params.jpegli_progressive_index);
+  app.set_jpegli_optimize_huffman(params.jpegli_optimize_huffman);
+  app.set_jpegli_xyb(params.jpegli_xyb);
+  app.set_threads_text(to_shared(params.threads_text));
+  app.set_memory_limit_text(to_shared(params.memory_limit_text));
+  app.set_size_limit_index(params.size_limit_index);
+  app.set_max_width_text(to_shared(params.max_width_text));
+  app.set_max_height_text(to_shared(params.max_height_text));
+  app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
+  app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
+  const auto format = linux_output_format_from_index(format_index);
+  app.set_quality_follows_format(
+      params.quality_text == std::format("{}", awj::default_quality_for(format)));
+  app.set_bit_depth_follows_format(
+      (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli)
+          ? params.bit_depth_text == std::format(
+                "{}", awj::encoding_defaults::default_webp_bit_depth)
+          : params.bit_depth_text.empty());
+}
+
+std::array<LinuxParameterParams, 5>& active_linux_parameter_params(
+    LinuxUiState& state) {
+  return state.parameter_preset_index == 0 ? state.builtin_params
+                                           : state.parameter_preset_params;
+}
+
+const std::array<LinuxParameterParams, 5>& active_linux_parameter_params(
+    const LinuxUiState& state) {
+  return state.parameter_preset_index == 0 ? state.builtin_params
+                                           : state.parameter_preset_params;
+}
+
+void store_current_linux_parameter_params(AwjStudio& app, LinuxUiState& state) {
+  const int index = std::clamp(state.last_format_index, 0, 4);
+  auto params = capture_linux_parameter_params(app);
+  const auto format = linux_output_format_from_index(index);
+  if ((format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
+       format == awj::OutputFormat::jxl) && trim_copy(params.speed_text).empty()) {
+    params.speed_text = std::format("{}", awj::default_speed_for(format));
+  }
+  active_linux_parameter_params(state)[static_cast<std::size_t>(index)] =
+      std::move(params);
+}
+
+void apply_linux_format_parameters(AwjStudio& app, LinuxUiState& state,
+                                   int index) {
+  store_current_linux_parameter_params(app, state);
+  state.last_format_index = std::clamp(index, 0, 4);
+  apply_linux_parameter_params(
+      app, active_linux_parameter_params(state)[static_cast<std::size_t>(
+               state.last_format_index)],
+      state.last_format_index);
+}
+
 void push_flag(std::vector<std::wstring>& args, bool enabled,
                std::wstring enabled_arg, std::wstring disabled_arg) {
   args.push_back(enabled ? std::move(enabled_arg) : std::move(disabled_arg));
@@ -7885,69 +8722,262 @@ void push_option(std::vector<std::wstring>& args, std::wstring option,
   }
 }
 
-std::expected<awj::AppConfig, std::string> config_from_ui(const AwjStudio& app) {
+std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
+    const AwjStudio* app, int format_index, const LinuxParameterParams& params) {
   std::vector<std::wstring> args;
-  push_option(args, L"--input", wide_from_shared(app.get_input_path()));
-  push_option(args, L"--output", wide_from_shared(app.get_output_dir()));
-  push_option(args, L"--template", wide_from_shared(app.get_template_text()));
-  push_option(args, L"--format", format_arg(app.get_format_index()));
-  push_option(args, L"--collision", collision_arg(app.get_collision_index()));
+  push_option(args, L"--format", format_arg(format_index));
   args.push_back(L"--no-wic-fallback");
-  push_flag(args, app.get_experimental_encoders(), L"--experimental-encoders",
-            L"--no-experimental-encoders");
-
-  const auto quality = wide_from_shared(app.get_quality_text());
-  const auto visual_quality = wide_from_shared(app.get_visual_quality_text());
+  const auto visual_quality = awj::wide_from_utf8(params.visual_quality_text);
   if (!trim_copy(visual_quality).empty()) {
     push_option(args, L"--visual-quality", visual_quality);
-    push_flag(args, app.get_visual_quality_gpu(), L"--visual-quality-gpu",
-              L"--no-visual-quality-gpu");
-    push_flag(args, app.get_visual_quality_fallback(), L"--visual-quality-fallback",
-              L"--no-visual-quality-fallback");
   } else {
-    push_option(args, L"--quality", quality);
+    push_option(args, L"--quality", awj::wide_from_utf8(params.quality_text));
   }
-
-  push_option(args, L"--threads", wide_from_shared(app.get_threads_text()));
-  push_option(args, L"--memory-limit", memory_arg_from_ui(wide_from_shared(app.get_memory_limit_text())));
-  if (app.get_unlock_max_input_file_bytes()) {
-    args.push_back(L"--unlock-max-input-file-bytes");
+  push_option(args, L"--threads", awj::wide_from_utf8(params.threads_text));
+  push_option(args, L"--memory-limit",
+              memory_arg_from_ui(awj::wide_from_utf8(params.memory_limit_text)));
+  push_option(args, L"--bit-depth", awj::wide_from_utf8(params.bit_depth_text));
+  push_option(args, L"--speed", awj::wide_from_utf8(params.speed_text));
+  push_option(args, L"--image-size-limit", size_limit_arg(params.size_limit_index));
+  if (params.size_limit_index == 2) {
+    push_option(args, L"--max-width", awj::wide_from_utf8(params.max_width_text));
+    push_option(args, L"--max-height", awj::wide_from_utf8(params.max_height_text));
+    push_option(args, L"--max-long-edge", awj::wide_from_utf8(params.max_long_edge_text));
+    push_option(args, L"--max-short-edge", awj::wide_from_utf8(params.max_short_edge_text));
   }
-  push_option(args, L"--bit-depth", wide_from_shared(app.get_bit_depth_text()));
-  push_option(args, L"--speed", wide_from_shared(app.get_speed_text()));
-  push_option(args, L"--image-size-limit", size_limit_arg(app.get_size_limit_index()));
-  if (app.get_size_limit_index() == 2) {
-    push_option(args, L"--max-width", wide_from_shared(app.get_max_width_text()));
-    push_option(args, L"--max-height", wide_from_shared(app.get_max_height_text()));
-    push_option(args, L"--max-long-edge", wide_from_shared(app.get_max_long_edge_text()));
-    push_option(args, L"--max-short-edge", wide_from_shared(app.get_max_short_edge_text()));
-  }
-
-  const int format_index = app.get_format_index();
   if (format_index == 0) {
-    push_option(args, L"--avif-encoder", avif_encoder_arg(app.get_avif_encoder_index()));
-    push_option(args, L"--chroma", chroma_arg(app.get_chroma_index()));
-    push_option(args, L"--alpha", alpha_arg(app.get_alpha_policy_index()));
+    push_option(args, L"--avif-encoder", avif_encoder_arg(params.avif_encoder_index));
+    push_option(args, L"--chroma", chroma_arg(params.chroma_index));
+    push_option(args, L"--alpha", alpha_arg(params.alpha_policy_index));
   } else if (format_index == 3) {
-    push_option(args, L"--chroma", chroma_arg(app.get_chroma_index()));
+    push_option(args, L"--chroma", chroma_arg(params.chroma_index));
     push_option(args, L"--jpegli-progressive-level",
-                std::to_wstring(app.get_jpegli_progressive_index()));
-    push_flag(args, app.get_jpegli_optimize_huffman(),
+                std::to_wstring(params.jpegli_progressive_index));
+    push_flag(args, params.jpegli_optimize_huffman,
               L"--jpegli-optimize-huffman", L"--no-jpegli-optimize-huffman");
-    if (app.get_jpegli_xyb()) {
+    if (params.jpegli_xyb) {
       args.push_back(L"--jpegli-xyb");
     }
   }
-
-  push_flag(args, app.get_strip_metadata(), L"--strip", L"--keep-metadata");
-  push_flag(args, app.get_write_summary(), L"--summary", L"--no-summary");
-  push_flag(args, app.get_write_log(), L"--log", L"--no-log");
+  if (app != nullptr) {
+    push_option(args, L"--input", wide_from_shared(app->get_input_path()));
+    push_option(args, L"--output", wide_from_shared(app->get_output_dir()));
+    push_option(args, L"--template", wide_from_shared(app->get_template_text()));
+    push_option(args, L"--collision", collision_arg(app->get_collision_index()));
+    push_flag(args, app->get_experimental_encoders(), L"--experimental-encoders",
+              L"--no-experimental-encoders");
+    if (!trim_copy(visual_quality).empty()) {
+      push_flag(args, app->get_visual_quality_gpu(), L"--visual-quality-gpu",
+                L"--no-visual-quality-gpu");
+      push_flag(args, app->get_visual_quality_fallback(),
+                L"--visual-quality-fallback", L"--no-visual-quality-fallback");
+    }
+    if (app->get_unlock_max_input_file_bytes()) {
+      args.push_back(L"--unlock-max-input-file-bytes");
+    }
+    push_flag(args, app->get_strip_metadata(), L"--strip", L"--keep-metadata");
+    push_flag(args, app->get_write_summary(), L"--summary", L"--no-summary");
+    push_flag(args, app->get_write_log(), L"--log", L"--no-log");
+  }
 
   auto parsed = awj::parse_arguments(args);
   if (!parsed) {
     return std::unexpected{parsed.error()};
   }
   return parsed->config;
+}
+
+int linux_avif_encoder_index(awj::AvifEncoderMode value) noexcept {
+  switch (value) {
+    case awj::AvifEncoderMode::svt: return 1;
+    case awj::AvifEncoderMode::aom: return 2;
+    case awj::AvifEncoderMode::zenrav1e: return 3;
+    default: return 0;
+  }
+}
+
+int linux_chroma_index(awj::ChromaMode value) noexcept {
+  switch (value) {
+    case awj::ChromaMode::yuv444: return 1;
+    case awj::ChromaMode::yuv422: return 2;
+    case awj::ChromaMode::yuv420: return 3;
+    default: return 0;
+  }
+}
+
+int linux_alpha_index(awj::AlphaModePolicy value) noexcept {
+  switch (value) {
+    case awj::AlphaModePolicy::force: return 0;
+    case awj::AlphaModePolicy::off: return 2;
+    default: return 1;
+  }
+}
+
+LinuxParameterParams linux_parameter_params_from_config(const awj::AppConfig& config) {
+  const int index = std::clamp(static_cast<int>(config.output_format), 0, 4);
+  auto params = default_linux_parameter_params(index);
+  params.quality_text = std::format("{}", config.quality);
+  params.visual_quality_text = config.visual_quality
+                                   ? std::format("{}", *config.visual_quality)
+                                   : std::string{};
+  params.bit_depth_text = config.bit_depth ? std::format("{}", *config.bit_depth)
+                                            : std::string{};
+  if (config.output_format == awj::OutputFormat::avif ||
+      config.output_format == awj::OutputFormat::webp ||
+      config.output_format == awj::OutputFormat::jxl) {
+    params.speed_text = std::format(
+        "{}", config.speed.value_or(awj::default_speed_for(config.output_format)));
+  }
+  params.avif_encoder_index = linux_avif_encoder_index(config.avif_encoder);
+  params.chroma_index = linux_chroma_index(config.chroma_mode);
+  params.alpha_policy_index = linux_alpha_index(config.alpha_policy);
+  params.jpegli_progressive_index = config.jpegli_progressive_level;
+  params.jpegli_optimize_huffman = config.jpegli_optimize_huffman;
+  params.jpegli_xyb = config.jpegli_xyb;
+  params.threads_text = config.max_jobs == awj::default_max_jobs()
+                            ? std::string{}
+                            : std::format("{}", config.max_jobs);
+  if (config.memory_limit_bytes != 0) {
+    params.memory_limit_text = std::format(
+        "{}", (config.memory_limit_bytes + awj::studio_defaults::bytes_per_gib - 1) /
+                  awj::studio_defaults::bytes_per_gib);
+  }
+  switch (config.image_size_limit.mode) {
+    case awj::ImageSizeLimitMode::none: params.size_limit_index = 1; break;
+    case awj::ImageSizeLimitMode::manual: params.size_limit_index = 2; break;
+    default: params.size_limit_index = 0; break;
+  }
+  const auto optional_text = [](const std::optional<int>& value) {
+    return value ? std::format("{}", *value) : std::string{};
+  };
+  params.max_width_text = optional_text(config.image_size_limit.max_width);
+  params.max_height_text = optional_text(config.image_size_limit.max_height);
+  params.max_long_edge_text = optional_text(config.image_size_limit.max_long_edge);
+  params.max_short_edge_text = optional_text(config.image_size_limit.max_short_edge);
+  return params;
+}
+
+std::array<LinuxParameterParams, 5> linux_parameter_params_from_user_preset(
+    const awj::UserPreset& preset) {
+  std::array<LinuxParameterParams, 5> params{};
+  for (int index = 0; index < static_cast<int>(params.size()); ++index) {
+    params[static_cast<std::size_t>(index)] = linux_parameter_params_from_config(
+        awj::config_from_user_preset(preset, linux_output_format_from_index(index)));
+  }
+  return params;
+}
+
+void reload_linux_user_preset_options(AwjStudio& app, LinuxUiState& state) {
+  auto catalog = awj::list_user_presets();
+  if (!catalog) {
+    state.user_presets.clear();
+    state.user_preset_errors = {catalog.error()};
+  } else {
+    state.user_presets = std::move(catalog->presets);
+    state.user_preset_errors = std::move(catalog->errors);
+  }
+  std::vector<ComboOption> options;
+  options.push_back({.text = to_shared("内置默认"), .enabled = true});
+  for (const auto& preset : state.user_presets) {
+    options.push_back({.text = to_shared(preset.name), .enabled = true});
+  }
+  app.set_queue_preset_options(
+      std::make_shared<slint::VectorModel<ComboOption>>(options));
+  app.set_parameter_preset_options(
+      std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
+  if (app.get_queue_preset_index() > static_cast<int>(state.user_presets.size())) {
+    app.set_queue_preset_index(0);
+  }
+  if (state.parameter_preset_index > static_cast<int>(state.user_presets.size())) {
+    state.parameter_preset_index = 0;
+  }
+  app.set_parameter_preset_index(state.parameter_preset_index);
+  app.set_parameter_preset_description(
+      state.parameter_preset_index == 0
+          ? slint::SharedString{}
+          : to_shared(state.user_presets[static_cast<std::size_t>(
+                          state.parameter_preset_index - 1)]
+                          .description));
+  if (!state.user_preset_errors.empty()) {
+    app.set_status_text(to_shared(
+        std::format("发现无效用户预设：{}", state.user_preset_errors.front())));
+  }
+}
+
+void select_linux_parameter_preset(AwjStudio& app, LinuxUiState& state, int index) {
+  store_current_linux_parameter_params(app, state);
+  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()));
+  state.parameter_preset_index = index;
+  if (index > 0) {
+    state.parameter_preset_params = linux_parameter_params_from_user_preset(
+        state.user_presets[static_cast<std::size_t>(index - 1)]);
+  }
+  app.set_parameter_preset_index(index);
+  app.set_parameter_preset_description(
+      index == 0 ? slint::SharedString{}
+                 : to_shared(state.user_presets[static_cast<std::size_t>(index - 1)]
+                                 .description));
+  apply_linux_format_parameters(app, state, app.get_format_index());
+}
+
+std::expected<awj::AppConfig, std::string> config_from_ui(
+    AwjStudio& app, LinuxUiState& state) {
+  store_current_linux_parameter_params(app, state);
+  const int format_index = std::clamp(app.get_queue_format_index(), 0, 4);
+  const int preset_index = app.get_queue_preset_index();
+  LinuxParameterParams params{};
+  if (preset_index == 0) {
+    params = state.builtin_params[static_cast<std::size_t>(format_index)];
+  } else {
+    const int user_index = preset_index - 1;
+    if (user_index < 0 || static_cast<std::size_t>(user_index) >=
+                              state.user_presets.size()) {
+      return std::unexpected{"选中的用户预设已不存在，请重新选择。"};
+    }
+    params = linux_parameter_params_from_config(awj::config_from_user_preset(
+        state.user_presets[static_cast<std::size_t>(user_index)],
+        linux_output_format_from_index(format_index)));
+  }
+  return linux_config_from_parameter_params(&app, format_index, params);
+}
+
+std::expected<awj::UserPreset, std::string> linux_user_preset_from_parameters(
+    std::string name, std::string description,
+    const std::array<LinuxParameterParams, 5>& params) {
+  auto preset = awj::default_user_preset();
+  preset.name = std::move(name);
+  preset.description = std::move(description);
+  for (int index = 0; index < static_cast<int>(params.size()); ++index) {
+    auto config = linux_config_from_parameter_params(
+        nullptr, index, params[static_cast<std::size_t>(index)]);
+    if (!config) {
+      return std::unexpected{std::format("{} 预设参数错误：{}",
+                                         awj::output_format_name(
+                                             linux_output_format_from_index(index)),
+                                         config.error())};
+    }
+    preset.formats[static_cast<std::size_t>(index)] =
+        awj::preset_format_from_config(*config);
+  }
+  return preset;
+}
+
+std::expected<bool, std::string> confirm_linux_preset_overwrite(
+    std::string_view name) {
+  const auto question = shell_quote(std::format("预设“{}”已存在，是否覆盖？", name));
+  if (command_exists("zenity")) {
+    const int status = std::system(
+        std::format("zenity --question --title='AWJ Studio' --text={} >/dev/null 2>&1",
+                    question).c_str());
+    return status == 0;
+  }
+  if (command_exists("kdialog")) {
+    const int status = std::system(
+        std::format("kdialog --title 'AWJ Studio' --yesno {} >/dev/null 2>&1",
+                    question).c_str());
+    return status == 0;
+  }
+  return std::unexpected{"同名预设已存在；请安装 zenity 或 kdialog 以确认覆盖，或改用新名称。"};
 }
 std::string xml_escape(std::string_view text) {
   std::string out;
@@ -8269,6 +9299,8 @@ void initialize_ui(AwjStudio& app) {
   app.set_allow_wic_fallback(false);
   app.set_force_terminate_supported(false);
   app.set_menu_allow_wic_fallback(false);
+  app.set_timestamp_ui_visible(false);
+  app.set_visual_quality_fallback(true);
   app.set_visual_quality_gpu_help_text(to_shared("默认启用 Vulkan 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"));
   app.set_avif_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
   app.set_webp_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::webp))));
@@ -8296,22 +9328,37 @@ int run_studio_ui() {
                               awj::update::Manifest{.schema = 1});
     auto weak = slint::ComponentWeakHandle(app);
     initialize_ui(*app);
-    load_linux_update_config(*state);
+    for (int i = 0; i < static_cast<int>(state->builtin_params.size()); ++i) {
+      state->builtin_params[static_cast<std::size_t>(i)] =
+          default_linux_parameter_params(i);
+      state->parameter_preset_params[static_cast<std::size_t>(i)] =
+          state->builtin_params[static_cast<std::size_t>(i)];
+    }
+    state->last_format_index = 0;
+    apply_linux_parameter_params(*app, state->builtin_params.front(), 0);
+    app->set_queue_format_index(0);
+    app->set_queue_preset_index(0);
+    reload_linux_user_preset_options(*app, *state);
+    for (int i = 0; i < 5; ++i) {
+      state->menu_params[static_cast<std::size_t>(i)] =
+          default_linux_menu_params(i);
+    }
+    load_linux_update_config(*app, *state);
     restore_cached_linux_update_history(*state);
     sync_linux_update_ui(*app, *state);
     load_system_font_options(*app);
-    for (int i = 0; i < 5; ++i) {
-      state->menu_params[static_cast<std::size_t>(i)] = default_linux_menu_params(i);
-    }
     state->menu_format_index = 0;
     apply_linux_menu_params(*app, state->menu_params.front());
     app->set_task_rows(state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
     app->set_update_history(state->update_history_rows);
     app->set_selected_large_image_index(-1);
+    if (linux_changelog_should_open_on_start(*state) &&
+        linux_changelog_visible_for_current_session(*state)) {
+      app->set_selected_page(4);
+    }
 
-    // 与 Windows 分支同一套机制：0 = 中文 msgid 原文，1 = bundled 英文翻译。
-    // Linux 首轮只持久化更新状态；其余 Studio 设置仍保持当前会话语义。
+    // 与 Windows 分支同一套机制：0 = bundled 默认中文 msgid，1 = bundled 英文翻译。
     app->on_language_selection_requested([weak, state](int index) {
       if (auto app = weak.lock()) {
         (*app)->set_language_index(index);
@@ -8327,7 +9374,7 @@ int run_studio_ui() {
       if (auto app = weak.lock()) {
         const auto before = capture_linux_update_state(*state);
         state->update_channel = index == 1 ? "prerelease" : "stable";
-        if (auto saved = persist_linux_update_config(*state); !saved) {
+        if (auto saved = persist_linux_update_config(**app, *state); !saved) {
           restore_linux_update_state(*state, before);
           state->update_status_zh =
               std::format("更新渠道保存失败：{}", saved.error());
@@ -8345,10 +9392,11 @@ int run_studio_ui() {
       if (auto app = weak.lock()) {
         const auto before = capture_linux_update_state(*state);
         state->show_update_changelog = visible;
-        if (!visible && (*app)->get_selected_page() == 4) {
+        if (!linux_changelog_visible_for_current_session(*state) &&
+            (*app)->get_selected_page() == 4) {
           (*app)->set_selected_page(2);
         }
-        if (auto saved = persist_linux_update_config(*state); !saved) {
+        if (auto saved = persist_linux_update_config(**app, *state); !saved) {
           restore_linux_update_state(*state, before);
           state->update_status_zh =
               std::format("更新日志设置保存失败：{}", saved.error());
@@ -8358,25 +9406,180 @@ int run_studio_ui() {
         sync_linux_update_ui(**app, *state);
       }
     });
+    app->on_hide_update_changelog_after_exit_requested(
+        [weak, state](bool enabled) {
+          if (auto app = weak.lock()) {
+            const auto before = capture_linux_update_state(*state);
+            state->hide_update_changelog_after_exit = enabled;
+            if (auto saved = persist_linux_update_config(**app, *state); !saved) {
+              restore_linux_update_state(*state, before);
+              state->update_status_zh =
+                  std::format("更新日志设置保存失败：{}", saved.error());
+              state->update_status_en =
+                  "The changelog setting could not be saved.";
+            }
+            sync_linux_update_ui(**app, *state);
+          }
+        });
+    app->on_show_update_changelog_after_update_requested(
+        [weak, state](bool enabled) {
+          if (auto app = weak.lock()) {
+            const auto before = capture_linux_update_state(*state);
+            state->show_update_changelog_after_update = enabled;
+            if (auto saved = persist_linux_update_config(**app, *state); !saved) {
+              restore_linux_update_state(*state, before);
+              state->update_status_zh =
+                  std::format("更新日志设置保存失败：{}", saved.error());
+              state->update_status_en =
+                  "The changelog setting could not be saved.";
+            }
+            sync_linux_update_ui(**app, *state);
+          }
+        });
     app->on_version_clicked([weak, state] {
       if (auto app = weak.lock()) {
-        auto url = linux_pending_update_is_newer(*state)
-                       ? state->pending_update_release_url
-                       : std::format(
-                             "https://github.com/Dominic485649/AWJimage/releases/tag/{}",
-                             AWJ_BUILD_VERSION);
-        if (auto opened = open_linux_url(std::move(url)); !opened) {
-          state->update_status_zh = std::format("无法打开更新页面：{}", opened.error());
-          state->update_status_en = "The release page could not be opened.";
+        if (!linux_pending_update_is_newer(*state)) {
+          const auto url = std::format(
+              "https://github.com/Dominic485649/AWJimage/releases/tag/{}",
+              AWJ_BUILD_VERSION);
+          if (auto opened = open_linux_url(url); !opened) {
+            state->update_status_zh =
+                std::format("无法打开更新页面：{}", opened.error());
+            state->update_status_en = "The release page could not be opened.";
+            sync_linux_update_ui(**app, *state);
+          }
+          return;
+        }
+        if ((*app)->get_running()) {
+          state->update_status_zh = "编码任务运行时禁止更新；请先完成或取消任务。";
+          state->update_status_en =
+              "Finish or cancel the current encoding task before updating.";
           sync_linux_update_ui(**app, *state);
+          return;
+        }
+        if (state->update_check_active) {
+          state->update_status_zh = "更新检查或下载正在进行中。";
+          state->update_status_en = "An update operation is already running.";
+          sync_linux_update_ui(**app, *state);
+          return;
+        }
+        if (state->update_worker.joinable()) state->update_worker.join();
+        const auto requested_version = state->pending_update_version;
+        const auto release_url = state->pending_update_release_url;
+        const auto preference = linux_update_preference(*state);
+        const auto sequence = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, state->last_verified_manifest_v2_sequence));
+        state->update_check_active = true;
+        state->update_status_zh = "正在重新验签并下载更新…";
+        state->update_status_en = "Verifying and downloading the update...";
+        (*app)->set_update_checking(true);
+        sync_linux_update_ui(**app, *state);
+        state->update_worker = std::jthread(
+            [weak, state, requested_version, release_url, preference,
+             sequence](std::stop_token token) {
+              auto staged = awj::update::stage_and_launch_linux_update(
+                  requested_version, preference, sequence, token);
+              static_cast<void>(slint::invoke_from_event_loop(
+                  [weak, state, release_url, staged = std::move(staged)]() mutable {
+                    auto app = weak.lock();
+                    if (!app) return;
+                    state->update_check_active = false;
+                    (*app)->set_update_checking(false);
+                    if (!staged) {
+                      state->update_status_zh =
+                          std::format("更新失败：{}", staged.error());
+                      state->update_status_en = "The update could not be installed.";
+                      sync_linux_update_ui(**app, *state);
+                      if (staged.error().starts_with("INSTALL_DIR_NOT_WRITABLE:")) {
+                        (void)open_linux_url(release_url);
+                      }
+                      return;
+                    }
+                    state->update_status_zh = "更新 helper 已启动，正在关闭当前版本…";
+                    state->update_status_en =
+                        "The update helper is ready; closing this version...";
+                    sync_linux_update_ui(**app, *state);
+                    (*app)->window().hide();
+                  }));
+            });
+      }
+    });
+    app->on_format_defaults_requested([weak, state](int index) {
+      if (auto app = weak.lock()) {
+        if (!(*app)->get_running()) {
+          apply_linux_format_parameters(**app, *state, index);
         }
       }
     });
-    app->on_format_defaults_requested([weak](int index) {
-      if (auto app = weak.lock()) {
-        set_format_quality(**app, index);
+    app->on_parameter_preset_selected([weak, state](int index) {
+      if (auto app = weak.lock(); app && !(*app)->get_running()) {
+        select_linux_parameter_preset(**app, *state, index);
       }
     });
+    app->on_open_preset_editor([weak, state] {
+      if (auto app = weak.lock(); app && !(*app)->get_running()) {
+        store_current_linux_parameter_params(**app, *state);
+        const auto index = state->parameter_preset_index;
+        (*app)->set_preset_editor_name(
+            index == 0 ? slint::SharedString{}
+                       : to_shared(state->user_presets[static_cast<std::size_t>(index - 1)]
+                                       .name));
+        (*app)->set_preset_editor_description(
+            index == 0 ? slint::SharedString{}
+                       : to_shared(state->user_presets[static_cast<std::size_t>(index - 1)]
+                                       .description));
+        (*app)->set_preset_editor_error({});
+        (*app)->set_preset_editor_open(true);
+      }
+    });
+    app->on_cancel_preset_editor([weak] {
+      if (auto app = weak.lock()) {
+        (*app)->set_preset_editor_open(false);
+        (*app)->set_preset_editor_error({});
+      }
+    });
+    app->on_save_parameter_preset(
+        [weak, state](slint::SharedString name, slint::SharedString description) {
+          auto app = weak.lock();
+          if (!app || (*app)->get_running()) return;
+          store_current_linux_parameter_params(**app, *state);
+          auto preset = linux_user_preset_from_parameters(
+              shared_to_string(name), shared_to_string(description),
+              active_linux_parameter_params(*state));
+          if (!preset) {
+            (*app)->set_preset_editor_error(to_shared(preset.error()));
+            return;
+          }
+          auto saved = awj::save_user_preset(*preset, false);
+          if (!saved && saved.error() == "同名预设已存在；请确认覆盖。") {
+            auto confirmed = confirm_linux_preset_overwrite(preset->name);
+            if (!confirmed) {
+              (*app)->set_preset_editor_error(to_shared(confirmed.error()));
+              return;
+            }
+            if (!*confirmed) {
+              (*app)->set_preset_editor_error(to_shared("已取消覆盖同名预设。"));
+              return;
+            }
+            saved = awj::save_user_preset(*preset, true);
+          }
+          if (!saved) {
+            (*app)->set_preset_editor_error(to_shared(saved.error()));
+            return;
+          }
+          reload_linux_user_preset_options(**app, *state);
+          const auto found = std::ranges::find(
+              state->user_presets, preset->name, &awj::UserPreset::name);
+          if (found != state->user_presets.end()) {
+            select_linux_parameter_preset(
+                **app, *state,
+                static_cast<int>(std::distance(state->user_presets.begin(), found)) +
+                    1);
+          }
+          (*app)->set_preset_editor_open(false);
+          (*app)->set_preset_editor_error({});
+          (*app)->set_status_text(to_shared("用户预设已保存。"));
+        });
     app->on_clear_tasks([weak, state] {
       if (auto app = weak.lock()) {
         if ((*app)->get_running()) {
@@ -8385,34 +9588,78 @@ int run_studio_ui() {
         }
         state->task_rows->set_vector({});
         state->failed_paths.clear();
+        state->dropped_input_paths.clear();
         refresh_linux_queue_counts(**app, state->task_rows);
         (*app)->set_selected_queue_index(-1);
         (*app)->set_progress(0.0f);
         (*app)->set_status_text(to_shared("已清空状态。"));
       }
     });
-    app->on_browse_input([weak] {
+    app->on_browse_input([weak, state] {
       if (auto app = weak.lock()) {
         auto selected = choose_path((*app)->get_input_mode_index() == 1);
         if (!selected) {
           (*app)->set_status_text(to_shared(selected.error()));
           return;
         }
+        state->dropped_input_paths = {*selected};
         set_input_path_preserving_output(**app, *selected);
         (*app)->set_status_text(to_shared("已选择输入路径。"));
       }
     });
-    app->on_input_path_accepted([weak](slint::SharedString text) {
+    app->on_input_path_accepted([weak, state](slint::SharedString text) {
       if (auto app = weak.lock()) {
-        const auto value = trim_copy(shared_to_string(text));
-        if (value.empty()) {
-          (*app)->set_status_text(to_shared("请输入图片文件或文件夹路径。"));
+        const auto path = awj::normalize_path_argument(
+            awj::wide_from_utf8(shared_to_string(text)), "输入路径");
+        if (!path) {
+          (*app)->set_status_text(to_shared(path.error()));
           return;
         }
-        set_input_path_preserving_output(**app, fs::path{value});
+        state->dropped_input_paths = {*path};
+        set_input_path_preserving_output(**app, *path);
         (*app)->set_status_text(to_shared("已更新输入路径。"));
       }
     });
+    app->on_input_path_dropped(
+        [weak, state](slint::language::DropEvent event) {
+          if (auto app = weak.lock()) {
+            if ((*app)->get_running()) {
+              (*app)->set_status_text(to_shared("当前任务正在运行，无法添加队列。"));
+              return;
+            }
+            const auto text = event.data.plain_text();
+            if (!text) {
+              (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
+              return;
+            }
+            const auto paths = native_drop_paths(*text);
+            if (paths.empty()) {
+              (*app)->set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
+              return;
+            }
+            for (const auto& raw : paths) {
+              const auto path = awj::normalize_path_argument(
+                  awj::wide_from_utf8(raw), "拖入输入路径");
+              if (!path) {
+                (*app)->set_status_text(to_shared(path.error()));
+                return;
+              }
+              std::error_code ec;
+              if (!std::filesystem::exists(*path, ec) || ec) {
+                (*app)->set_status_text(to_shared("拖入的输入目标不存在或无法访问。"));
+                return;
+              }
+              if (std::ranges::find(state->dropped_input_paths, *path) ==
+                  state->dropped_input_paths.end()) {
+                state->dropped_input_paths.push_back(*path);
+              }
+              set_input_path_preserving_output(**app, *path);
+            }
+            (*app)->set_status_text(to_shared(std::format(
+                "已加入 {} 个拖入输入目标。", state->dropped_input_paths.size())));
+          }
+        });
+
     app->on_browse_output([weak] {
       if (auto app = weak.lock()) {
         auto selected = choose_path(true);
@@ -8435,6 +9682,61 @@ int run_studio_ui() {
         }
       }
     });
+    app->on_output_path_accepted([weak](slint::SharedString text) {
+      if (auto app = weak.lock()) {
+        const auto raw = shared_to_string(text);
+        if (trim_copy(raw).empty()) {
+          (*app)->set_output_dir({});
+          return;
+        }
+        const auto path = awj::normalize_path_argument(
+            awj::wide_from_utf8(raw), "输出目录");
+        if (!path) {
+          (*app)->set_status_text(to_shared(path.error()));
+          return;
+        }
+        (*app)->set_output_dir(to_shared(awj::path_to_utf8(*path)));
+      }
+    });
+    app->on_output_path_dropped(
+        [weak](slint::language::DropEvent event) {
+          if (auto app = weak.lock()) {
+            if ((*app)->get_running()) {
+              (*app)->set_status_text(to_shared("当前任务正在运行，无法修改输出目录。"));
+              return;
+            }
+            const auto text = event.data.plain_text();
+            if (!text) {
+              (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
+              return;
+            }
+            const auto paths = native_drop_paths(*text);
+            if (paths.size() != 1) {
+              (*app)->set_status_text(to_shared("输出目录一次只能拖入一个文件或文件夹。"));
+              return;
+            }
+            const auto path = awj::normalize_path_argument(
+                awj::wide_from_utf8(paths.front()), "拖入输出目录");
+            if (!path) {
+              (*app)->set_status_text(to_shared(path.error()));
+              return;
+            }
+            std::error_code ec;
+            if (!std::filesystem::exists(*path, ec) || ec) {
+              (*app)->set_status_text(to_shared("拖入的输出目标不存在或无法访问。"));
+              return;
+            }
+            const auto output = std::filesystem::is_directory(*path, ec) && !ec
+                                    ? *path
+                                    : path->parent_path();
+            if (output.empty()) {
+              (*app)->set_status_text(to_shared("无法从拖入目标确定输出目录。"));
+              return;
+            }
+            (*app)->set_output_dir(to_shared(awj::path_to_utf8(output)));
+            (*app)->set_status_text(to_shared("已更新输出目录。"));
+          }
+        });
     app->on_menu_format_selected([weak, state](int index) {
       if (auto app = weak.lock()) {
         store_linux_menu_params(**app, *state);
@@ -8447,8 +9749,9 @@ int run_studio_ui() {
       if (auto app = weak.lock()) {
         store_linux_menu_params(**app, *state);
         auto valid = validate_linux_menu_params(state->menu_params);
+        if (valid) valid = persist_linux_update_config(**app, *state);
         (*app)->set_context_menu_status(to_shared(
-            valid ? "菜单参数已保存到当前会话；重新安装菜单后生效。" : valid.error()));
+            valid ? "菜单参数已保存；重新安装菜单后生效。" : valid.error()));
         (*app)->set_status_text((*app)->get_context_menu_status());
       }
     });
@@ -8458,6 +9761,11 @@ int run_studio_ui() {
         if (auto valid = validate_linux_menu_params(state->menu_params); !valid) {
           (*app)->set_context_menu_status(to_shared(valid.error()));
           (*app)->set_status_text(to_shared(valid.error()));
+          return;
+        }
+        if (auto saved = persist_linux_update_config(**app, *state); !saved) {
+          (*app)->set_context_menu_status(to_shared(saved.error()));
+          (*app)->set_status_text(to_shared(saved.error()));
           return;
         }
         auto result = write_linux_file_manager_actions(state->menu_params);
@@ -8494,7 +9802,7 @@ int run_studio_ui() {
         (*app)->set_status_text(to_shared("队列中没有失败项。"));
         return;
       }
-      auto cfg = config_from_ui(**app);
+      auto cfg = config_from_ui(**app, *state);
       if (!cfg) {
         (*app)->set_status_text(
             to_shared(std::format("配置错误：{}", cfg.error())));
@@ -8621,7 +9929,7 @@ int run_studio_ui() {
         (*app)->set_status_text(to_shared(std::format("{} 不可用", action)));
         return;
       }
-      auto cfg = config_from_ui(**app);
+      auto cfg = config_from_ui(**app, *state);
       if (!cfg) {
         (*app)->set_status_text(to_shared(std::format("配置错误：{}", cfg.error())));
         return;
@@ -8678,7 +9986,7 @@ int run_studio_ui() {
         (*app)->set_status_text(to_shared("正在停止当前任务…"));
         return;
       }
-      auto cfg = config_from_ui(**app);
+      auto cfg = config_from_ui(**app, *state);
       if (!cfg) {
         (*app)->set_status_text(to_shared(std::format("配置错误：{}", cfg.error())));
         return;
@@ -8694,7 +10002,9 @@ int run_studio_ui() {
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared("正在转换…"));
       auto rows = state->task_rows;
-      state->worker = std::jthread([weak, state, rows, cfg = std::move(*cfg)](std::stop_token token) mutable {
+      auto input_paths = state->dropped_input_paths;
+      state->worker = std::jthread([weak, state, rows, cfg = std::move(*cfg),
+                                    input_paths = std::move(input_paths)](std::stop_token token) mutable {
         auto progress = [weak, state, rows](const awj::BatchProgress& event) {
           slint::invoke_from_event_loop([weak, state, rows, event] {
             if (auto app = weak.lock()) {
@@ -8725,7 +10035,7 @@ int run_studio_ui() {
             }
           });
         };
-        auto summary = awj::run_batch(cfg, progress, token);
+        auto summary = awj::run_batch(cfg, progress, token, input_paths);
         slint::invoke_from_event_loop([weak, summary = std::move(summary)] {
           if (auto app = weak.lock()) {
             (*app)->set_running(false);
@@ -8754,6 +10064,20 @@ int run_studio_ui() {
              .now = std::chrono::system_clock::now()})) {
       start_linux_update_check(weak, state);
     }
+    app->window().on_close_requested([weak, state] {
+      state->worker.request_stop();
+      state->update_worker.request_stop();
+      if (auto app = weak.lock()) {
+        const auto before = capture_linux_update_state(*state);
+        state->last_changelog_exit_version = AWJ_BUILD_VERSION;
+        if (auto saved = persist_linux_update_config(**app, *state); !saved) {
+          restore_linux_update_state(*state, before);
+          (*app)->set_status_text(to_shared(
+              std::format("关闭时保存更新设置失败：{}", saved.error())));
+        }
+      }
+      return slint::CloseRequestResponse::HideWindow;
+    });
     app->run();
     state->worker.request_stop();
     state->update_worker.request_stop();

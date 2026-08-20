@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.4 - 2026-08-21
+
+- Prerelease: fixed changelog cards whose fixed body height clipped and overlapped text; the page now embeds the complete history from the earliest release, retaining the Chinese original for legacy entries without an English translation. The sidebar title remains centered while the version marker and rule move 16 px left.
+- The encoding queue now independently selects AVIF, WebP, JXL, JPGLI, or PNG plus an optional user preset, and snapshots that choice for the whole batch at start. Ordinary queues default to AVIF, keep metadata, and do not preserve Windows creation/modification/access times. The Parameters format switch only edits one of five parameter groups; built-in defaults are not written to root config.
+- Input and output paths accept one complete pair of surrounding double quotes. Native Slint drops accept files and directories regardless of the file/folder selector; output rejects multiple targets. Right-clicking a queue item no longer changes the detail selection.
+- Added executable-adjacent `preset/*.jsonc` user presets with five complete format parameter sets, Unicode-safe names, strict schema validation, default fallback for missing fields, and a full-window name/description save overlay.
+- `AWJ.jsonc` now white-lists settings, context-menu parameters, and update-security state; ordinary queues, paths, window state, and ordinary parameters are not persisted. Visual-quality fallback output defaults on; AVIF's default speed is 5 and an empty speed restores that value.
+- Windows CLI now exposes creation/modification/access timestamp preservation. Times are captured before input read and written only after the output commits; a write failure warns without discarding a valid image. Linux CLI neither lists nor accepts those options.
+- HDR-to-SDR now uses libplacebo's CPU-only spline tone mapping and perceptual gamut mapping. PQ, HLG, and FP16 scRGB follow explicit HDR semantics and target 100-nit BT.709/sRGB SDR while retaining non-color metadata.
+- The updater now uses a signed v2 archive manifest: Windows/Linux download `AWJ_Win.7z` / `AWJ_Linux.7z`, verify every required member's size and SHA-256, and reject traversal, links, extra members, and archive bombs. Windows and writable Linux installs atomically replace, health-check, and roll back.
+- Updated Slint, the vcpkg baseline, and release locks; added the CPU-only libplacebo overlay, libarchive 7z extraction, and their third-party notices.
+
 ## 1.0.3 - 2026-08-19
 
 - Prerelease: fixed the lifetime of the current user's Windows proxy configuration during update requests, keeping manual proxy and PAC/auto-detected results valid for the whole request and safely falling back to direct routing when discovery is unavailable.

@@ -4,6 +4,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cwctype>
+#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <fstream>
@@ -199,11 +200,16 @@ std::expected<ImageBuffer, std::string> make_rgba_image(std::size_t width,
                                                         std::size_t height,
                                                         std::vector<std::byte> rgba,
                                                         AlphaMode alpha_mode,
-                                                        std::string_view context,
-                                                        std::optional<ImageSourceInfo> source_info = {},
-                                                        int bit_depth = 8) {
+                                                         std::string_view context,
+                                                         std::optional<ImageSourceInfo> source_info = {},
+                                                         int bit_depth = 8,
+                                                         SampleRepresentation sample_representation =
+                                                             SampleRepresentation::unorm) {
   if (bit_depth != 8 && bit_depth != 16) {
     return std::unexpected{std::format("{} RGBA bit-depth 不受支持。", context)};
+  }
+  if (sample_representation == SampleRepresentation::ieee_half_float && bit_depth != 16) {
+    return std::unexpected{std::format("{} 浮点 RGBA 必须为 16-bit。", context)};
   }
   const auto stride = checked_rgba_stride(width, context, bit_depth > 8 ? 2 : 1);
   if (!stride) {
@@ -226,6 +232,7 @@ std::expected<ImageBuffer, std::string> make_rgba_image(std::size_t width,
                     .pixel_format = PixelFormat::rgba,
                     .alpha_mode = alpha_mode,
                     .bit_depth = bit_depth,
+                    .sample_representation = sample_representation,
                     .source_info = std::move(source_info)};
   try {
     image.planes.push_back(std::move(plane));
@@ -261,9 +268,14 @@ std::expected<bool, std::string> has_non_opaque_alpha(const ImageBuffer& image,
   }
   if (image.bit_depth == 16) {
     for (std::size_t y = 0; y < image.height; ++y) {
-      const auto* row = reinterpret_cast<const std::uint16_t*>(plane.bytes.data() + y * plane.stride);
       for (std::size_t x = 0; x < image.width; ++x) {
-        if (row[x * 4 + 3] != 65535) {
+        std::uint16_t alpha{};
+        std::memcpy(&alpha, plane.bytes.data() + y * plane.stride +
+                                (x * 4 + 3) * sizeof(alpha), sizeof(alpha));
+        const auto opaque = image.sample_representation == SampleRepresentation::ieee_half_float
+                                ? std::uint16_t{0x3c00}
+                                : std::uint16_t{65535};
+        if (alpha != opaque) {
           return true;
         }
       }

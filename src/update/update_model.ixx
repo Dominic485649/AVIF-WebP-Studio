@@ -134,6 +134,18 @@ struct AssetInfo {
   std::string sha256{};  // 64 位小写十六进制
 };
 
+// v2 归档更新先校验完整 7z，再对其中每一个必需成员逐一校验。成员名属于
+// 签名数据的一部分，提取器会拒绝任何未列出的条目而不是“尽量解包”。
+struct ArchiveMemberInfo {
+  std::string path{};
+  AssetInfo asset{};
+};
+
+struct ArchiveAssetInfo {
+  AssetInfo archive{};
+  std::vector<ArchiveMemberInfo> members{};
+};
+
 struct Changelog {
   std::string zh_cn{};
   std::string en{};
@@ -149,6 +161,8 @@ struct ManifestEntry {
   AssetInfo windows_x64_exe{};
   AssetInfo windows_x64_com{};
   AssetInfo linux_x64{};
+  ArchiveAssetInfo windows_x64_archive{};
+  ArchiveAssetInfo linux_x64_archive{};
   Changelog changelog{};
   // 签名 manifest 可以显式撤销危险版本。这是唯一允许清除待更新状态的安全例外，
   // 见 should_clear_pending_for_revocation。
@@ -174,6 +188,8 @@ struct UpdateCandidate {
   AssetInfo windows_x64_exe{};
   AssetInfo windows_x64_com{};
   AssetInfo linux_x64{};
+  ArchiveAssetInfo windows_x64_archive{};
+  ArchiveAssetInfo linux_x64_archive{};
 };
 
 struct CandidateRequest {
@@ -216,7 +232,9 @@ std::optional<UpdateCandidate> select_candidate(const Manifest& manifest,
                            .changelog = entry.changelog,
                            .windows_x64_exe = entry.windows_x64_exe,
                            .windows_x64_com = entry.windows_x64_com,
-                           .linux_x64 = entry.linux_x64};
+                           .linux_x64 = entry.linux_x64,
+                           .windows_x64_archive = entry.windows_x64_archive,
+                           .linux_x64_archive = entry.linux_x64_archive};
   }
 
   return best;

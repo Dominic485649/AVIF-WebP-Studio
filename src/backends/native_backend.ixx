@@ -6,6 +6,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -37,6 +38,7 @@ import awj.core;
 import awj.decoder_common;
 import awj.decoder_registry;
 import awj.encoding_defaults;
+import awj.hdr_tonemap;
 import awj.image;
 #if AWJ_HAS_JPEGLI
 import awj.jpegli_codec;
@@ -228,6 +230,59 @@ class TempOutputFile {
   const fs::path* path_{};
   bool active_{true};
 };
+
+#ifdef _WIN32
+struct SourceFileTimes {
+  FILETIME creation{};
+  FILETIME modification{};
+  FILETIME access{};
+};
+
+std::expected<SourceFileTimes, std::string> capture_source_file_times(
+    const fs::path& path) {
+  const HANDLE raw_file = CreateFileW(
+      path.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (raw_file == INVALID_HANDLE_VALUE) {
+    return std::unexpected{std::format("无法读取源文件时间 {}: {}",
+                                       display_path_for_user(path),
+                                       win32_error_message(GetLastError()))};
+  }
+  UniqueHandle file{raw_file};
+  SourceFileTimes times{};
+  if (!GetFileTime(file.get(), &times.creation, &times.access,
+                   &times.modification)) {
+    return std::unexpected{std::format("无法读取源文件时间 {}: {}",
+                                       display_path_for_user(path),
+                                       win32_error_message(GetLastError()))};
+  }
+  return times;
+}
+
+std::expected<void, std::string> apply_source_file_times(
+    const fs::path& path, const SourceFileTimes& source,
+    bool preserve_creation, bool preserve_modification, bool preserve_access) {
+  const HANDLE raw_file = CreateFileW(
+      path.c_str(), FILE_WRITE_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (raw_file == INVALID_HANDLE_VALUE) {
+    return std::unexpected{std::format("无法写入输出文件时间 {}: {}",
+                                       display_path_for_user(path),
+                                       win32_error_message(GetLastError()))};
+  }
+  UniqueHandle file{raw_file};
+  if (!SetFileTime(file.get(), preserve_creation ? &source.creation : nullptr,
+                   preserve_access ? &source.access : nullptr,
+                   preserve_modification ? &source.modification : nullptr)) {
+    return std::unexpected{std::format("无法写入输出文件时间 {}: {}",
+                                       display_path_for_user(path),
+                                       win32_error_message(GetLastError()))};
+  }
+  return {};
+}
+#endif
 
 std::expected<void, std::string> clear_transient_file_attributes(const fs::path& path,
                                                                  std::string_view label) {
@@ -601,71 +656,24 @@ bool image_has_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
 }
 
 bool sdr_only_format_conversion_needed(OutputFormat format, const ImageBuffer& image) noexcept {
-  return (format == OutputFormat::webp || format == OutputFormat::jpgli) &&
-         (image.bit_depth > 8 ||
-          (image.source_info && image.source_info->has_hdr_metadata));
-}
-
-bool source_is_bt2020_pq(const ImageBuffer& image) noexcept {
-  return image.source_info &&
-         image.source_info->color_primaries == 9 &&
-         image.source_info->transfer_characteristics == 16;
-}
-
-bool source_is_wic_scrgb_hdr(const ImageBuffer& image) noexcept {
-  return image.source_info &&
-         image.source_info->color_metadata_source == "wic-scrgb-half-bt2020-pq";
-}
-
-double pq_code_to_linear(double code) noexcept {
-  constexpr double source_reference_nits = 80.0;
-  constexpr double pq_max_nits = 10000.0;
-  constexpr double m1 = 2610.0 / 16384.0;
-  constexpr double m2 = 2523.0 / 32.0;
-  constexpr double c1 = 3424.0 / 4096.0;
-  constexpr double c2 = 2413.0 / 128.0;
-  constexpr double c3 = 2392.0 / 128.0;
-  const double v = std::pow(std::clamp(code, 0.0, 1.0), 1.0 / m2);
-  const double y = std::pow(std::max(v - c1, 0.0) / (c2 - c3 * v), 1.0 / m1);
-  return (y * pq_max_nits) / source_reference_nits;
-}
-
-double tone_map_sdr_luma(double linear) noexcept {
-  linear = std::max(0.0, linear);
-  constexpr double knee = 0.75;
-  if (linear <= knee) {
-    return linear;
+  if (format != OutputFormat::webp && format != OutputFormat::jpgli) {
+    return false;
   }
-  const double t = (linear - knee) / (1.0 - knee);
-  return knee + (1.0 - knee) * t / (1.0 + t);
-}
-
-double srgb_encode(double linear) noexcept {
-  linear = std::clamp(linear, 0.0, 1.0);
-  return linear <= 0.0031308 ? linear * 12.92
-                             : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055;
-}
-
-std::uint8_t unorm8_from_unit(double value) noexcept {
-  return static_cast<std::uint8_t>(std::clamp(std::lround(value * 255.0), 0l, 255l));
+  const bool hdr_transfer = image.source_info &&
+                            (image.source_info->transfer_characteristics == 16 ||
+                             image.source_info->transfer_characteristics == 18);
+  return image.bit_depth > 8 || image.sample_representation == SampleRepresentation::ieee_half_float ||
+         hdr_transfer || (image.source_info && image.source_info->has_hdr_metadata);
 }
 
 std::uint8_t rgba_sample_to_u8(const std::byte* row, std::size_t sample,
-                               int bit_depth) noexcept {
+                                int bit_depth) noexcept {
   if (bit_depth > 8) {
-    const auto* row16 = reinterpret_cast<const std::uint16_t*>(row);
-    return static_cast<std::uint8_t>((static_cast<std::uint32_t>(row16[sample]) + 128u) / 257u);
+    std::uint16_t value{};
+    std::memcpy(&value, row + sample * sizeof(value), sizeof(value));
+    return static_cast<std::uint8_t>((static_cast<std::uint32_t>(value) + 128u) / 257u);
   }
   return std::to_integer<std::uint8_t>(row[sample]);
-}
-
-double rgba_sample_to_unit(const std::byte* row, std::size_t sample,
-                           int bit_depth) noexcept {
-  if (bit_depth > 8) {
-    const auto* row16 = reinterpret_cast<const std::uint16_t*>(row);
-    return static_cast<double>(row16[sample]) / 65535.0;
-  }
-  return static_cast<double>(std::to_integer<std::uint8_t>(row[sample])) / 255.0;
 }
 
 struct SdrImageConversion {
@@ -678,6 +686,20 @@ std::expected<SdrImageConversion, std::string> rgba_to_rgba8_for_sdr_only_format
   if (image.pixel_format != PixelFormat::rgba ||
       (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
     return std::unexpected{"HDR/高位深 -> SDR fallback 需要 RGBA ImageBuffer。"};
+  }
+  auto hdr_signal = hdr::has_explicit_hdr_signal(image);
+  if (!hdr_signal) {
+    return std::unexpected{hdr_signal.error()};
+  }
+  if (*hdr_signal) {
+    auto tone_mapped = hdr::tone_map_to_sdr_srgb(image);
+    if (!tone_mapped) {
+      return std::unexpected{tone_mapped.error()};
+    }
+    return SdrImageConversion{.image = std::move(*tone_mapped), .hdr_tone_mapped = true};
+  }
+  if (image.sample_representation != SampleRepresentation::unorm) {
+    return std::unexpected{"无法将缺少 HDR 标记的浮点 RGBA 当作 SDR 处理。"};
   }
   const auto& plane = image.planes.front();
   const auto stride = decoder_common::checked_rgba_stride(image.width, "HDR -> SDR fallback");
@@ -694,8 +716,6 @@ std::expected<SdrImageConversion, std::string> rgba_to_rgba8_for_sdr_only_format
     return std::unexpected{rgba8.error()};
   }
 
-  const bool hdr_tone_mapped = source_is_bt2020_pq(image);
-  const bool display_referred_hdr = source_is_wic_scrgb_hdr(image);
   auto* out = reinterpret_cast<std::uint8_t*>(rgba8->data());
   const std::size_t input_sample_stride = image.bit_depth > 8 ? sizeof(std::uint16_t) : 1;
   const auto expected_input_stride = decoder_common::checked_rgba_stride(
@@ -712,39 +732,9 @@ std::expected<SdrImageConversion, std::string> rgba_to_rgba8_for_sdr_only_format
     auto* dst = out + y * *stride;
     for (std::size_t x = 0; x < image.width; ++x) {
       const std::size_t sample = x * 4;
-      if (hdr_tone_mapped) {
-        const double r2020 = pq_code_to_linear(rgba_sample_to_unit(src, sample + 0, image.bit_depth));
-        const double g2020 = pq_code_to_linear(rgba_sample_to_unit(src, sample + 1, image.bit_depth));
-        const double b2020 = pq_code_to_linear(rgba_sample_to_unit(src, sample + 2, image.bit_depth));
-        const double x_xyz = 0.63695804830129 * r2020 + 0.14461690358621 * g2020 + 0.16888097516417 * b2020;
-        const double y_xyz = 0.26270021201127 * r2020 + 0.67799807151887 * g2020 + 0.05930171646986 * b2020;
-        const double z_xyz = 0.02807269304909 * g2020 + 1.06098505771079 * b2020;
-        double sr = 3.24096994190452 * x_xyz - 1.53738317757009 * y_xyz - 0.49861076029300 * z_xyz;
-        double sg = -0.96924363628087 * x_xyz + 1.87596750150772 * y_xyz + 0.04155505740718 * z_xyz;
-        double sb = 0.05563007969699 * x_xyz - 0.20397695888897 * y_xyz + 1.05697151424288 * z_xyz;
-        const double luma = 0.21263900587151 * std::max(0.0, sr) +
-                            0.71516867876776 * std::max(0.0, sg) +
-                            0.07219231536073 * std::max(0.0, sb);
-        if (luma > 0.000001) {
-          const double scale = tone_map_sdr_luma(luma) / luma;
-          sr *= scale;
-          sg *= scale;
-          sb *= scale;
-        }
-        if (display_referred_hdr) {
-          dst[sample + 0] = unorm8_from_unit(sr);
-          dst[sample + 1] = unorm8_from_unit(sg);
-          dst[sample + 2] = unorm8_from_unit(sb);
-        } else {
-          dst[sample + 0] = unorm8_from_unit(srgb_encode(sr));
-          dst[sample + 1] = unorm8_from_unit(srgb_encode(sg));
-          dst[sample + 2] = unorm8_from_unit(srgb_encode(sb));
-        }
-      } else {
-        dst[sample + 0] = rgba_sample_to_u8(src, sample + 0, image.bit_depth);
-        dst[sample + 1] = rgba_sample_to_u8(src, sample + 1, image.bit_depth);
-        dst[sample + 2] = rgba_sample_to_u8(src, sample + 2, image.bit_depth);
-      }
+      dst[sample + 0] = rgba_sample_to_u8(src, sample + 0, image.bit_depth);
+      dst[sample + 1] = rgba_sample_to_u8(src, sample + 1, image.bit_depth);
+      dst[sample + 2] = rgba_sample_to_u8(src, sample + 2, image.bit_depth);
       dst[sample + 3] = rgba_sample_to_u8(src, sample + 3, image.bit_depth);
     }
   }
@@ -753,25 +743,18 @@ std::expected<SdrImageConversion, std::string> rgba_to_rgba8_for_sdr_only_format
                               .bit_depth = 8,
                               .color_primaries = 1,
                               .transfer_characteristics = 13,
-                              .matrix_coefficients = 0,
-                              .color_range = 1,
-                              .has_hdr_metadata = false,
-                              .color_metadata_source = hdr_tone_mapped
-                                                         ? (display_referred_hdr ? "hdr-sdr-display" : "hdr-sdr-srgb")
-                                                         : "high-bit-depth-sdr"};
+                               .matrix_coefficients = 0,
+                               .color_range = 1,
+                               .has_hdr_metadata = false,
+                               .color_metadata_source = "high-bit-depth-sdr"};
   auto fallback = decoder_common::make_rgba_image(
       image.width, image.height, std::move(*rgba8), image.alpha_mode,
       "HDR -> SDR fallback", source_info, 8);
   if (!fallback) {
     return std::unexpected{fallback.error()};
   }
-  for (const auto& block : image.metadata) {
-    if (!hdr_tone_mapped || block.kind != MetadataKind::icc) {
-      fallback->metadata.push_back(block);
-    }
-  }
-  return SdrImageConversion{.image = std::move(*fallback),
-                            .hdr_tone_mapped = hdr_tone_mapped};
+  fallback->metadata = image.metadata;
+  return SdrImageConversion{.image = std::move(*fallback), .hdr_tone_mapped = false};
 }
 
 
@@ -852,7 +835,8 @@ std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
   }
   auto resized = decoder_common::make_rgba_image(new_width, new_height, std::move(*out),
                                                  image.alpha_mode, "image size limit",
-                                                 image.source_info, image.bit_depth);
+                                                 image.source_info, image.bit_depth,
+                                                 image.sample_representation);
   if (!resized) {
     return std::unexpected{resized.error()};
   }
@@ -1858,7 +1842,7 @@ class NativeBackend final {
 
   EncodeResult encode(const ImageFile& image,
                       std::stop_token stop_token = {}) const {
-    return encode_with_overrides(image, EncodeOverrides{}, stop_token);
+    return encode_with_requested_file_times(image, EncodeOverrides{}, stop_token);
   }
 
   EncodeResult encode_avif_grid(const ImageFile& image,
@@ -1867,14 +1851,14 @@ class NativeBackend final {
     EncodeOverrides overrides{};
     overrides.avif_encoder = AvifEncoderMode::aom;
     overrides.avif_grid_plan = std::move(plan);
-    return encode_with_overrides(image, std::move(overrides), stop_token);
+    return encode_with_requested_file_times(image, std::move(overrides), stop_token);
   }
 
   EncodeResult encode_avif_zenrav1e(const ImageFile& image,
                                     std::stop_token stop_token = {}) const {
     EncodeOverrides overrides{};
     overrides.avif_encoder = AvifEncoderMode::zenrav1e;
-    return encode_with_overrides(image, std::move(overrides), stop_token);
+    return encode_with_requested_file_times(image, std::move(overrides), stop_token);
   }
 
  private:
@@ -1946,6 +1930,58 @@ class NativeBackend final {
     result.processed = true;
     result.message = "任务已取消。";
     return true;
+  }
+
+  void append_success_warning(EncodeResult& result, std::string warning) const {
+    if (warning.empty()) {
+      return;
+    }
+    result.message = result.message.empty() || result.message == "OK"
+                         ? std::move(warning)
+                         : std::format("{}；{}", result.message, warning);
+    try {
+      logger_.warn(std::format("native encode warning: item={:04} {}",
+                               result.index + 1, result.message));
+    } catch (...) {
+    }
+  }
+
+  EncodeResult encode_with_requested_file_times(
+      const ImageFile& image, EncodeOverrides overrides,
+      std::stop_token stop_token) const {
+#ifdef _WIN32
+    const bool preserve_any_time = cfg_.preserve_creation_time ||
+                                   cfg_.preserve_modification_time ||
+                                   cfg_.preserve_access_time;
+    std::optional<native_backend_detail::SourceFileTimes> source_times;
+    std::string time_warning;
+    if (preserve_any_time) {
+      auto captured = native_backend_detail::capture_source_file_times(image.path);
+      if (captured) {
+        source_times = *captured;
+      } else {
+        time_warning = std::format("保留文件时间失败：{}", captured.error());
+      }
+    }
+    auto result = encode_with_overrides(image, std::move(overrides), stop_token);
+    if (!result.ok || result.skipped || !preserve_any_time) {
+      return result;
+    }
+    if (!time_warning.empty()) {
+      append_success_warning(result, std::move(time_warning));
+      return result;
+    }
+    if (auto applied = native_backend_detail::apply_source_file_times(
+            result.output_path, *source_times, cfg_.preserve_creation_time,
+            cfg_.preserve_modification_time, cfg_.preserve_access_time);
+        !applied) {
+      append_success_warning(result,
+                             std::format("保留文件时间失败：{}", applied.error()));
+    }
+    return result;
+#else
+    return encode_with_overrides(image, std::move(overrides), stop_token);
+#endif
   }
 
   [[nodiscard]] std::optional<EncodeResult> try_avif_lossless_passthrough(
@@ -2440,6 +2476,7 @@ class NativeBackend final {
     auto effective_settings = settings;
     const ImageBuffer* effective_image = &decoded.image;
     std::optional<native_backend_detail::SdrImageConversion> sdr_fallback;
+    std::optional<ImageBuffer> materialized_scrgb_hdr;
     if (native_backend_detail::sdr_only_format_conversion_needed(cfg_.output_format,
                                                                  decoded.image)) {
       auto converted = native_backend_detail::rgba_to_rgba8_for_sdr_only_format(decoded.image);
@@ -2468,6 +2505,23 @@ class NativeBackend final {
               "目标格式不支持源 HDR 元数据，已按 SDR 缩减位深";
         }
       }
+    } else if (decoded.image.sample_representation == SampleRepresentation::ieee_half_float) {
+      auto materialized = hdr::materialize_scrgb_as_hdr10(decoded.image);
+      if (!materialized) {
+        return std::unexpected{materialized.error()};
+      }
+      materialized_scrgb_hdr = std::move(*materialized);
+      effective_image = &*materialized_scrgb_hdr;
+      effective_settings.bit_depth = 16;
+      effective_settings.applied_color_primaries = 9;
+      effective_settings.applied_transfer_characteristics = 16;
+      effective_settings.applied_matrix_coefficients = 9;
+      effective_settings.applied_color_range = 1;
+      effective_settings.applied_icc = "stripped-scrgb-hdr";
+      effective_settings.applied_hdr_metadata = "scrgb-to-hdr";
+      effective_settings.color_metadata_source = "scrgb-linear-to-bt2020-pq";
+      effective_settings.encoder_fallback_reason = "scRGB -> BT.2020/PQ";
+      effective_settings.color_reason = "scRGB FP16 仅在 HDR 输出阶段转换为 BT.2020/PQ";
     }
     const bool use_svtav1hdr = cfg_.output_format == OutputFormat::avif &&
                                effective_settings.avif_encoder == AvifEncoderMode::svt;

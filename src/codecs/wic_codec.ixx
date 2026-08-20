@@ -183,65 +183,6 @@ bool is_rgba_half_format(const WICPixelFormatGUID& format) noexcept {
   return IsEqualGUID(format, GUID_WICPixelFormat64bppRGBAHalf) != FALSE;
 }
 
-float half_to_float(std::uint16_t bits) noexcept {
-  const std::uint32_t sign = (bits >> 15) & 1u;
-  const std::uint32_t exponent = (bits >> 10) & 0x1fu;
-  const std::uint32_t mantissa = bits & 0x03ffu;
-  const double s = sign ? -1.0 : 1.0;
-  if (exponent == 0) {
-    return static_cast<float>(s * std::ldexp(static_cast<double>(mantissa), -24));
-  }
-  if (exponent == 31) {
-    return sign ? -std::numeric_limits<float>::infinity()
-                : std::numeric_limits<float>::infinity();
-  }
-  return static_cast<float>(s * std::ldexp(1.0 + static_cast<double>(mantissa) / 1024.0,
-                                          static_cast<int>(exponent) - 15));
-}
-
-std::uint16_t pq_code_from_linear(double linear) noexcept {
-  constexpr double source_reference_nits = 80.0;
-  constexpr double pq_max_nits = 10000.0;
-  constexpr double m1 = 2610.0 / 16384.0;
-  constexpr double m2 = 2523.0 / 32.0;
-  constexpr double c1 = 3424.0 / 4096.0;
-  constexpr double c2 = 2413.0 / 128.0;
-  constexpr double c3 = 2392.0 / 128.0;
-  const double nits = std::clamp(linear * source_reference_nits, 0.0, pq_max_nits);
-  const double y = std::pow(nits / pq_max_nits, m1);
-  const double pq = std::pow((c1 + c2 * y) / (1.0 + c3 * y), m2);
-  return static_cast<std::uint16_t>(std::clamp(std::lround(pq * 65535.0), 0l, 65535l));
-}
-
-std::expected<void, std::string> convert_scrgb_half_to_bt2020_pq(
-    std::vector<std::byte>& pixels, UINT width, UINT height, std::size_t stride) {
-  if (stride < static_cast<std::size_t>(width) * 4u * sizeof(std::uint16_t)) {
-    return std::unexpected{"WIC scRGB half stride 无效。"};
-  }
-  for (UINT y = 0; y < height; ++y) {
-    auto* row = reinterpret_cast<std::uint16_t*>(pixels.data() + static_cast<std::size_t>(y) * stride);
-    for (UINT x = 0; x < width; ++x) {
-      auto* px = row + static_cast<std::size_t>(x) * 4u;
-      const double sr = half_to_float(px[0]);
-      const double sg = half_to_float(px[1]);
-      const double sb = half_to_float(px[2]);
-      const double alpha = std::clamp(static_cast<double>(half_to_float(px[3])), 0.0, 1.0);
-      // scRGB is linear sRGB. Convert D65 linear sRGB -> XYZ -> BT.2020 before PQ coding.
-      const double x_xyz = 0.41239079926595 * sr + 0.35758433938388 * sg + 0.18048078840183 * sb;
-      const double y_xyz = 0.21263900587151 * sr + 0.71516867876776 * sg + 0.07219231536073 * sb;
-      const double z_xyz = 0.01933081871559 * sr + 0.11919477979463 * sg + 0.95053215224966 * sb;
-      const double r2020 = 1.71665118797127 * x_xyz - 0.35567078377639 * y_xyz - 0.25336628137366 * z_xyz;
-      const double g2020 = -0.66668435183249 * x_xyz + 1.61648123663494 * y_xyz + 0.01576854581391 * z_xyz;
-      const double b2020 = 0.01763985744531 * x_xyz - 0.04277061325781 * y_xyz + 0.94210312123547 * z_xyz;
-      px[0] = pq_code_from_linear(r2020);
-      px[1] = pq_code_from_linear(g2020);
-      px[2] = pq_code_from_linear(b2020);
-      px[3] = static_cast<std::uint16_t>(std::clamp(std::lround(alpha * 65535.0), 0l, 65535l));
-    }
-  }
-  return {};
-}
-
 struct PixelFormatDetails {
   ImageSourceInfo source_info{};
   std::optional<bool> supports_transparency{};
@@ -483,13 +424,6 @@ class WicImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("WIC 转换 RGBA 失败: {}", wic_detail::hresult_message(hr))};
       }
 
-      if (wants_high_depth && output_bit_depth == 16) {
-        output_source_info.has_hdr_metadata = true;
-        if (output_source_info.color_metadata_source.empty()) {
-          output_source_info.color_metadata_source = "wic-high-bit-depth";
-        }
-      }
-
       const auto stride = decoder_common::checked_rgba_stride(
           width, "WIC decoder", output_bit_depth > 8 ? 2 : 1);
       if (!stride) {
@@ -513,27 +447,23 @@ class WicImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("WIC 复制像素失败: {}", wic_detail::hresult_message(hr))};
       }
 
-      const bool converted_sc_rgb_hdr = source_is_rgba_half && output_bit_depth == 16;
-      if (converted_sc_rgb_hdr) {
-        if (auto converted = wic_detail::convert_scrgb_half_to_bt2020_pq(*rgba, width, height, *stride);
-            !converted) {
-          return std::unexpected{converted.error()};
-        }
+      const bool retained_scrgb_half = source_is_rgba_half && output_bit_depth == 16;
+      if (retained_scrgb_half) {
         output_source_info.pixel_format = PixelFormat::rgba;
         output_source_info.bit_depth = 16;
-        output_source_info.color_primaries = 9;
-        output_source_info.transfer_characteristics = 16;
-        output_source_info.matrix_coefficients = 9;
+        output_source_info.color_primaries = 1;
+        output_source_info.transfer_characteristics = 8;
+        output_source_info.matrix_coefficients = 0;
         output_source_info.color_range = 1;
         output_source_info.has_hdr_metadata = true;
-        output_source_info.color_metadata_source = "wic-scrgb-half-bt2020-pq";
+        output_source_info.color_metadata_source = "wic-scrgb-half-linear";
       }
 
       const auto alpha_mode = source_details.supports_transparency.value_or(true)
                                   ? AlphaMode::straight
                                   : AlphaMode::none;
-      auto icc_profile = converted_sc_rgb_hdr
-                             ? std::expected<std::vector<std::byte>, std::string>{std::vector<std::byte>{}}
+      auto icc_profile = retained_scrgb_half
+                              ? std::expected<std::vector<std::byte>, std::string>{std::vector<std::byte>{}}
                              : wic_detail::copy_icc_profile(*frame_source->factory,
                                                             *frame_source->frame);
       if (!icc_profile) {
@@ -544,7 +474,10 @@ class WicImageDecoder final : public ImageDecoder {
       }
       auto image = decoder_common::make_rgba_image(width, height, std::move(*rgba), alpha_mode,
                                                    "WIC decoder", output_source_info,
-                                                   output_bit_depth);
+                                                   output_bit_depth,
+                                                   retained_scrgb_half
+                                                       ? SampleRepresentation::ieee_half_float
+                                                       : SampleRepresentation::unorm);
       if (!image) {
         return std::unexpected{image.error()};
       }

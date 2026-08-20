@@ -24,9 +24,6 @@ inline constexpr int max_window_height = 16384;
 inline constexpr std::size_t max_task_rows = 5000;
 inline constexpr std::size_t max_pending_events = 2048;
 
-inline constexpr std::wstring_view drop_bridge_property_name =
-    L"AWJ_DropBridge";
-
 inline constexpr auto queue_double_click_delay = std::chrono::milliseconds{450};
 
 inline constexpr auto theme_refresh_interval = std::chrono::seconds{3};

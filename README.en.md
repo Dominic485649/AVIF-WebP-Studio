@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-1.0.0 release notes: [GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0)
+Current prerelease: [GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4)
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -15,14 +15,14 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
-## 1.0.0 GitHub release archives
+## 1.0.4 GitHub release archives
 
-Download the platform-matched archive from [GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0). The archives deliberately do not mix platform files:
+Download the platform-matched archive from [GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4). 1.0.4 has only these two custom assets, and the archives deliberately do not mix platform binaries:
 
 | Archive | Exact contents | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Linux.7z) | Linux ELF: `AWJ` | Release body |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com` | Release body |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z) | Linux ELF: `AWJ`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
 
 Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2.
 
@@ -72,50 +72,32 @@ Windows release script:
 .\release.ps1 -SkipUpdateManifest
 ```
 
-Versioning is controlled by the root `VERSION` file. A real release must use an Ed25519 seed stored outside the repository and compile the corresponding public key into the client. Never commit the seed, copy it into the output directory, or print it in logs. Release flow:
+> Since 1.0.4, `release.ps1` is Windows-build-only and rejects manifest writes. The cross-platform archive, v2/v1 signing, and GitHub publication procedure is [docs/release.en.md](docs/release.en.md).
 
-```powershell
-Set-Content VERSION "1.0.1"
-.\scripts\Update-VcpkgVersion.ps1
-
-cmake --build build\x64\Release --config Release --target awj_update_manifest_sign
-$PublicKey = (& .\bin\x64\Release\awj_update_manifest_sign.exe `
-    --print-public-key 'E:\AWJ-secrets\update-ed25519-seed.hex').Trim()
-
-git add VERSION vcpkg.json CHANGELOG.md CHANGELOG.en.md
-git commit -m "release: 1.0.1"
-git tag 1.0.1
-
-# Build the Windows assets and create the deterministic signed manifest.
-# Build and validate the Linux AWJ asset first.
-.\release.ps1 `
-  -UpdateManifestSequence 1 `
-  -UpdatePublishedAtUtc '2026-08-09T12:00:00Z' `
-  -MinimumUpdaterVersion '1.0.1' `
-  -UpdatePublicKeyHex $PublicKey `
-  -UpdateSigningSeedFile 'E:\AWJ-secrets\update-ed25519-seed.hex' `
-  -LinuxAssetPath 'D:\release-assets\AWJ'
-
-# Run from bin\x64\Release. Both archives must carry the license and build-provenance files.
-7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
-7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
-7z t ..\..\..\build\release\AWJ_Linux.7z
-7z t ..\..\..\build\release\AWJ_Win.7z
-
-# Verify the listing so the license files are provably present.
-7z l ..\..\..\build\release\AWJ_Linux.7z
-7z l ..\..\..\build\release\AWJ_Win.7z
-```
-
-After uploading the raw `AWJ.exe`, `AWJ.com`, and `AWJ` assets plus both archives, commit the generated `update-manifest.json` and `.sig` to `master`. The script rejects a non-increasing sequence, reused/cross-channel versions, missing bilingual changelogs, a seed that does not match the embedded public key, and Cargo license-inventory drift. Never republish a version already recorded in the manifest with different bytes.
-
-The statically linked third-party libraries require their license texts to travel with the binary, so `LICENSE` and `THIRD_PARTY_NOTICES.txt` belong in the archives rather than the executables alone. `BUILD_INFO.txt` records the version, commit, and dependency versions for reproducibility and audit.
+Versioning is controlled by the root `VERSION` file. A real release must use an Ed25519 seed stored outside the repository and compile the matching public key into the client. Never commit the seed, copy it into the output directory, or print it in logs. The actual 1.0.4+ archive, signing, and GitHub publication steps are maintained in [docs/release.en.md](docs/release.en.md).
 
 ## Automatic updates
 
-1.0.1 is the first release with the complete update foundation, so 1.0.0 users must install it manually once. The client consumes only the repository's static `update-manifest.json`; a candidate is trusted only after the embedded Ed25519 key, monotonic sequence, strict three-part version, host allowlist, declared sizes, and SHA-256 values validate. Cached changelog text is never execution authority. Windows downloads and transactionally replaces `AWJ.exe` and `AWJ.com` as one unit and rolls both back if the new build misses its startup health check. The first Linux implementation only checks and opens the candidate Release page.
+1.0.4 clients accept only the static signed `update-manifest-v2.json`: an independent monotonic sequence and strict version/channel/host checks precede one platform archive download, and every required member's size and SHA-256 is verified. Windows and writable Linux installs stage on the same volume, atomically replace, health-check, and roll back; unwritable Linux installs open the Release page without silent elevation. Cached changelog text is never execution authority.
 
-Use `1.0.2 prerelease` for the first real virtual-machine update test. Stable users must not see it; 1.0.1 users who explicitly enable prereleases should upgrade through the full Windows flow. Do not later promote the same 1.0.2 number to stable; the next stable release must be 1.0.3 or higher. The repository's default CMake configuration embeds the formal public key; the release script still requires `-DAWJ_UPDATE_PUBLIC_KEY_HEX=<64 lowercase hex characters>` explicitly and checks it against the public key derived from the external seed. Builds without a configured key fail closed and refuse online updates.
+Legacy schema-1 `update-manifest.json` remains only for the local Windows 1.0.3→1.0.5 bridge test. 1.0.5 is not a v2 candidate. Stop after that test; do not run updater end-to-end in WSL/VM and do not create 1.0.6.
+
+## CLI
+
+Run `AWJ` with no arguments for Studio; CLI arguments select command-line conversion. Windows may use the sibling `AWJ.com` shim, while Linux runs the single `AWJ` ELF.
+
+```powershell
+AWJ -i '"D:\example.jxr"' -o '"D:\output"' --format avif
+AWJ -i input.png --format webp --preset "My preset" --quality 85
+AWJ -i input.png --preset-file .\preset\my-preset.jsonc --format jxl
+AWJ -i input.png --preserve-creation-time --preserve-modification-time
+```
+
+`-i` / `-o` trim surrounding whitespace and one complete pair of double quotes; empty paths, unmatched quotes, and embedded quotes fail clearly. `-p/--preset <name>` loads a named executable-adjacent `preset/*.jsonc`; `--preset-file <path>` loads a specified JSONC. Without a user preset, AWJ uses current built-in defaults; explicit CLI options always override it regardless of argument order. AVIF default speed is 5.
+
+Windows CLI also offers `--preserve-creation-time`, `--preserve-modification-time`, and `--preserve-access-time`; it writes them only after atomic output commit. A write failure produces an stderr/log warning without discarding valid output. Linux neither lists nor accepts those Windows-only options.
+
+The Studio queue snapshots output format, user preset, metadata removal, and the three Windows timestamp choices at Start. It defaults to AVIF, retaining metadata, and no timestamps. Queue choices are independent from the Parameters editor and context-menu settings; the editor only switches among five format parameter groups, and a user preset must be selected explicitly in the queue.
 
 ## visual_quality GPU metrics
 
@@ -157,7 +139,7 @@ pwsh -NoProfile -File .\scripts\benchmark.ps1 `
   -Mode All
 ```
 
-The current protocol passes no quality, speed, chroma, bit-depth, or memory option to AWJ, so it verifies the true defaults: AOM, quality 70, speed 6, source-aware automatic chroma, automatic at-least-10-bit output, and automatic retention of non-opaque alpha at q70. The strict comparison fixes ffmpeg to AOM QP 23, 10-bit 4:2:0, all-intra, row-mt, and pixel/byte/path ordering. The runner validates actual `summary.csv` settings before recording Job Object process-tree CPU and peak memory.
+The current protocol passes no quality, speed, chroma, bit-depth, or memory option to AWJ, so it verifies the true defaults: AOM, quality 70, speed 5, source-aware automatic chroma, automatic at-least-10-bit output, and automatic retention of non-opaque alpha at q70. The strict comparison fixes ffmpeg to AOM QP 23, 10-bit 4:2:0, all-intra, row-mt, and pixel/byte/path ordering. The runner validates actual `summary.csv` settings before recording Job Object process-tree CPU and peak memory.
 
 The default `All` mode runs both regression and strict comparison; `Regression` runs AWJ only and `Strict` runs the 210 opaque images without ICC/EXIF/XMP against ffmpeg. Non-smoke runs use one warmup and five measured runs per scenario, nearest-rank P95, and a 30-second cooldown. Results go under `build/benchmarks/`; a fastest single run is not a version conclusion.
 
@@ -211,4 +193,6 @@ Windows Explorer multi-selection launches are coalesced into one shell window an
 
 - Chinese migration notes: [docs/cpp-port.md](docs/cpp-port.md)
 - English migration notes: [docs/cpp-port.en.md](docs/cpp-port.en.md)
+- Chinese release procedure: [docs/release.md](docs/release.md)
+- English release procedure: [docs/release.en.md](docs/release.en.md)
 - Changelog (Chinese): [CHANGELOG.md](CHANGELOG.md)

@@ -40,6 +40,13 @@ $MinimumUpdaterVersion = if ($MinimumUpdaterVersion) { $MinimumUpdaterVersion } 
 $VcpkgConfiguration = Get-Content (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
 $VcpkgBaseline = $VcpkgConfiguration.'default-registry'.baseline
 
+# 1.0.4+ updates are signed archive manifests, not a Windows-only raw asset
+# build. Keep this script as the Windows builder; the bounded cross-platform
+# packager owns the only manifest-writing path.
+if (-not $SkipUpdateManifest) {
+    throw "release.ps1 只构建 Windows 资产；请使用 scripts\\package-release.ps1 生成并签名归档 manifest。"
+}
+
 function Remove-RepoDirectory([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
         return
@@ -312,6 +319,8 @@ Ensure-VcpkgManifestPackages $VcpkgRoot $VcpkgTriplet @(
     "giflib",
     "tiff",
     "libraw",
+    "libarchive",
+    "libplacebo",
     "aom",
     "dav1d",
     "libyuv",
@@ -432,6 +441,8 @@ $BuildDate = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
 $AomVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "aom"
 $Dav1dVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "dav1d"
 $LibyuvVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "libyuv"
+$LibarchiveVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "libarchive"
+$LibplaceboVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "libplacebo"
 $FetchContentCommit = {
     param([string]$Name)
     $SourceDir = Join-Path $BuildDir "_deps\$Name-src"
@@ -471,6 +482,8 @@ Vcpkg baseline: $VcpkgBaseline
 AOM: $AomVersion
 dav1d: $Dav1dVersion
 libyuv: $LibyuvVersion
+libarchive: $LibarchiveVersion
+libplacebo: $LibplaceboVersion
 
 FetchContent Dependencies (actual commits):
   svt-av1-hdr: $SvtAv1HdrCommit

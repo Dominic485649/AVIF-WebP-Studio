@@ -1183,5 +1183,67 @@ Common Development and Distribution License 1.0 (CDDL-1.0)
    the subject matter hereof.
 
 -------------------------------------------------------------------------------
+26. libplacebo (CPU colorspace, tone mapping, and gamut mapping subset)
+-------------------------------------------------------------------------------
+
+Website:   https://code.videolan.org/videolan/libplacebo
+Source:    https://github.com/haasn/libplacebo/tree/v7.360.1
+License:   GNU Lesser General Public License, version 2.1 or later
+
+Copyright (C) 2017-2026 the libplacebo developers
+
+AWJ links only the documented CPU colorspace, tone-mapping, and gamut-mapping
+source subset from libplacebo v7.360.1.  The corresponding source, exact
+overlay recipe, version and SHA-512 source archive checksum are available in
+this project's `vcpkg-overlays/libplacebo` directory.  The complete
+LGPL-2.1-or-later license text is shipped as
+`THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt`; libplacebo source
+notices are available from the upstream source URL above. AWJ's complete
+corresponding source is published under AGPL-3.0 at the URL at the top of
+this file.
+
+-------------------------------------------------------------------------------
+27. libarchive (7z archive reader)
+-------------------------------------------------------------------------------
+
+Website:   https://www.libarchive.org/
+Source:    https://github.com/libarchive/libarchive/tree/v3.8.9
+License:   BSD-style; upstream COPYING controls individual source files
+
+Copyright (c) 2003-2018 <author(s)> and individual libarchive contributors.
+
+AWJ uses libarchive v3.8.9 only to validate and extract signed update
+archives.  The exact upstream source archive SHA-512 and overlay recipe are
+published in `vcpkg-overlays/libarchive`; its upstream COPYING file is
+reproduced below.
+
+The libarchive distribution as a whole is Copyright by Tim Kientzle.  Each
+individual upstream source file carries its controlling license notice.  The
+core C source used by AWJ is distributed under these terms:
+
+Copyright (c) 2003-2018 <author(s)>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer in this position and
+   unchanged.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR(S) ``AS IS'' AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+EVENT SHALL THE AUTHOR(S) BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
 END OF THIRD-PARTY NOTICES
 -------------------------------------------------------------------------------

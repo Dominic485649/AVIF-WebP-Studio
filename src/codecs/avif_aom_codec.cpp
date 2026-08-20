@@ -1909,7 +1909,11 @@ class AvifLibavifImageEncoder final : public ImageEncoder {
             "AVIF encoder {} is not available in this libavif build.",
             avif_encoder_mode_name(mode_))};
       }
-      return encode_with_current_settings(image, settings, stop_token);
+      auto effective_settings = settings;
+      if (!effective_settings.speed_explicit) {
+        effective_settings.speed = default_speed_for(OutputFormat::avif);
+      }
+      return encode_with_current_settings(image, effective_settings, stop_token);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"AVIF 编码内存不足。"};
     } catch (const std::length_error&) {

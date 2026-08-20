@@ -138,8 +138,49 @@ int main() {
   if (!hdr_decoded || hdr_decoded->image.bit_depth != 16 ||
       !hdr_decoded->image.source_info ||
       hdr_decoded->image.source_info->bit_depth != 16 ||
-      !hdr_decoded->image.source_info->has_hdr_metadata) {
-    return fail(hdr_decoded ? "JXL 16-bit decode result invalid." : hdr_decoded.error());
+      hdr_decoded->image.source_info->has_hdr_metadata) {
+    return fail(hdr_decoded ? "JXL generic 16-bit decode color semantics invalid."
+                            : hdr_decoded.error());
+  }
+
+  auto pq_image = hdr_image;
+  pq_image.source_info = awj::ImageSourceInfo{
+      .pixel_format = awj::PixelFormat::rgba,
+      .bit_depth = 16,
+      .color_primaries = 9,
+      .transfer_characteristics = 16,
+      .matrix_coefficients = 0,
+      .color_range = 1,
+      .has_hdr_metadata = true,
+      .color_metadata_source = "test-bt2020-pq"};
+  auto pq_encoded = encoder.encode(
+      pq_image,
+      awj::NativeEncodeSettings{.output_format = awj::OutputFormat::jxl,
+                                 .quality = 100,
+                                 .speed = 10,
+                                 .speed_explicit = true,
+                                 .resources = awj::ResourcePlan{
+                                     .file_parallelism = 1,
+                                     .encoder_threads_per_file = 1,
+                                     .global_thread_budget = 1}});
+  if (!pq_encoded || pq_encoded->encoded.bytes.empty()) {
+    return fail(pq_encoded ? "JXL PQ encode result invalid." : pq_encoded.error());
+  }
+  const auto pq_path = std::filesystem::temp_directory_path() /
+                       "awjimage-jxl-codec-test-pq.jxl";
+  {
+    std::ofstream output{pq_path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(pq_encoded->encoded.bytes.data()),
+                 static_cast<std::streamsize>(pq_encoded->encoded.bytes.size()));
+  }
+  auto pq_decoded = decoder.decode(pq_path);
+  std::filesystem::remove(pq_path, ec);
+  if (!pq_decoded || !pq_decoded->image.source_info ||
+      pq_decoded->image.source_info->color_primaries != 9 ||
+      pq_decoded->image.source_info->transfer_characteristics != 16 ||
+      !pq_decoded->image.source_info->has_hdr_metadata) {
+    return fail(pq_decoded ? "JXL PQ HDR semantics were not preserved."
+                           : pq_decoded.error());
   }
 
   return 0;

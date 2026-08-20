@@ -271,9 +271,24 @@ int bit_depth_from_basic_info(const JxlBasicInfo& info) noexcept {
 ImageSourceInfo source_info_from_basic_info(const JxlBasicInfo& info) {
   const int bit_depth = bit_depth_from_basic_info(info);
   return ImageSourceInfo{.pixel_format = pixel_format_from_basic_info(info),
-                         .bit_depth = bit_depth,
-                         .has_hdr_metadata = bit_depth > 8,
-                         .color_metadata_source = bit_depth > 8 ? "jxl-high-bit-depth" : ""};
+                          .bit_depth = bit_depth,
+                          .color_metadata_source = bit_depth > 8 ? "jxl-high-bit-depth" : ""};
+}
+
+void apply_encoded_color_profile(ImageSourceInfo& source, const JxlColorEncoding& color) {
+  if (color.color_space != JXL_COLOR_SPACE_RGB) {
+    return;
+  }
+  const auto transfer = static_cast<int>(color.transfer_function);
+  if (color.primaries == JXL_PRIMARIES_SRGB || color.primaries == JXL_PRIMARIES_2100) {
+    source.color_primaries = static_cast<int>(color.primaries);
+  }
+  source.transfer_characteristics = transfer;
+  source.matrix_coefficients = 0;
+  source.color_range = 1;
+  source.has_hdr_metadata = color.transfer_function == JXL_TRANSFER_FUNCTION_PQ ||
+                            color.transfer_function == JXL_TRANSFER_FUNCTION_HLG;
+  source.color_metadata_source = "jxl-color-encoding";
 }
 
 std::uint32_t read_be_u32(std::span<const std::byte> bytes, std::size_t offset) noexcept {
@@ -731,9 +746,9 @@ class JXLImageDecoder final : public ImageDecoder {
         return std::unexpected{attached.error()};
       }
 
-      int subscribed_events = JXL_DEC_BASIC_INFO | JXL_DEC_FULL_IMAGE;
+      int subscribed_events = JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING | JXL_DEC_FULL_IMAGE;
       if (copy_metadata_payloads) {
-        subscribed_events |= JXL_DEC_COLOR_ENCODING | JXL_DEC_BOX | JXL_DEC_BOX_COMPLETE;
+        subscribed_events |= JXL_DEC_BOX | JXL_DEC_BOX_COMPLETE;
       }
       if (JxlDecoderSubscribeEvents(decoder.get(), subscribed_events) != JXL_DEC_SUCCESS) {
         return std::unexpected{"订阅 JXL decoder 事件失败。"};
@@ -746,6 +761,7 @@ class JXLImageDecoder final : public ImageDecoder {
       JxlDecoderCloseInput(decoder.get());
 
       JxlBasicInfo info{};
+      std::optional<JxlColorEncoding> encoded_color_profile;
       std::vector<std::byte> rgba;
       std::vector<std::byte> icc_profile;
       std::vector<MetadataBlock> metadata_boxes;
@@ -794,13 +810,17 @@ class JXLImageDecoder final : public ImageDecoder {
         }
         const auto alpha_mode =
             info.alpha_bits == 0 ? AlphaMode::none : AlphaMode::straight;
+        auto source_info = jxl_detail::source_info_from_basic_info(info);
+        if (encoded_color_profile) {
+          jxl_detail::apply_encoded_color_profile(source_info, *encoded_color_profile);
+        }
         ImagePlane plane{.bytes = std::move(rgba), .stride = *stride};
         ImageBuffer image{.width = info.xsize,
                           .height = info.ysize,
                           .pixel_format = PixelFormat::rgba,
                           .alpha_mode = alpha_mode,
-                          .bit_depth = info.bits_per_sample > 8 ? 16 : 8,
-                          .source_info = jxl_detail::source_info_from_basic_info(info)};
+                           .bit_depth = info.bits_per_sample > 8 ? 16 : 8,
+                           .source_info = std::move(source_info)};
         if (!icc_profile.empty()) {
           image.metadata.push_back(MetadataBlock{.kind = MetadataKind::icc,
                                                  .bytes = std::move(icc_profile)});
@@ -856,12 +876,20 @@ class JXLImageDecoder final : public ImageDecoder {
             return std::unexpected{"设置 JXL RGBA 输出 buffer 失败。"};
           }
         }
-        if (copy_metadata_payloads && status == JXL_DEC_COLOR_ENCODING) {
-          auto profile = jxl_detail::copy_embedded_icc_profile(decoder.get(), info);
-          if (!profile) {
-            return std::unexpected{profile.error()};
+        if (status == JXL_DEC_COLOR_ENCODING) {
+          JxlColorEncoding profile{};
+          if (JxlDecoderGetColorAsEncodedProfile(decoder.get(),
+                                                  JXL_COLOR_PROFILE_TARGET_ORIGINAL,
+                                                  &profile) == JXL_DEC_SUCCESS) {
+            encoded_color_profile = profile;
           }
-          icc_profile = std::move(*profile);
+          if (copy_metadata_payloads) {
+            auto icc = jxl_detail::copy_embedded_icc_profile(decoder.get(), info);
+            if (!icc) {
+              return std::unexpected{icc.error()};
+            }
+            icc_profile = std::move(*icc);
+          }
         }
         if (copy_metadata_payloads && status == JXL_DEC_BOX) {
           if (auto finished = finish_current_box(); !finished) {

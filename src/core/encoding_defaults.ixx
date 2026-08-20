@@ -23,22 +23,19 @@ inline constexpr int default_webp_bit_depth = 8;
 inline constexpr int default_quality = default_avif_quality;
 inline constexpr int default_visual_quality = 90;
 
-inline constexpr int preset_fast_quality = 75;
-inline constexpr int preset_balanced_quality = 85;
-inline constexpr int preset_best_quality = default_avif_quality;
-inline constexpr int preset_extreme_quality = 95;
-
-inline constexpr int preset_fast_timeout_minutes = 10;
-inline constexpr int preset_balanced_timeout_minutes = 20;
-inline constexpr int preset_best_timeout_minutes = 30;
-inline constexpr int preset_extreme_timeout_minutes = 60;
+// 内置默认不是一个可选的命名预设：它只是所有未显式选择用户 JSONC 预设时的
+// 起点。保留单一常量，避免旧 fast/balanced/best/extreme 名称继续渗入 CLI/UI。
+inline constexpr int default_encode_timeout_minutes = 20;
 
 inline constexpr std::uint64_t default_memory_limit_bytes = 0;
 inline constexpr bool default_allow_wic_fallback = true;
+inline constexpr bool default_visual_quality_fallback = true;
 
-inline constexpr int default_aom_cpu_used = 6;
+inline constexpr int default_aom_cpu_used = 5;
 inline constexpr int default_native_speed = 5;
-inline constexpr int default_avif_native_speed = default_aom_cpu_used;
+// AVIF 的 AOM cpu-used 仍可由编码器专用选项控制；通用 speed 默认和其它
+// native 编码路径一致，避免 UI 留空时悄悄落到旧的 6。
+inline constexpr int default_avif_native_speed = default_native_speed;
 inline constexpr int default_webp_native_speed = 4;
 inline constexpr int default_jxl_native_speed = 6;
 inline constexpr int default_jpegli_native_speed = 5;

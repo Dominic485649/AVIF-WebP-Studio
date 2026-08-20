@@ -21,7 +21,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Invariant = [Globalization.CultureInfo]::InvariantCulture
 $AwjQuality = 70
-$AwjSpeed = 6
+$AwjSpeed = 5
 $FfmpegAomQuantizer = 23
 $WarmupRuns = if ($Smoke) { 0 } else { 1 }
 $MeasuredRuns = if ($Smoke) { 1 } else { 5 }
@@ -102,7 +102,7 @@ function Invoke-SelfTest {
         '--input|in|--output|out|--summary|--no-log|--bit-depth|10') {
         throw 'Legacy argument self-test failed.'
     }
-    if ($AwjQuality -ne 70 -or $AwjSpeed -ne 6 -or $FfmpegAomQuantizer -ne 23) {
+    if ($AwjQuality -ne 70 -or $AwjSpeed -ne 5 -or $FfmpegAomQuantizer -ne 23) {
         throw 'Profile self-test failed.'
     }
     Write-Host 'benchmark.ps1 self-test passed.'
@@ -859,7 +859,7 @@ $Report.Add("Power scheme: $($Power.Guid)")
 $Report.Add("Hardware threads / AWJ CPU budget: $HardwareThreads / $ThreadBudget")
 $Report.Add("Input manifest SHA-256: $ManifestHash")
 $Report.Add('')
-$Report.Add('AWJ uses only input, output, summary, and no-log options. It therefore exercises the true defaults: AVIF AOM q70, speed 6, source-aware automatic chroma, automatic 10-bit-minimum depth, automatic non-opaque alpha retention at the same quality, and automatic memory.')
+$Report.Add('AWJ uses only input, output, summary, and no-log options. It therefore exercises the true defaults: AVIF AOM q70, speed 5, source-aware automatic chroma, automatic 10-bit-minimum depth, automatic non-opaque alpha retention at the same quality, and automatic memory.')
 $Report.Add('Strict ffmpeg uses QP 23, cpu-used 6, all-intra, still-picture, row-mt, yuv420p10le, one thread per process, and CPU-budget process concurrency. Inputs are pixels, bytes, path ascending. Each strict round runs AWJ before ffmpeg and sleeps between calls; thermal and file-cache bias remains a documented limitation.')
 $Report.Add('')
 $Report.Add("AWJ: $($Target.Version), $($Target.BuildType), $($Target.Commit), AOM $($Target.Aom), dav1d $($Target.Dav1d)")
@@ -913,7 +913,7 @@ $Metadata = [ordered]@{
     measured_runs = $MeasuredRuns
     cooldown_seconds = $CooldownSeconds
     profile = [ordered]@{
-        awj = 'AVIF default q70 speed6 source-aware automatic chroma, automatic minimum 10-bit, automatic memory'
+        awj = 'AVIF default q70 speed5 source-aware automatic chroma, automatic minimum 10-bit, automatic memory'
         ffmpeg = 'QP23 cpu-used6 allintra still-picture row-mt yuv420p10le threads1'
     }
     awj = $Target

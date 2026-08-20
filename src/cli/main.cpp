@@ -26,6 +26,7 @@
 import awj.config;
 import awj.core;
 import awj.pipeline;
+import awj.preset;
 
 namespace {
 
@@ -123,7 +124,7 @@ int run_cli_args(std::vector<std::wstring> args) {
       return 0;
     }
 
-    const auto parsed = awj::parse_arguments(args);
+    const auto parsed = awj::parse_arguments_with_user_preset(args);
     if (!parsed) {
       print_line(std::format("[FAIL] {}", parsed.error()));
       return 1;

@@ -20,3 +20,46 @@ if(NOT CONTENT MATCHES "defined\\(SLINT_STATIC\\)")
 endif()
 
 file(TOUCH "${SOURCE_DIR}/api/cpp/build.rs")
+
+# Slint 1.17 exposes DropArea/DataTransfer, while its Winit backend currently
+# leaves Winit's native DroppedFile events untranslated.  AWJ needs the public
+# DropArea path on both desktop platforms, not a Win32 WM_DROPFILES shim.
+set(WINIT_EVENT_LOOP "${SOURCE_DIR}/internal/backends/winit/event_loop.rs")
+if(NOT EXISTS "${WINIT_EVENT_LOOP}")
+    message(FATAL_ERROR "Slint Winit event loop source not found.")
+endif()
+file(READ "${WINIT_EVENT_LOOP}" WINIT_CONTENT)
+if(NOT WINIT_CONTENT MATCHES "AWJ_NATIVE_FILE_DND_V2")
+    string(REPLACE
+        "use corelib::SharedString;\nuse corelib::graphics::euclid;\nuse corelib::input::{InternalKeyEvent, KeyEvent, KeyEventType, MouseEvent, TouchPhase};\nuse corelib::items::{ColorScheme, PointerEventButton};"
+        "use corelib::SharedString;\nuse corelib::DataTransfer;\nuse corelib::graphics::euclid;\nuse corelib::input::{InternalKeyEvent, KeyEvent, KeyEventType, MouseEvent, TouchPhase};\nuse corelib::items::{AllowedDragActions, ColorScheme, DragAction, DropEvent, PointerEventButton};"
+        WINIT_PATCHED "${WINIT_CONTENT}")
+    if(WINIT_PATCHED STREQUAL WINIT_CONTENT)
+        message(FATAL_ERROR "Could not add Slint Winit native-drop imports.")
+    endif()
+    string(REPLACE
+        "    pending_mouse_move: Option<(winit::window::WindowId, LogicalPoint)>,"
+        "    pending_mouse_move: Option<(winit::window::WindowId, LogicalPoint)>,\n\n    // AWJ_NATIVE_FILE_DND_V2: batch paths reported in one native Winit turn.\n    pending_native_file_drops: Vec<(winit::window::WindowId, std::path::PathBuf)>,"
+        WINIT_PATCHED "${WINIT_PATCHED}")
+    string(REPLACE
+        "            pending_mouse_move: Default::default(),"
+        "            pending_mouse_move: Default::default(),\n            pending_native_file_drops: Default::default(),"
+        WINIT_PATCHED "${WINIT_PATCHED}")
+    set(WINIT_FLUSH_NATIVE "\n    fn flush_pending_native_file_drops(&mut self) {\n        let pending = std::mem::take(&mut self.pending_native_file_drops);\n        let mut grouped: Vec<(winit::window::WindowId, String)> = Vec::new();\n        for (window_id, path) in pending {\n            if let Some((_, paths)) = grouped.iter_mut().find(|(id, _)| *id == window_id) {\n                if !paths.is_empty() { paths.push('\\n'); }\n                paths.push_str(&path.to_string_lossy());\n            } else {\n                grouped.push((window_id, path.to_string_lossy().into_owned()));\n            }\n        }\n        for (window_id, paths) in grouped {\n            let Some(window) = self.shared_backend_data.window_by_id(window_id) else { continue; };\n            let runtime_window = WindowInner::from_pub(window.window());\n            let mut data = DataTransfer::default();\n            data.set_plain_text(paths.into());\n            let mut event = DropEvent::default();\n            event.data = data;\n            event.position = corelib::api::LogicalPosition::new(self.cursor_pos.x, self.cursor_pos.y);\n            event.proposed_action = DragAction::Copy;\n            let allowed = AllowedDragActions { copy: true, move_: false, link: false };\n            runtime_window.process_mouse_input(MouseEvent::DragMove { event: event.clone(), allowed });\n            runtime_window.process_mouse_input(MouseEvent::Drop { event, allowed });\n        }\n    }\n")
+    string(REPLACE
+        "    }\n}\n\nimpl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {"
+        "    }${WINIT_FLUSH_NATIVE}}\n\nimpl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {"
+        WINIT_PATCHED "${WINIT_PATCHED}")
+    string(REPLACE
+        "            WindowEvent::CursorMoved { position, .. } => {"
+        "            WindowEvent::DroppedFile(path) => {\n                self.pending_native_file_drops.push((window_id, path));\n            }\n            WindowEvent::CursorMoved { position, .. } => {"
+        WINIT_PATCHED "${WINIT_PATCHED}")
+    string(REPLACE
+        "    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {\n        self.flush_pending_mouse_move();"
+        "    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {\n        self.flush_pending_native_file_drops();\n        self.flush_pending_mouse_move();"
+        WINIT_PATCHED "${WINIT_PATCHED}")
+    if(WINIT_PATCHED STREQUAL WINIT_CONTENT)
+        message(FATAL_ERROR "Could not add Slint Winit native-drop event handling.")
+    endif()
+    file(WRITE "${WINIT_EVENT_LOOP}" "${WINIT_PATCHED}")
+endif()

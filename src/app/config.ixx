@@ -28,14 +28,6 @@ import awj.visual_quality;
 
 export namespace awj {
 
-enum class Preset {
-  custom,
-  lossless,
-  visual_lossless,
-  balanced,
-  fast,
-  fastest
-};
 enum class OutputFormat { png, avif, webp, jxl, jpgli };
 enum class BackendMode { native };
 enum class OutputPolicy { normal, shell };
@@ -120,7 +112,6 @@ struct AppConfig {
       std::wstring{encoding_defaults::default_input_path}};
   std::filesystem::path output_dir{};
   std::wstring output_template{encoding_defaults::default_output_template};
-  Preset preset{Preset::custom};
   BackendMode backend{BackendMode::native};
   OutputFormat output_format{OutputFormat::avif};
   OutputPolicy output_policy{OutputPolicy::normal};
@@ -140,9 +131,9 @@ struct AppConfig {
   bool jpegli_xyb{};
   int max_jobs{default_max_jobs()};
   std::uint64_t memory_limit_bytes{
-      encoding_defaults::default_memory_limit_bytes};
+       encoding_defaults::default_memory_limit_bytes};
   int encode_timeout_minutes{
-      encoding_defaults::preset_balanced_timeout_minutes};
+      encoding_defaults::default_encode_timeout_minutes};
   bool allow_wic_fallback{default_allow_wic_fallback_for_platform()};
   std::optional<int> svtav1hdr_crf{};
   std::optional<int> svtav1hdr_preset{};
@@ -156,11 +147,18 @@ struct AppConfig {
   std::optional<int> color_range{};
   std::wstring mastering_display{};
   std::wstring content_light{};
-  bool visual_quality_fallback{false};
+  // 默认在视觉质量搜索未达标时交付最接近候选；未启用 visual-quality 时该值
+  // 不参与编码，保持 UI、CLI 与 worker 的默认一致。
+  bool visual_quality_fallback{
+      encoding_defaults::default_visual_quality_fallback};
   bool visual_quality_gpu{true};
   bool strip_metadata{false};
   bool write_summary{false};
   bool write_log{false};
+  // 只在 Windows 实际执行；Linux CLI 不公开也不解析这些开关。
+  bool preserve_creation_time{false};
+  bool preserve_modification_time{false};
+  bool preserve_access_time{false};
   bool shell_close_on_finish{true};
   ImageSizeLimit image_size_limit{};
   std::wstring studio_cancel_event_name{};
@@ -175,6 +173,41 @@ struct AppConfig {
 
 AppConfig default_app_config() { return AppConfig{}; }
 
+std::expected<std::filesystem::path, std::string> normalize_path_argument(
+    std::wstring_view value, std::string_view label) {
+  const auto is_space = [](wchar_t ch) {
+    return std::iswspace(static_cast<wint_t>(ch)) != 0;
+  };
+  while (!value.empty() && is_space(value.front())) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() && is_space(value.back())) {
+    value.remove_suffix(1);
+  }
+  if (value.empty()) {
+    return std::unexpected{std::format("{}不能为空。", label)};
+  }
+  const bool starts_quote = value.front() == L'\"';
+  const bool ends_quote = value.back() == L'\"';
+  if (starts_quote != ends_quote) {
+    return std::unexpected{std::format(
+        "{}的双引号必须成对并包住整个路径，例如 \"D:\\\\example.jxr\"。",
+        label)};
+  }
+  if (starts_quote) {
+    value.remove_prefix(1);
+    value.remove_suffix(1);
+    if (value.empty()) {
+      return std::unexpected{std::format("{}不能为空。", label)};
+    }
+  }
+  if (value.find(L'\"') != std::wstring_view::npos) {
+    return std::unexpected{
+        std::format("{}中的双引号只能成对包住整个路径。", label)};
+  }
+  return std::filesystem::path{value};
+}
+
 void apply_format_defaults(AppConfig& cfg, OutputFormat format) noexcept {
   cfg.output_format = format;
   cfg.quality = default_quality_for(format);
@@ -184,6 +217,10 @@ struct ParseResult {
   bool should_exit{false};
   int exit_code{0};
   AppConfig config{};
+  // 用户预设在 CLI 前端加载：先用第一遍解析确定输出格式，再把对应格式的
+  // 预设作为第二遍解析的基线，使显式参数与书写顺序无关。
+  std::optional<std::wstring> preset_name{};
+  std::optional<std::filesystem::path> preset_file{};
   std::vector<std::filesystem::path> shell_inputs{};
   std::vector<std::string> warnings{};
 };
@@ -425,31 +462,6 @@ std::expected<void, std::string> validate_svtav1hdr_ascii_text(
   return {};
 }
 
-std::optional<Preset> parse_preset(std::wstring_view value) {
-  const auto lower = lower_copy(value);
-  if (lower == L"custom" || lower == L"自定义") {
-    return Preset::custom;
-  }
-  if (lower == L"lossless" || lower == L"无损") {
-    return Preset::lossless;
-  }
-  if (lower == L"visual-lossless" || lower == L"visual_lossless" ||
-      lower == L"visuallossless" || lower == L"best" || lower == L"视觉无损") {
-    return Preset::visual_lossless;
-  }
-  if (lower == L"balanced" || lower == L"平衡") {
-    return Preset::balanced;
-  }
-  if (lower == L"fast" || lower == L"快速") {
-    return Preset::fast;
-  }
-  if (lower == L"fastest" || lower == L"turbo" || lower == L"ultrafast" ||
-      lower == L"extreme" || lower == L"急速") {
-    return Preset::fastest;
-  }
-  return std::nullopt;
-}
-
 std::optional<OutputFormat> parse_output_format(std::wstring_view value) {
   auto lower = lower_copy(value);
   if (!lower.empty() && lower.front() == L'.') {
@@ -615,45 +627,7 @@ bool jpegli_progressive_level_supported(int level) noexcept {
   return level >= 0 && level <= 2;
 }
 
-void apply_preset(AppConfig& cfg, Preset preset) {
-  cfg.preset = preset;
-  switch (preset) {
-    case Preset::custom:
-      break;
-    case Preset::lossless:
-      cfg.quality = 100;
-      cfg.visual_quality.reset();
-      cfg.encode_timeout_minutes =
-          encoding_defaults::preset_extreme_timeout_minutes;
-      break;
-    case Preset::visual_lossless:
-      cfg.visual_quality = 75;
-      cfg.encode_timeout_minutes =
-          encoding_defaults::preset_best_timeout_minutes;
-      break;
-    case Preset::balanced:
-      cfg.visual_quality = 50;
-      cfg.encode_timeout_minutes =
-          encoding_defaults::preset_balanced_timeout_minutes;
-      break;
-    case Preset::fast:
-      cfg.visual_quality = 25;
-      cfg.encode_timeout_minutes =
-          encoding_defaults::preset_fast_timeout_minutes;
-      break;
-    case Preset::fastest:
-      cfg.visual_quality = 17;
-      cfg.encode_timeout_minutes =
-          encoding_defaults::preset_fast_timeout_minutes;
-      break;
-  }
-}
-
 }  // namespace config_detail
-
-void apply_preset(AppConfig& cfg, Preset preset) {
-  config_detail::apply_preset(cfg, preset);
-}
 
 std::string chroma_mode_name(ChromaMode mode) {
   return config_detail::chroma_name(mode);
@@ -776,10 +750,8 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       (*cfg.visual_quality < 1 || *cfg.visual_quality > 100)) {
     return std::unexpected{"visual-quality 范围必须在 1 到 100 之间。"};
   }
-  if (cfg.visual_quality_fallback && !cfg.visual_quality) {
-    return std::unexpected{
-        "--visual-quality-fallback 只能与 --visual-quality 一起使用。"};
-  }
+  // visual_quality 未设置时 fallback 没有工作可做，因此允许默认值保留；一旦
+  // 启用搜索，native backend 才读取该开关。
   if (cfg.memory_limit_bytes > 0 &&
       cfg.memory_limit_bytes < 64ull * 1024ull * 1024ull) {
     return std::unexpected{
@@ -835,8 +807,9 @@ std::string help_text() {
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
-  --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选
-  --no-visual-quality-fallback visual_quality 搜索未达标时失败（默认）
+  --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选（默认）
+  --no-visual-quality-fallback visual_quality 搜索未达标时失败
+@WINDOWS_TIMESTAMP_OPTIONS@
   -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPGLI 输出 JPEG 兼容 8-bit precision
   --chroma <auto|444|422|420> AVIF/JPGLI 色度采样；AVIF auto 保留 YUV 源的 420/422/444，RGB/RGBA 转为 444，灰度或未知为 420，始终输出 YUV；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
   --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
@@ -859,7 +832,8 @@ std::string help_text() {
   --no-experimental-encoders 禁用实验 AVIF 编码器选项
   --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时使用较小的右列和底行 cell，保持原始尺寸不变，默认开启；奇数输出尺寸或奇数 cell 尺寸与 420/422 色度仍不兼容，需要 --chroma 444
   --no-experimental-clamped-grid-padding 禁用 AVIF grid 较小边缘 cell；不可整除分割会报错
-  -p, --preset <名称>         fast / balanced / best / extreme；未指定时为自定义默认值；设置默认质量和编码超时，显式 --quality 可覆盖质量
+  -p, --preset <名称>         从程序同目录 preset/ 按 JSONC 内 name 加载用户预设；未指定使用当前内置默认
+  --preset-file <路径>        加载指定 JSONC 用户预设；显式 CLI 参数始终覆盖预设
   -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
   --memory-limit <auto|大小>  内存限制；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
   --large-image-priority <zenrav1e|grid> 超过 AOM 单图上限后的自动大图优先路径；默认 zenrav1e，失败回退另一路径
@@ -939,9 +913,17 @@ std::string help_text() {
               std::format("{}", encoding_defaults::default_webp_bit_depth));
   replace_all(help, "@OUTPUT_TEMPLATE@",
               encoding_defaults::default_output_template_text);
+#ifdef _WIN32
+  replace_all(help, "@WINDOWS_TIMESTAMP_OPTIONS@",
+              "  --preserve-creation-time    输出成功后保留源文件创建时间\n"
+              "  --preserve-modification-time 输出成功后保留源文件修改时间\n"
+              "  --preserve-access-time      输出成功后保留源文件访问时间\n");
+#else
+  replace_all(help, "@WINDOWS_TIMESTAMP_OPTIONS@", "");
+#endif
   replace_all(
       help, "@ENCODE_TIMEOUT@",
-      std::format("{}", encoding_defaults::preset_best_timeout_minutes));
+      std::format("{}", encoding_defaults::default_encode_timeout_minutes));
   return help;
 }
 
@@ -950,12 +932,14 @@ void print_help() {
   std::println("{}", help);
 }
 
-std::expected<ParseResult, std::string> parse_arguments(
-    const std::vector<std::wstring>& args) {
+std::expected<ParseResult, std::string> parse_arguments_impl(
+    const std::vector<std::wstring>& args, AppConfig cfg,
+    bool preset_base_active) {
   // CLI 参数直接落到 AppConfig，确保命令行和 Slint UI 走同一套核心逻辑。
-  AppConfig cfg = default_app_config();
-  bool preset_was_set = false;
+  bool preset_was_set = preset_base_active;
   bool quality_was_set = false;
+  std::optional<std::wstring> preset_name;
+  std::optional<std::filesystem::path> preset_file;
   std::vector<std::filesystem::path> shell_inputs;
   std::vector<std::wstring> positional_args;
   std::vector<std::string> warnings;
@@ -984,8 +968,12 @@ std::expected<ParseResult, std::string> parse_arguments(
       if (!value) {
         return std::unexpected{value.error()};
       }
-      cfg.input_path = *value;
-      shell_inputs.emplace_back(*value);
+      const auto path = normalize_path_argument(*value, "输入路径");
+      if (!path) {
+        return std::unexpected{path.error()};
+      }
+      cfg.input_path = *path;
+      shell_inputs.push_back(*path);
       continue;
     }
 
@@ -994,7 +982,11 @@ std::expected<ParseResult, std::string> parse_arguments(
       if (!value) {
         return std::unexpected{value.error()};
       }
-      cfg.output_dir = *value;
+      const auto path = normalize_path_argument(*value, "输出目录");
+      if (!path) {
+        return std::unexpected{path.error()};
+      }
+      cfg.output_dir = *path;
       continue;
     }
 
@@ -1049,14 +1041,23 @@ std::expected<ParseResult, std::string> parse_arguments(
       if (!value) {
         return std::unexpected{value.error()};
       }
-      const auto preset = config_detail::parse_preset(*value);
-      if (!preset) {
-        return std::unexpected{std::format(
-            "预设不支持: {}。可选值：fast、balanced、best、extreme。",
-            config_detail::narrow_ascii_for_diagnostics(*value))};
+      if (value->empty()) {
+        return std::unexpected{"--preset 名称不能为空。"};
       }
-      config_detail::apply_preset(cfg, *preset);
-      preset_was_set = true;
+      preset_name = *value;
+      continue;
+    }
+
+    if (lower == L"--preset-file") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto path = normalize_path_argument(*value, "预设文件路径");
+      if (!path) {
+        return std::unexpected{path.error()};
+      }
+      preset_file = *path;
       continue;
     }
 
@@ -1167,6 +1168,21 @@ std::expected<ParseResult, std::string> parse_arguments(
       cfg.visual_quality_fallback = false;
       continue;
     }
+
+#ifdef _WIN32
+    if (lower == L"--preserve-creation-time") {
+      cfg.preserve_creation_time = true;
+      continue;
+    }
+    if (lower == L"--preserve-modification-time") {
+      cfg.preserve_modification_time = true;
+      continue;
+    }
+    if (lower == L"--preserve-access-time") {
+      cfg.preserve_access_time = true;
+      continue;
+    }
+#endif
 
     if (lower == L"-d" || lower == L"--depth" || lower == L"--bit-depth" ||
         lower == L"--bitdepth") {
@@ -1766,8 +1782,20 @@ std::expected<ParseResult, std::string> parse_arguments(
   return ParseResult{.should_exit = false,
                      .exit_code = 0,
                      .config = cfg,
+                     .preset_name = std::move(preset_name),
+                     .preset_file = std::move(preset_file),
                      .shell_inputs = std::move(unique_shell_inputs),
                      .warnings = std::move(warnings)};
+}
+
+std::expected<ParseResult, std::string> parse_arguments(
+    const std::vector<std::wstring>& args) {
+  return parse_arguments_impl(args, default_app_config(), false);
+}
+
+std::expected<ParseResult, std::string> parse_arguments_with_preset_base(
+    const std::vector<std::wstring>& args, AppConfig base) {
+  return parse_arguments_impl(args, std::move(base), true);
 }
 
 }  // namespace awj

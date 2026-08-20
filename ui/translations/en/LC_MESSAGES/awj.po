@@ -636,3 +636,84 @@ msgstr "Checking…"
 
 msgid "上次成功检查："
 msgstr "Last successful check: "
+
+msgid "保存"
+msgstr "Save"
+
+msgid "保存用户预设"
+msgstr "Save user preset"
+
+msgid "保存预设"
+msgstr "Save preset"
+
+msgid "保留创建时间"
+msgstr "Preserve creation time"
+
+msgid "保留访问时间"
+msgstr "Preserve access time"
+
+msgid "保留修改时间"
+msgstr "Preserve modification time"
+
+msgid "参数预设"
+msgstr "Parameter preset"
+
+msgid "从未"
+msgstr "Never"
+
+msgid "队列设置在开始转换时统一快照；参数页格式仅用于编辑参数。"
+msgstr "Queue settings are snapshotted when conversion starts; the Parameters format only selects an editor group."
+
+msgid "队列输出格式"
+msgstr "Queue output format"
+
+msgid "队列预设"
+msgstr "Queue preset"
+
+msgid "更新后显示更新日志"
+msgstr "Show changelog after update"
+
+msgid "勾选后在输出原子提交成功时保留源文件的对应时间；未勾选时使用本次编码后的自然时间。"
+msgstr "When checked, preserve the corresponding source timestamp after atomic output commit; otherwise keep the new encode time."
+
+msgid "简介"
+msgstr "Description"
+
+msgid "例如：高质量存档"
+msgstr "For example: High-quality archival"
+
+msgid "名称"
+msgstr "Name"
+
+msgid "名称和简介会写入程序同目录 preset/*.jsonc；保存的是五种格式的完整参数，不包含队列、路径或元数据设置。"
+msgstr "The name and description are written to executable-adjacent preset/*.jsonc. Saved presets contain all five format parameter groups, not queue, path, or metadata settings."
+
+msgid "内置默认"
+msgstr "Built-in default"
+
+msgid "取消"
+msgstr "Cancel"
+
+msgid "尚未检查"
+msgstr "Not checked yet"
+
+msgid "鼠标悬停在预设名称上可查看这里的简介。"
+msgstr "Hover a preset name to read its description here."
+
+msgid "退出后隐藏更新日志"
+msgstr "Hide changelog after exit"
+
+msgid "文件时间"
+msgstr "File timestamps"
+
+msgid "语言"
+msgstr "Language"
+
+msgid "预设"
+msgstr "Preset"
+
+msgid "预设简介"
+msgstr "Preset description"
+
+msgid "预设名称"
+msgstr "Preset name"

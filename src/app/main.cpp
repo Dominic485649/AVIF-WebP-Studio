@@ -3,6 +3,8 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/types.h>
 #endif
 
 #include <array>
@@ -10,6 +12,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <exception>
 #include <limits>
@@ -21,6 +24,8 @@ int run_cli(int argc, wchar_t* argv[]);
 int run_studio_ui(const wchar_t* health_event = nullptr,
                   const wchar_t* installed_version = nullptr);
 #else
+import awj.update_linux;
+
 int run_cli(int argc, char* argv[]);
 int run_studio_ui();
 #endif
@@ -301,6 +306,25 @@ int wmain(int argc, wchar_t* argv[]) {
 }
 #else
 int main(int argc, char* argv[]) {
+  const auto parse_pid = [](const char* text) -> pid_t {
+    if (text == nullptr || *text == '\0') return 0;
+    char* end = nullptr;
+    const auto value = std::strtol(text, &end, 10);
+    return end != nullptr && *end == '\0' && value > 0 &&
+                   value <= std::numeric_limits<pid_t>::max()
+               ? static_cast<pid_t>(value)
+               : 0;
+  };
+  if (argc == 3 && std::strcmp(argv[1], "--linux-update-helper") == 0) {
+    const auto pid = parse_pid(argv[2]);
+    return pid == 0 ? 19 : awj::update::run_linux_update_helper(pid);
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--linux-update-health-check") == 0) {
+    return 0;
+  }
+  if (awj::update::launch_linux_update_recovery_if_needed()) {
+    return 0;
+  }
   if (argc <= 1) {
     return run_studio_ui();
   }

@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -7,6 +8,7 @@
 import awj.config;
 import awj.codec;
 import awj.encoding_defaults;
+import awj.preset;
 
 namespace {
 
@@ -59,12 +61,15 @@ int main() {
   if (!defaults.enable_experimental_encoders) {
     return fail("experimental encoders should be enabled by default.");
   }
+  if (!defaults.visual_quality_fallback) {
+    return fail("visual-quality fallback should be enabled by default.");
+  }
   if (defaults.memory_limit_bytes !=
       awj::encoding_defaults::default_memory_limit_bytes) {
     return fail("default memory limit mismatch.");
   }
   if (defaults.encode_timeout_minutes !=
-      awj::encoding_defaults::preset_balanced_timeout_minutes) {
+      awj::encoding_defaults::default_encode_timeout_minutes) {
     return fail("default encode timeout mismatch.");
   }
 
@@ -89,9 +94,22 @@ int main() {
           awj::encoding_defaults::default_jpegli_native_speed) {
     return fail("format speed defaults mismatch.");
   }
-  if (awj::encoding_defaults::default_webp_native_speed != 4 ||
+  if (awj::encoding_defaults::default_avif_native_speed != 5 ||
+      awj::encoding_defaults::default_webp_native_speed != 4 ||
       awj::encoding_defaults::default_jxl_native_speed != 6) {
     return fail("format speed default literals mismatch.");
+  }
+
+  auto quoted = awj::parse_arguments(
+      {L"--input", L"  \"D:\\example.jxr\"  ", L"--output",
+       L"\"D:\\out dir\""});
+  if (!quoted || quoted->config.input_path != std::filesystem::path{L"D:\\example.jxr"} ||
+      quoted->config.output_dir != std::filesystem::path{L"D:\\out dir"}) {
+    return fail("quoted CLI paths were not normalized.");
+  }
+  quoted = awj::parse_arguments({L"--input", L"\"D:\\example.jxr"});
+  if (quoted || quoted.error().find("双引号") == std::string::npos) {
+    return fail("unpaired quoted CLI input was not rejected.");
   }
   if (awj::map_jxl_speed_to_effort(0).codec_value != 10 ||
       awj::map_jxl_speed_to_effort(6).codec_value != 4 ||
@@ -212,15 +230,83 @@ int main() {
   }
 
   parsed = awj::parse_arguments({L"--preset", L"fast"});
-  if (!parsed) {
-    std::cerr << parsed.error() << '\n';
-    return 1;
+  if (!parsed || !parsed->preset_name || *parsed->preset_name != L"fast" ||
+      parsed->config.quality != awj::encoding_defaults::default_avif_quality) {
+    return fail("user preset selector did not preserve the built-in defaults.");
   }
-  if (parsed->config.visual_quality.value_or(-1) != 25 ||
-      parsed->config.encode_timeout_minutes !=
-          awj::encoding_defaults::preset_fast_timeout_minutes) {
-    return fail("preset defaults mismatch.");
+
+  const auto preset_test_path = std::filesystem::temp_directory_path() /
+                                "awjimage-config-defaults-preset.jsonc";
+  std::error_code preset_test_ec;
+  std::filesystem::remove(preset_test_path, preset_test_ec);
+  {
+    std::ofstream output{preset_test_path, std::ios::binary | std::ios::trunc};
+    output << R"jsonc(// JSONC comments are accepted.
+{
+  "schema": 1,
+  "name": "测试预设",
+  "description": "only WebP overrides the hard-coded defaults",
+  "formats": {
+    "webp": { "quality": 61, "speed": 3 }
   }
+}
+)jsonc";
+  }
+  const auto loaded_preset = awj::load_user_preset_file(preset_test_path);
+  if (!loaded_preset || loaded_preset->formats[1].quality != 61 ||
+      loaded_preset->formats[1].speed.value_or(-1) != 3 ||
+      loaded_preset->formats[0].quality !=
+          awj::encoding_defaults::default_avif_quality) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("user preset did not validate JSONC or fill missing formats from defaults.");
+  }
+  const auto preset_path_wide = preset_test_path.wstring();
+  auto preset_args = awj::parse_arguments_with_user_preset(
+      {L"--quality", L"82", L"--preset-file", preset_path_wide,
+       L"--format", L"webp"});
+  if (!preset_args || preset_args->config.quality != 82 ||
+      preset_args->config.speed.value_or(-1) != 3) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("explicit CLI parameters did not override a user preset.");
+  }
+  preset_args = awj::parse_arguments_with_user_preset(
+      {L"--format", L"webp", L"--preset-file", preset_path_wide});
+  if (!preset_args || preset_args->config.quality != 61 ||
+      preset_args->config.speed.value_or(-1) != 3) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("preset selection depended on CLI argument order.");
+  }
+  awj::UserPreset reserved_name = awj::default_user_preset();
+  reserved_name.name = "CON";
+  if (awj::validate_user_preset(reserved_name)) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("Windows-reserved preset filename was accepted.");
+  }
+  {
+    std::ofstream output{preset_test_path, std::ios::binary | std::ios::trunc};
+    output << R"json({"schema":2,"name":"bad","description":"","formats":{}})json";
+  }
+  if (awj::load_user_preset_file(preset_test_path)) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("unsupported user preset schema was accepted.");
+  }
+  std::filesystem::remove(preset_test_path, preset_test_ec);
+
+#ifdef _WIN32
+  parsed = awj::parse_arguments({L"--preserve-creation-time",
+                                 L"--preserve-modification-time",
+                                 L"--preserve-access-time"});
+  if (!parsed || !parsed->config.preserve_creation_time ||
+      !parsed->config.preserve_modification_time ||
+      !parsed->config.preserve_access_time) {
+    return fail("Windows timestamp preservation flags did not parse.");
+  }
+#else
+  parsed = awj::parse_arguments({L"--preserve-creation-time"});
+  if (parsed || parsed.error().find("未知参数") == std::string::npos) {
+    return fail("Linux CLI must reject Windows timestamp preservation flags.");
+  }
+#endif
 
   parsed =
       awj::parse_arguments({L"--avif-encoder", L"aom", L"--chroma", L"444"});
@@ -339,6 +425,20 @@ int main() {
       help.find("源与用户都没有时才回退 BT.709") == std::string::npos) {
     return fail("help text does not describe HDR-preserving CICP precedence.");
   }
+
+#ifdef _WIN32
+  if (help.find("--preserve-creation-time") == std::string::npos ||
+      help.find("--preserve-modification-time") == std::string::npos ||
+      help.find("--preserve-access-time") == std::string::npos) {
+    return fail("Windows timestamp preservation flags are missing from help.");
+  }
+#else
+  if (help.find("--preserve-creation-time") != std::string::npos ||
+      help.find("--preserve-modification-time") != std::string::npos ||
+      help.find("--preserve-access-time") != std::string::npos) {
+    return fail("Linux help lists Windows-only timestamp flags.");
+  }
+#endif
 
   static_assert(awj::encoding_defaults::default_experimental_clamped_grid_padding,
                 "clamped grid padding default changed; update the help text.");

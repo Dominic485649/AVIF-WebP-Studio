@@ -125,6 +125,26 @@ find_package(TIFF REQUIRED)
 find_package(libraw CONFIG REQUIRED)
 find_package(AOM CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+# CMake's FindLibArchive scans debug before release and otherwise pins every
+# Release executable to archive.lib built with /MTd. Select the vcpkg release
+# archive up front, then give the imported target explicit config locations.
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(_awj_libarchive_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+    if(EXISTS "${_awj_libarchive_root}/lib/archive.lib")
+        set(LibArchive_LIBRARY "${_awj_libarchive_root}/lib/archive.lib"
+            CACHE FILEPATH "The libarchive library selected by AWJ" FORCE)
+    endif()
+endif()
+find_package(LibArchive REQUIRED)
+if(WIN32 AND TARGET LibArchive::LibArchive AND DEFINED _awj_libarchive_root)
+    set_property(TARGET LibArchive::LibArchive PROPERTY IMPORTED_CONFIGURATIONS
+                 "DEBUG;RELEASE;RELWITHDEBINFO;MINSIZEREL")
+    set_target_properties(LibArchive::LibArchive PROPERTIES
+        IMPORTED_LOCATION_DEBUG "${_awj_libarchive_root}/debug/lib/archive.lib"
+        IMPORTED_LOCATION_RELEASE "${_awj_libarchive_root}/lib/archive.lib"
+        IMPORTED_LOCATION_RELWITHDEBINFO "${_awj_libarchive_root}/lib/archive.lib"
+        IMPORTED_LOCATION_MINSIZEREL "${_awj_libarchive_root}/lib/archive.lib")
+endif()
 find_package(unofficial-sodium CONFIG QUIET)
 if(NOT TARGET unofficial-sodium::sodium)
     if(WIN32)
@@ -155,6 +175,12 @@ if(VCPKG_INSTALLED_DIR)
 else()
     set(AVIF_VCPKG_INSTALLED_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TRIPLET}")
 endif()
+
+find_path(AWJ_LIBPLACEBO_INCLUDE_DIR
+    NAMES libplacebo/tone_mapping.h
+    PATHS "${AVIF_VCPKG_INSTALLED_DIR}/include"
+    NO_DEFAULT_PATH
+    REQUIRED)
 function(avif_find_vcpkg_library out_var library_name)
     find_library(${out_var}_RELEASE
         NAMES ${library_name}
@@ -175,6 +201,18 @@ function(avif_find_vcpkg_library out_var library_name)
         set(${out_var} "${${out_var}_RELEASE}" PARENT_SCOPE)
     endif()
 endfunction()
+
+avif_find_vcpkg_library(AWJ_LIBPLACEBO_LIBRARY placebo)
+add_library(awj_libplacebo INTERFACE IMPORTED)
+target_include_directories(awj_libplacebo INTERFACE
+    "${AWJ_LIBPLACEBO_INCLUDE_DIR}")
+target_compile_definitions(awj_libplacebo INTERFACE PL_STATIC)
+target_link_libraries(awj_libplacebo INTERFACE "${AWJ_LIBPLACEBO_LIBRARY}")
+if(WIN32)
+    target_link_libraries(awj_libplacebo INTERFACE shlwapi)
+else()
+    target_link_libraries(awj_libplacebo INTERFACE Threads::Threads m)
+endif()
 
 function(awj_force_single_config_vcpkg_library cache_var release_var debug_var)
     set(release_library "${${release_var}}")
@@ -636,8 +674,8 @@ function(avif_add_slint_sources target slint_file)
     # 界面翻译走 Slint 的 bundled translations：目录结构是
     # <dir>/<语言>/LC_MESSAGES/<domain>.po，由 slint-compiler 直接解析 .po 编进二进制，
     # 不需要 msgfmt、不需要运行时 .mo、也不依赖 gettext（本项目的 Slint 没开 gettext）。
-    # 中文是 msgid 本身，也就是语言索引 0；切换到英文由 C++ 调
-    # slint::select_bundled_translation("en") 完成，因为它会写 translations_dirty 这个
+    # 中文是 msgid 本身，也是 bundled 默认语言；英文由 C++ 调
+    # select_bundled_translation("en") 切换。该调用会写 translations_dirty 这个
     # 真实属性，所有 @tr() 绑定都会失效重算，可以不重启即时切换。
     # --no-default-translation-context：默认会拿组件名当 msgctxt，关掉之后 .po 里
     # 绝大多数条目不需要 msgctxt，只有真正歧义的（例如"关闭"既是 Off 又是 Close）
@@ -675,7 +713,10 @@ avif_enable_common_options(awj_base)
 target_compile_definitions(awj_base PRIVATE
     AWJ_BUILD_VERSION="${PROJECT_VERSION}")
 add_dependencies(awj_base awj_visual_metric_shaders)
-target_link_libraries(awj_base PUBLIC scn::scn)
+target_link_libraries(awj_base PUBLIC
+    scn::scn
+    nlohmann_json::nlohmann_json
+    awj_libplacebo)
 if(WIN32)
     target_link_libraries(awj_base PUBLIC bcrypt d3d11)
     target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=1 AWJ_HAS_VULKAN=0)
@@ -691,9 +732,11 @@ target_sources(awj_base
             src/core/encoding_defaults.ixx
             src/core/large_image_plan.ixx
             src/app/config.ixx
+            src/app/preset.ixx
             src/core/visual_quality.ixx
             src/core/visual_metrics.ixx
             src/core/image.ixx
+            src/core/hdr_tonemap.ixx
             src/core/resource_planner.ixx
             src/core/codec.ixx
             src/core/process.ixx)
@@ -899,23 +942,33 @@ target_compile_definitions(awj_update PRIVATE
     AWJ_UPDATE_PUBLIC_KEY_HEX="${AWJ_UPDATE_PUBLIC_KEY_HEX}")
 target_link_libraries(awj_update PUBLIC
     nlohmann_json::nlohmann_json
-    unofficial-sodium::sodium)
+    unofficial-sodium::sodium
+    LibArchive::LibArchive)
 if(WIN32)
-    target_link_libraries(awj_update PUBLIC winhttp)
+    target_link_libraries(awj_update PUBLIC winhttp bcrypt)
 else()
-    target_link_libraries(awj_update PUBLIC CURL::libcurl)
+    # update_linux imports awj.core for executable-path discovery.  Declare
+    # the module provider here so GCC receives its CXX module mapper entry.
+    target_link_libraries(awj_update PUBLIC awj_base CURL::libcurl)
 endif()
 target_sources(awj_update
     PUBLIC
         FILE_SET awj_update_modules TYPE CXX_MODULES FILES
             src/update/update_model.ixx
             src/update/update_manifest.ixx
+            src/update/update_manifest_v2.ixx
+            src/update/update_archive.ixx
             src/update/update_runtime.ixx)
 if(WIN32)
     target_sources(awj_update
         PUBLIC
             FILE_SET awj_update_windows_modules TYPE CXX_MODULES FILES
                 src/update/update_windows.ixx)
+else()
+    target_sources(awj_update
+        PUBLIC
+            FILE_SET awj_update_linux_modules TYPE CXX_MODULES FILES
+                src/update/update_linux.ixx)
 endif()
 
 if(BUILD_TESTING)
@@ -927,9 +980,24 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_update_manifest_tests)
     target_link_libraries(awj_update_manifest_tests PRIVATE awj_update)
 
+    add_executable(awj_update_archive_tests tests/update_archive_tests.cpp)
+    avif_enable_common_options(awj_update_archive_tests)
+    target_link_libraries(awj_update_archive_tests PRIVATE awj_update)
+
+    add_executable(awj_changelog_history_tests tests/changelog_history_tests.cpp)
+    avif_enable_common_options(awj_changelog_history_tests)
+    add_dependencies(awj_changelog_history_tests awj_changelog_data)
+    target_include_directories(awj_changelog_history_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/ui"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
     add_executable(awj_visual_quality_tests tests/visual_quality_tests.cpp)
     avif_enable_common_options(awj_visual_quality_tests)
     target_link_libraries(awj_visual_quality_tests PRIVATE awj_base)
+
+    add_executable(awj_hdr_tonemap_tests tests/hdr_tonemap_tests.cpp)
+    avif_enable_common_options(awj_hdr_tonemap_tests)
+    target_link_libraries(awj_hdr_tonemap_tests PRIVATE awj_base)
 
     add_executable(awj_config_defaults_tests tests/config_defaults_tests.cpp)
     avif_enable_common_options(awj_config_defaults_tests)
@@ -1018,7 +1086,10 @@ if(BUILD_TESTING)
     set(AWJ_TEST_TARGETS
         awj_update_model_tests
         awj_update_manifest_tests
+        awj_update_archive_tests
+        awj_changelog_history_tests
         awj_visual_quality_tests
+        awj_hdr_tonemap_tests
         awj_config_defaults_tests
         awj_process_tests
         awj_resource_planner_tests
@@ -1050,6 +1121,9 @@ if(BUILD_TESTING)
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
     add_test(NAME update_model_core COMMAND awj_update_model_tests)
     add_test(NAME update_manifest_security COMMAND awj_update_manifest_tests)
+    add_test(NAME update_archive_security COMMAND awj_update_archive_tests)
+    add_test(NAME changelog_history_complete COMMAND awj_changelog_history_tests)
+    add_test(NAME hdr_tonemap_cpu COMMAND awj_hdr_tonemap_tests)
     add_test(NAME config_defaults_core COMMAND awj_config_defaults_tests)
     add_test(NAME process_core COMMAND awj_process_tests)
     add_test(NAME resource_planner_core COMMAND awj_resource_planner_tests)

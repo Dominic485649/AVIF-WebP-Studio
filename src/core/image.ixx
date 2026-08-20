@@ -32,6 +32,14 @@ enum class AlphaMode {
   premultiplied,
 };
 
+// A 16-bit channel can be either a normalized integer sample or IEEE 754
+// binary16.  scRGB arrives through WIC as the latter and must not be clipped
+// before the actual SDR/HDR output path is chosen.
+enum class SampleRepresentation {
+  unorm,
+  ieee_half_float,
+};
+
 enum class MetadataKind {
   icc,
   exif,
@@ -71,6 +79,7 @@ struct ImageBuffer {
   PixelFormat pixel_format{PixelFormat::unknown};
   AlphaMode alpha_mode{AlphaMode::none};
   int bit_depth{8};
+  SampleRepresentation sample_representation{SampleRepresentation::unorm};
   std::optional<ImageSourceInfo> source_info{};
   std::vector<ImagePlane> planes{};
   std::vector<MetadataBlock> metadata{};

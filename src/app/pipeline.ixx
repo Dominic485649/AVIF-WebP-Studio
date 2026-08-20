@@ -436,6 +436,12 @@ std::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
 }
 
 std::string format_result_line(const EncodeResult& result) {
+  const auto warning_suffix = [&] {
+    return result.ok && !result.skipped && !result.message.empty() &&
+                   result.message != "OK"
+               ? std::format(" [WARN] {}", result.message)
+               : std::string{};
+  };
   if (result.ok) {
     if (result.skipped) {
       return std::format("[SKIP] {:04} {} -> 已存在", result.index + 1,
@@ -450,12 +456,12 @@ std::string format_result_line(const EncodeResult& result) {
       if (result.lossless) {
         return std::format(
             "[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s, VQ {}→lossless, q{}, "
-            "{} 次)",
+            "{} 次){}",
             result.index + 1, path_to_utf8(result.input_path.filename()),
             path_to_utf8(result.output_path.filename()),
             format_size(result.output_bytes), ratio * 100.0, result.seconds,
             *result.requested_visual_quality, result.final_encoder_quality,
-            result.search_attempt_count);
+            result.search_attempt_count, warning_suffix());
       }
       // 注意：Studio 会在 src/ui/main.cpp 里对子进程 stdout 嗅探 "未达标" 来给
       // 队列行打警告标记。这条文本属于跨进程约定，必须保持中文；worker 输出与
@@ -464,18 +470,20 @@ std::string format_result_line(const EncodeResult& result) {
           result.visual_quality_target_met ? "" : ", 未达标兜底";
       return std::format(
           "[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s, VQ {}→{:.2f}{}, q{}, "
-          "{} 次)",
+          "{} 次){}",
           result.index + 1, path_to_utf8(result.input_path.filename()),
           path_to_utf8(result.output_path.filename()),
           format_size(result.output_bytes), ratio * 100.0, result.seconds,
           *result.requested_visual_quality, result.visual_score, target_state,
-          result.final_encoder_quality, result.search_attempt_count);
+          result.final_encoder_quality, result.search_attempt_count,
+          warning_suffix());
     }
     return std::format(
-        "[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s)", result.index + 1,
+        "[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s){}", result.index + 1,
         path_to_utf8(result.input_path.filename()),
         path_to_utf8(result.output_path.filename()),
-        format_size(result.output_bytes), ratio * 100.0, result.seconds);
+        format_size(result.output_bytes), ratio * 100.0, result.seconds,
+        warning_suffix());
   }
 
   if (result.canceled) {
@@ -2121,6 +2129,13 @@ int run_pipeline(const AppConfig& cfg,
         }
         if (event.kind == BatchEventKind::summary) {
           print_line("");
+        }
+        if (cfg.studio_queue_manifest.empty() &&
+            event.kind == BatchEventKind::item_finished && event.result.ok &&
+            !event.result.skipped && !event.result.message.empty() &&
+            event.result.message != "OK") {
+          std::println(stderr, "[WARN] {}", event.result.message);
+          std::fflush(stderr);
         }
         if (!event.text.empty()) {
           print_line(event.text);

@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-1.0.0 发布说明：[GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0)
+当前 prerelease：[GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4)
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
@@ -15,14 +15,14 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
-## 1.0.0 GitHub 发行包
+## 1.0.4 GitHub 发行包
 
-从 [GitHub Release 1.0.0](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.0) 下载与系统匹配的归档；两个包不混装跨平台文件：
+从 [GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4) 下载与系统匹配的归档；1.0.4 的自定义资产只有这两个包，且不混装跨平台二进制：
 
 | 归档 | 精确内容 | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Linux.7z) | Linux ELF：`AWJ` | 见 Release 正文 |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.0/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com` | 见 Release 正文 |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z) | Linux ELF：`AWJ`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
 
 归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。
 
@@ -78,6 +78,8 @@ Windows 也可使用脚本：
 .\release.ps1 -SkipUpdateManifest
 ```
 
+> 1.0.4 起 `release.ps1` 只负责 Windows 构建，拒绝写 manifest。跨平台归档、v2/v1 签名与 GitHub 发布流程见 [docs/release.md](docs/release.md)。
+
 Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留发行文件；若目录中已有 Linux 构建，也会保留 `AWJ` 与 `AWJ.sha256`：
 
 - `bin\x64\Release\AWJ.exe`
@@ -90,52 +92,13 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 - `bin\x64\Release\THIRD_PARTY_NOTICES.txt`
 - `bin\x64\Release\BUILD_INFO.txt`
 
-版本号由仓库根目录的 `VERSION` 文件控制，`CMakeLists.txt` 构建时自动读取，`scripts/Update-VcpkgVersion.ps1` 可同步到 `vcpkg.json`。正式发布还必须使用仓库外保存的 Ed25519 seed，把对应公钥编入客户端；私钥/seed 不得提交、复制到产物目录或写入日志。发版流程：
-
-```powershell
-# 1. 更新版本号与中英文 changelog
-Set-Content VERSION "1.0.1"
-.\scripts\Update-VcpkgVersion.ps1
-
-# 2. 从仓库外 seed 推导公钥；seed 文件只能包含 64 个小写十六进制字符
-cmake --build build\x64\Release --config Release --target awj_update_manifest_sign
-$PublicKey = (& .\bin\x64\Release\awj_update_manifest_sign.exe `
-    --print-public-key 'E:\AWJ-secrets\update-ed25519-seed.hex').Trim()
-
-# 3. 提交并打 tag；先单独完成并验证 Linux AWJ
-git add VERSION vcpkg.json CHANGELOG.md CHANGELOG.en.md
-git commit -m "release: 1.0.1"
-git tag 1.0.1
-
-# 4. 构建 Windows 资产并生成确定性、签名的静态 manifest
-.\release.ps1 `
-  -UpdateManifestSequence 1 `
-  -UpdatePublishedAtUtc '2026-08-09T12:00:00Z' `
-  -MinimumUpdaterVersion '1.0.1' `
-  -UpdatePublicKeyHex $PublicKey `
-  -UpdateSigningSeedFile 'E:\AWJ-secrets\update-ed25519-seed.hex' `
-  -LinuxAssetPath 'D:\release-assets\AWJ'
-
-# 5. 从 bin\x64\Release 打包；两个归档都必须带上 LICENSE、THIRD_PARTY_NOTICES.txt 和 BUILD_INFO.txt
-7z a -t7z ..\..\..\build\release\AWJ_Linux.7z AWJ LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
-7z a -t7z ..\..\..\build\release\AWJ_Win.7z AWJ.exe AWJ.com LICENSE THIRD_PARTY_NOTICES.txt BUILD_INFO.txt -m0=lzma2 -mx=9 -mmt=1 -mf=off
-7z t ..\..\..\build\release\AWJ_Linux.7z
-7z t ..\..\..\build\release\AWJ_Win.7z
-
-# 6. 校验归档清单：确认许可证和构建来源文件确实在归档里
-7z l ..\..\..\build\release\AWJ_Linux.7z
-7z l ..\..\..\build\release\AWJ_Win.7z
-```
-
-上传三个原始资产 `AWJ.exe`、`AWJ.com`、`AWJ` 和两个归档后，再把脚本生成的 `update-manifest.json` / `.sig` 提交到 `master`。脚本会拒绝不递增的 sequence、重复或跨渠道复用的版本、缺少双语 changelog、与内置公钥不匹配的 seed，以及 Cargo 许可证清单漂移。已写入 manifest 的版本不得用不同字节重新发布。
-
-静态链接的第三方库要求随二进制分发其许可证文本，因此 `LICENSE` 与 `THIRD_PARTY_NOTICES.txt` 必须进入归档，不能只打包可执行文件；`BUILD_INFO.txt` 记录版本、commit 和依赖版本，用于复现与审计。
+版本号由仓库根目录的 `VERSION` 文件控制，`CMakeLists.txt` 构建时自动读取，`scripts/Update-VcpkgVersion.ps1` 可同步到 `vcpkg.json`。正式发布必须使用仓库外保存的 Ed25519 seed，并将匹配的公钥编入客户端；私钥/seed 不得提交、复制到产物目录或写入日志。1.0.4+ 的实际归档、签名和 GitHub 发布步骤以 [docs/release.md](docs/release.md) 为准。
 
 ## 自动更新
 
-1.0.1 首次加入完整更新基础设施，1.0.0 用户仍需手动安装这一次。客户端只读取仓库中的静态 `update-manifest.json`，验过内置 Ed25519 公钥、递增 sequence、严格三段版本、主机白名单、大小和 SHA-256 后才采用候选；缓存日志从不作为执行依据。Windows 会成对下载并事务替换 `AWJ.exe` / `AWJ.com`，新版未通过启动健康检查时整组回滚；Linux 首轮只检查并打开候选 Release 页面。
+1.0.4 的客户端只接受仓库静态、签名的 `update-manifest-v2.json`：独立递增 sequence、严格版本/渠道/主机校验后，下载一个平台归档并逐成员验证大小和 SHA-256。Windows 与可写 Linux 安装目录均在同卷 staging 中原子替换并进行健康检查/回滚；不可写 Linux 安装目录只打开 Release 页面，不静默提权。缓存日志从不作为执行权威。
 
-下一次真实链路测试使用 `1.0.2 prerelease`：stable 用户不会看到，主动选择 prerelease 的 1.0.1 用户用于虚拟机端到端升级。测试完成后不得把相同的 1.0.2 改成 stable，下一正式版必须使用 1.0.3 或更高版本。仓库默认 CMake 配置已集成正式公钥；发布脚本仍要求通过 `-DAWJ_UPDATE_PUBLIC_KEY_HEX=<64 位小写十六进制公钥>` 显式传入并与仓库外 seed 推导值匹配，未配置公钥的开发构建会 fail-closed，拒绝联网更新。
+旧 `update-manifest.json` schema 1 仅保留给 1.0.3→1.0.5 的 Windows 本机桥接测试；1.0.5 不加入 v2 候选。该测试完成后停止，不在 VM 或 WSL 中执行更新端到端测试，也不创建 1.0.6。
 
 `svt-av1-hdr` 与实验 `zenrav1e` 均静态链接进主程序，不需要 sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
@@ -161,6 +124,10 @@ AWJ -i input.png --format jpgli -q 95 --summary
 AWJ -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
 AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 ```
+
+`-i` / `-o` 会去除外围空白和一对完整双引号，因此 `-i '"D:\example.jxr"'` 与 `-i D:\example.jxr` 等价；空路径、不配对引号或路径内部引号会明确报错。`-p/--preset <名称>` 从可执行文件旁 `preset/*.jsonc` 按名称加载，`--preset-file <路径>` 加载指定 JSONC；不选预设时使用当前内置默认，显式 CLI 参数始终覆盖预设且与参数顺序无关。AVIF 默认 speed 为 5。
+
+Windows CLI 还可在输出原子提交成功后保留源文件时间：`--preserve-creation-time`、`--preserve-modification-time`、`--preserve-access-time`。写回失败只产生 stderr/日志警告，不会丢弃有效输出。Linux 不显示并拒绝这些 Windows 专用参数。
 
 `zenrav1e` 是实验编码器：普通单图必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`；自动大图链路可按资源使用它。Windows 与 Linux GCC Release 均可用。
 
@@ -190,6 +157,8 @@ Studio 的自动线程预算在逻辑线程数 >=12、5-11、2-4 时分别预留
 
 Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。0.10.3 增加待处理、处理中、成功和失败计数、仅看失败、重试失败项及选中项详情；详情保留完整错误、输入/输出路径、编码器、线程数和 decode/prepare/encode/write 阶段耗时。
 
+队列的输出格式、预设、移除元数据和 Windows 三种时间戳均是本次运行设置：点击开始时会快照整批任务，默认输出 AVIF、保留元数据、三个时间戳均不勾选。它们与参数页和右键菜单设置独立；参数页仅编辑五种格式参数，用户预设必须在队列中显式选择。
+
 SoftComboBox、SoftButton、左侧导航与队列右键菜单提供 Tab 焦点、可见焦点状态、Enter/Space、方向键、Home/End、Esc 以及可访问角色/名称。字体下拉框仍最多显示 10 行，支持滚轮和滚动条，不提供搜索或手动输入。参数页按常用参数、资源限制、格式高级选项分组，右侧以彩色文字说明格式、资源和风险；右键菜单预设独立保留。
 
 Windows Explorer 多选图片或文件夹后执行同一个 AWJ 右键命令时，启动请求会合并到一个右键窗口和同一队列。右键窗口提供普通取消与强制终止；本体和右键窗口点击右上角关闭时会先终止活动任务。
@@ -207,7 +176,7 @@ pwsh -NoProfile -File .\scripts\benchmark.ps1 `
   -Mode All
 ```
 
-当前协议不向 AWJ 传入质量、速度、色度、位深或内存参数，因此验证实际默认值：AOM、quality 70、speed 6、按源格式自动选择色度、自动至少 10-bit，以及非不透明 alpha 自动保留且同样按 q70 编码。严格对照固定使用 ffmpeg AOM QP 23、10-bit 4:2:0、all-intra、row-mt，并按像素、字节、路径排序。脚本先自检输入和 `summary.csv` 的实际参数，再记录 Job Object 覆盖的整棵进程树 CPU/峰值内存。
+当前协议不向 AWJ 传入质量、速度、色度、位深或内存参数，因此验证实际默认值：AOM、quality 70、speed 5、按源格式自动选择色度、自动至少 10-bit，以及非不透明 alpha 自动保留且同样按 q70 编码。严格对照固定使用 ffmpeg AOM QP 23、10-bit 4:2:0、all-intra、row-mt，并按像素、字节、路径排序。脚本先自检输入和 `summary.csv` 的实际参数，再记录 Job Object 覆盖的整棵进程树 CPU/峰值内存。
 
 默认 `All` 同时运行回归和严格对照；`Regression` 只运行 AWJ，`Strict` 只运行 210 张不含 ICC/EXIF/XMP 的不透明图片与 ffmpeg。非 smoke 运行每组预热一次、测量五次，P95 使用 nearest-rank；每次调用间冷却 30 秒。结果写入 `build/benchmarks/`，不应把单轮最快值当作版本结论。
 

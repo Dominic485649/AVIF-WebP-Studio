@@ -272,7 +272,7 @@ int main() {
   default_speed_settings.speed_explicit = false;
   auto default_speed = aom->encode(make_test_image(), default_speed_settings);
   if (!default_speed || default_speed->diagnostics.speed_mapping.codec_key != "aom:cpu-used" ||
-      default_speed->diagnostics.speed_mapping.codec_value != 6) {
+      default_speed->diagnostics.speed_mapping.codec_value != 5) {
     return fail(default_speed ? "AOM default speed diagnostics invalid."
                               : default_speed.error());
   }

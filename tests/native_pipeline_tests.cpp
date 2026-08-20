@@ -105,7 +105,16 @@ awj::ImageBuffer make_hdr_test_image() {
                           .height = 1,
                           .pixel_format = awj::PixelFormat::rgba,
                           .alpha_mode = awj::AlphaMode::straight,
-                          .bit_depth = 16};
+                          .bit_depth = 16,
+                          .source_info = awj::ImageSourceInfo{
+                              .pixel_format = awj::PixelFormat::rgba,
+                              .bit_depth = 16,
+                              .color_primaries = 9,
+                              .transfer_characteristics = 16,
+                              .matrix_coefficients = 0,
+                              .color_range = 1,
+                              .has_hdr_metadata = true,
+                              .color_metadata_source = "test-bt2020-pq"}};
   image.planes.push_back(std::move(plane));
   return image;
 }
@@ -218,9 +227,9 @@ int main() {
   if (hdr_result.source_bit_depth.value_or(0) != 16 ||
       hdr_result.applied_bit_depth.value_or(0) != 8 ||
       !hdr_result.source_has_hdr_metadata ||
-      hdr_result.applied_hdr_metadata != "sdr-fallback" ||
-      hdr_result.fallback_reason != "HDR -> SDR fallback") {
-    return fail("native backend HDR fallback diagnostics invalid.");
+      hdr_result.applied_hdr_metadata != "sdr-tone-map" ||
+      hdr_result.fallback_reason != "HDR -> SDR tone-map") {
+    return fail("native backend HDR tone-map diagnostics invalid.");
   }
 
   cfg.output_format = awj::OutputFormat::jxl;

@@ -294,7 +294,11 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   // 绑定都会重算——可访问名也是 @tr() 的，所以这里直接用它来证明切换生效，
   // 而不是只检查那个 int 属性被写进去了。
   app->set_selected_page(0);
-  if (!find_one(app, "输出格式")) {
+  if (!slint::select_bundled_translation("")) {
+    return fail("could not select the Chinese default translation");
+  }
+  app->set_language_index(0);
+  if (!find_one(app, "编辑格式", slint::language::AccessibleRole::Combobox)) {
     return fail("Chinese is not the default UI language");
   }
   if (!slint::select_bundled_translation("en")) {
@@ -302,21 +306,21 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
                 "--bundle-translations flag in CMakeLists.txt");
   }
   app->set_language_index(1);
-  if (!find_one(app, "Output format")) {
+  if (!find_one(app, "Edit format", slint::language::AccessibleRole::Combobox)) {
     return fail("switching to English did not retranslate accessible names");
   }
   if (!find_one(app, "Changelog", slint::language::AccessibleRole::Tab)) {
     return fail("the new changelog navigation item was not translated");
   }
-  if (find_one(app, "输出格式")) {
+  if (find_one(app, "编辑格式", slint::language::AccessibleRole::Combobox)) {
     return fail("Chinese accessible name survived the switch to English");
   }
   // 切回中文：后面的断言仍按中文可访问名查找。
   if (!slint::select_bundled_translation("")) {
-    return fail("could not switch back to the default language");
+    return fail("could not switch back to the Chinese default language");
   }
   app->set_language_index(0);
-  if (!find_one(app, "输出格式")) {
+  if (!find_one(app, "编辑格式", slint::language::AccessibleRole::Combobox)) {
     return fail("switching back to Chinese did not restore the msgid text");
   }
 
@@ -357,6 +361,11 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
 
   app->set_queue_failed_only(false);
+  app->set_selected_queue_index(0);
+  app->invoke_open_queue_menu(1, 360.0f, 220.0f);
+  if (app->get_selected_queue_index() != 0) {
+    return fail("opening a queue context menu changed the detail selection");
+  }
   app->invoke_open_queue_menu(0, 360.0f, 220.0f);
   if (slint::cbindgen_private::slint_testing_active_popup_count(
           &app->window().window_handle()) != 1) {
