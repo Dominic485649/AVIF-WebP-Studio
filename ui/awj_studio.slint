@@ -2124,6 +2124,7 @@ export component AwjStudio inherits Window {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
                     viewport-width: parent.width;
+                    viewport-height: max(parent.height, changelog-content.preferred-height + 48px);
                     Rectangle {
                         border-radius: 8px;
                         background: root.panel-bg;
