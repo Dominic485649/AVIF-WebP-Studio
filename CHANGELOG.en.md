@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5 - 2026-08-24
+
+- Prerelease: Functionally identical to 1.0.4. This build only supplies the raw `AWJ.exe` / `AWJ.com` needed for the Windows 1.0.3→1.0.5 updater bridge test; normal users should download the 1.0.4 archive assets.
+
 ## 1.0.4 - 2026-08-21
 
 - Prerelease: fixed changelog cards whose fixed body height clipped and overlapped text; the page now embeds the complete history from the earliest release, retaining the Chinese original for legacy entries without an English translation. The sidebar title remains centered while the version marker and rule move 16 px left.
