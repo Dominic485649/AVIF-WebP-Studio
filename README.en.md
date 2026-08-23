@@ -78,9 +78,9 @@ Versioning is controlled by the root `VERSION` file. A real release must use an 
 
 ## Automatic updates
 
-1.0.4 clients accept only the static signed `update-manifest-v2.json`: an independent monotonic sequence and strict version/channel/host checks precede one platform archive download, and every required member's size and SHA-256 is verified. Windows and writable Linux installs stage on the same volume, atomically replace, health-check, and roll back; unwritable Linux installs open the Release page without silent elevation. Cached changelog text is never execution authority.
+From 1.0.6, clients first use a `update-keyring-v1.json` verified by at least two of three compiled roots to choose a non-revoked release key, then verify v1/v2 manifests carrying `key_id`, monotonic sequence, `issued_at`, and `expires_at`. Each document type persists its last verified sequence and raw SHA-256 beside the executable with an inter-process lock, flush, and atomic replace; damaged state, rollback, and changed bytes at one sequence fail closed. Windows and writable Linux installs still stage on the same volume, atomically replace, health-check, and roll back; unwritable Linux installs open the Release page without silent elevation.
 
-Legacy schema-1 `update-manifest.json` remains only for the local Windows 1.0.3→1.0.5 bridge test. 1.0.5 is not a v2 candidate. Stop after that test; do not run updater end-to-end in WSL/VM and do not create 1.0.6.
+Legacy schema-1 `update-manifest.json` remains only for the local Windows 1.0.3→1.0.5 bridge; 1.0.5 is not a v2 candidate. See [update signing and key rotation](docs/update-security.en.md) for custody, expiry, revocation, and rotation.
 
 ## CLI
 
@@ -93,9 +93,11 @@ AWJ -i input.png --preset-file .\preset\my-preset.jsonc --format jxl
 AWJ -i input.png --preserve-creation-time --preserve-modification-time
 ```
 
-`-i` / `-o` trim surrounding whitespace and one complete pair of double quotes; empty paths, unmatched quotes, and embedded quotes fail clearly. `-p/--preset <name>` loads a named executable-adjacent `preset/*.jsonc`; `--preset-file <path>` loads a specified JSONC. Without a user preset, AWJ uses current built-in defaults; explicit CLI options always override it regardless of argument order. AVIF default speed is 5.
+`-i` / `-o` trim surrounding whitespace and one complete pair of double quotes; empty paths, unmatched quotes, and embedded quotes fail clearly. `--list-presets` dynamically lists valid executable-adjacent `preset/*.jsonc` files and reports invalid ones; `-p/--preset <name>` loads one by name and `--preset-file <path>` loads a specified JSONC. Without a user preset, AWJ uses current built-in defaults; explicit CLI options always override it regardless of argument order. AVIF default speed is 5.
 
 Windows CLI also offers `--preserve-creation-time`, `--preserve-modification-time`, and `--preserve-access-time`; it writes them only after atomic output commit. A write failure produces an stderr/log warning without discarding valid output. Linux neither lists nor accepts those Windows-only options.
+
+Windows CLI can consume one piped WGC HDR frame: `capture-tool | AWJ --stdin-wgc-rgba16f 3840x2160 -o D:\output --format avif`. It accepts exactly one `DXGI_FORMAT_R16G16B16A16_FLOAT` frame (little-endian RGBA binary16, linear scRGB), requires explicit dimensions and `-o`, and cannot be combined with `-i`; short data, extra-frame bytes, and unknown bare RAW are rejected rather than guessed.
 
 The Studio queue snapshots output format, user preset, metadata removal, and the three Windows timestamp choices at Start. It defaults to AVIF, retaining metadata, and no timestamps. Queue choices are independent from the Parameters editor and context-menu settings; the editor only switches among five format parameter groups, and a user preset must be selected explicitly in the queue.
 
@@ -195,4 +197,5 @@ Windows Explorer multi-selection launches are coalesced into one shell window an
 - English migration notes: [docs/cpp-port.en.md](docs/cpp-port.en.md)
 - Chinese release procedure: [docs/release.md](docs/release.md)
 - English release procedure: [docs/release.en.md](docs/release.en.md)
+- Update security: [中文](docs/update-security.md) / [English](docs/update-security.en.md)
 - Changelog (Chinese): [CHANGELOG.md](CHANGELOG.md)

@@ -1,5 +1,12 @@
 # 更新日志
 
+## 1.0.6 - 2026-08-24
+
+- prerelease：更新器新增双 root 授权的 release keyring、key ID、签名 `issued_at` / `expires_at`、撤销标志和最多 180 天有效期。v1、v2 与 keyring 的 sequence 和原始 SHA-256 通过跨进程锁及原子状态文件持久化；回退、同 sequence 篡改或状态损坏均 fail-closed，helper 会再次验证 keyring 与 v2 清单。
+- 预设兼容加载历史的 `[null]` / `[整数]` `visual_quality` 写法，并在下次保存时写成正确标量；参数页和队列可再次预览 `测试.jsonc`。CLI 新增 `--list-presets`，动态列出同目录有效预设及无效文件原因。
+- Windows CLI 新增 `--stdin-wgc-rgba16f <宽>x<高>`，可从管道读取一帧精确长度的 `DXGI_FORMAT_R16G16B16A16_FLOAT` 线性 scRGB；输入会以安全临时文件走原有 HDR 路径，短/长帧、无尺寸或未知裸 RAW 均拒绝。
+- Windows 11 风格圆角应用图标；队列三个文件时间选项移到“写入运行日志”后，窄窗口自动换行。更新日志恢复正常向下滚动；设置页自动更新三项横向排列。
+
 ## 1.0.5 - 2026-08-24
 
 - prerelease：功能与 1.0.4 完全相同。本版本仅提供 1.0.3→1.0.5 的 Windows 自动更新桥接测试所需裸 `AWJ.exe` / `AWJ.com`；普通用户请下载 1.0.4 的归档资产。

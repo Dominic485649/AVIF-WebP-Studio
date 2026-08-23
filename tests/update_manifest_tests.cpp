@@ -23,6 +23,9 @@ std::string valid_manifest() {
   return R"json({
   "schema": 1,
   "sequence": 7,
+  "key_id": "release-test-2026",
+  "issued_at": "2026-08-01T00:00:00Z",
+  "expires_at": "2026-09-01T00:00:00Z",
   "entries": [
     {
       "version": "1.0.2",
@@ -124,10 +127,32 @@ int test_strict_fields() {
                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
            replaced(manifest, "\"size\": 100", "\"size\": 0"),
-           replaced(manifest, "\"schema\": 1", "\"schema\": 2")}) {
+           replaced(manifest, "\"schema\": 1", "\"schema\": 2"),
+           replaced(manifest, "\"key_id\": \"release-test-2026\"",
+                    "\"key_id\": \"Release_Test\""),
+           replaced(manifest, "2026-09-01T00:00:00Z",
+                    "2026-08-01T00:00:00Z")}) {
     if (bad.empty() || parse_manifest_json(bad)) {
       return fail("a malformed manifest field was accepted");
     }
+  }
+  return 0;
+}
+
+int test_expiry_window() {
+  const auto now = parse_rfc3339_utc("2026-08-20T00:00:00Z", "test now");
+  if (!now) return fail(now.error());
+  if (!validate_signed_update_document_window(
+          "2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z", *now)) {
+    return fail("a bounded current signed-document window was rejected");
+  }
+  if (validate_signed_update_document_window(
+          "2026-08-01T00:00:00Z", "2026-08-19T00:00:00Z", *now)) {
+    return fail("an expired signed document was accepted");
+  }
+  if (validate_signed_update_document_window(
+          "2026-08-01T00:00:00Z", "2027-08-01T00:00:00Z", *now)) {
+    return fail("an overlong signed-document window was accepted");
   }
   return 0;
 }
@@ -195,6 +220,7 @@ int main() {
   if (const auto result = test_valid_manifest()) return result;
   if (const auto result = test_url_policy()) return result;
   if (const auto result = test_strict_fields()) return result;
+  if (const auto result = test_expiry_window()) return result;
   if (const auto result = test_response_limits_and_signature_gate()) return result;
   if (const auto result = test_asset_hash_and_size()) return result;
   std::cout << "update manifest security tests passed\n";

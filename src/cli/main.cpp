@@ -7,10 +7,14 @@
 #include <cstdio>
 #include <print>
 #include <cstdlib>
+#include <cwctype>
 #include <exception>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <functional>
+#include <iostream>
+#include <limits>
 #include <memory>
 #include <csignal>
 #include <stop_token>
@@ -20,6 +24,8 @@
 #include <utility>
 #include <vector>
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 #endif
 
@@ -27,6 +33,9 @@ import awj.config;
 import awj.core;
 import awj.pipeline;
 import awj.preset;
+#ifdef _WIN32
+import awj.raw_image_io;
+#endif
 
 namespace {
 
@@ -73,10 +82,145 @@ void signal_handler(int) {
 
 #endif
 
+#ifdef _WIN32
+struct WgcStdinSpec {
+  std::uint32_t width{};
+  std::uint32_t height{};
+};
+
+std::expected<std::uint32_t, std::string> parse_wgc_dimension(
+    std::wstring_view value) {
+  if (value.empty() || value.size() > 10) {
+    return std::unexpected{"WGC 尺寸必须是正整数。"};
+  }
+  std::uint64_t parsed = 0;
+  for (const wchar_t ch : value) {
+    if (ch < L'0' || ch > L'9' ||
+        parsed > (std::numeric_limits<std::uint32_t>::max() -
+                  static_cast<std::uint32_t>(ch - L'0')) /
+                     10u) {
+      return std::unexpected{"WGC 尺寸必须是 1 到 4294967295 的整数。"};
+    }
+    parsed = parsed * 10u + static_cast<std::uint32_t>(ch - L'0');
+  }
+  if (parsed == 0) return std::unexpected{"WGC 尺寸不能为零。"};
+  return static_cast<std::uint32_t>(parsed);
+}
+
+std::expected<std::optional<WgcStdinSpec>, std::string> extract_wgc_stdin_spec(
+    std::vector<std::wstring>& args) {
+  std::vector<std::wstring> filtered;
+  filtered.reserve(args.size());
+  std::optional<WgcStdinSpec> result;
+  bool explicit_input = false;
+  for (std::size_t index = 0; index < args.size(); ++index) {
+    auto option = args[index];
+    std::ranges::transform(option, option.begin(), [](wchar_t ch) {
+      return static_cast<wchar_t>(std::towlower(ch));
+    });
+    if (option == L"-i" || option == L"--input") explicit_input = true;
+    if (option != L"--stdin-wgc-rgba16f") {
+      filtered.push_back(std::move(args[index]));
+      continue;
+    }
+    if (result) return std::unexpected{"--stdin-wgc-rgba16f 只能出现一次。"};
+    if (++index >= args.size()) {
+      return std::unexpected{"--stdin-wgc-rgba16f 需要 <宽>x<高>。"};
+    }
+    const auto separator = args[index].find_first_of(L"xX");
+    if (separator == std::wstring::npos ||
+        args[index].find_first_of(L"xX", separator + 1) != std::wstring::npos) {
+      return std::unexpected{"--stdin-wgc-rgba16f 尺寸应为 <宽>x<高>。"};
+    }
+    auto width = parse_wgc_dimension(std::wstring_view{args[index]}.substr(0, separator));
+    auto height = parse_wgc_dimension(std::wstring_view{args[index]}.substr(separator + 1));
+    if (!width || !height) {
+      return std::unexpected{!width ? width.error() : height.error()};
+    }
+    result = WgcStdinSpec{.width = *width, .height = *height};
+  }
+  if (result && explicit_input) {
+    return std::unexpected{"--stdin-wgc-rgba16f 不能与 -i/--input 同时使用。"};
+  }
+  args = std::move(filtered);
+  return result;
+}
+
+struct WgcStdinTemporary {
+  std::filesystem::path directory{};
+  std::filesystem::path path{};
+  bool owns_directory{};
+  ~WgcStdinTemporary() {
+    std::error_code ignored;
+    if (owns_directory && !directory.empty()) {
+      std::filesystem::remove_all(directory, ignored);
+    }
+  }
+};
+
+std::expected<std::unique_ptr<WgcStdinTemporary>, std::string>
+spool_wgc_stdin(const WgcStdinSpec& spec) {
+  std::error_code ec;
+  const auto temp_root = std::filesystem::temp_directory_path(ec);
+  if (ec) return std::unexpected{"无法定位 WGC stdin 临时目录。"};
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  auto temporary = std::make_unique<WgcStdinTemporary>();
+  for (unsigned attempt = 0; attempt < 32; ++attempt) {
+    temporary->directory = temp_root / std::format(
+        L"AWJ-wgc-{}-{}-{}", GetCurrentProcessId(), stamp, attempt);
+    if (std::filesystem::create_directory(temporary->directory, ec)) {
+      temporary->owns_directory = true;
+      break;
+    }
+    if (ec && ec != std::errc::file_exists) {
+      return std::unexpected{"无法创建 WGC stdin 临时目录。"};
+    }
+    ec.clear();
+  }
+  if (!temporary->owns_directory || temporary->directory.empty() ||
+      !std::filesystem::is_directory(temporary->directory, ec) || ec) {
+    return std::unexpected{"无法创建 WGC stdin 临时目录。"};
+  }
+  temporary->path = temporary->directory / L"stdin-wgc-rgba16f.awsraw";
+  if (_setmode(_fileno(stdin), _O_BINARY) == -1) {
+    return std::unexpected{"无法将 WGC stdin 切换为二进制模式。"};
+  }
+  if (auto written = awj::write_wgc_scrgb_half_stream_file(
+          temporary->path, spec.width, spec.height, std::cin);
+      !written) {
+    return std::unexpected{written.error()};
+  }
+  return temporary;
+}
+#endif
+
 }  // namespace
 
 void print_line(std::string_view text) {
   std::println("{}", text);
+}
+
+int list_user_presets_for_cli() {
+  const auto catalog = awj::list_user_presets();
+  if (!catalog) {
+    print_line(std::format("[FAIL] {}", catalog.error()));
+    return 1;
+  }
+  if (catalog->presets.empty()) {
+    print_line("[INFO] 未找到有效用户预设。预设目录位于程序同目录 preset/。");
+  } else {
+    print_line("[INFO] 可用用户预设：");
+    for (const auto& preset : catalog->presets) {
+      print_line(std::format("  {}{}", preset.name,
+                             preset.description.empty()
+                                 ? ""
+                                 : std::format(" — {}", preset.description)));
+    }
+  }
+  for (const auto& error : catalog->errors) {
+    print_line(std::format("[WARN] {}", error));
+  }
+  return 0;
 }
 
 template <class Value, class Function>
@@ -123,6 +267,17 @@ int run_cli_args(std::vector<std::wstring> args) {
       awj::print_help();
       return 0;
     }
+    if (args.size() == 1 && args.front() == L"--list-presets") {
+      return list_user_presets_for_cli();
+    }
+
+#ifdef _WIN32
+    auto wgc_stdin = extract_wgc_stdin_spec(args);
+    if (!wgc_stdin) {
+      print_line(std::format("[FAIL] {}", wgc_stdin.error()));
+      return 1;
+    }
+#endif
 
     const auto parsed = awj::parse_arguments_with_user_preset(args);
     if (!parsed) {
@@ -135,6 +290,23 @@ int run_cli_args(std::vector<std::wstring> args) {
     if (parsed->should_exit) {
       return parsed->exit_code;
     }
+#ifdef _WIN32
+    std::unique_ptr<WgcStdinTemporary> wgc_temporary;
+    if (*wgc_stdin) {
+      if (parsed->config.output_dir.empty()) {
+        print_line("[FAIL] --stdin-wgc-rgba16f 必须显式指定 -o/--output，避免把结果写入临时目录。");
+        return 1;
+      }
+      auto spooled = spool_wgc_stdin(**wgc_stdin);
+      if (!spooled) {
+        print_line(std::format("[FAIL] {}", spooled.error()));
+        return 1;
+      }
+      parsed->config.input_path = (*spooled)->path;
+      parsed->shell_inputs.clear();
+      wgc_temporary = std::move(*spooled);
+    }
+#endif
     if (auto valid = awj::validate_execution_config(parsed->config); !valid) {
       print_line(std::format("[FAIL] {}", valid.error()));
       return 1;

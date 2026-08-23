@@ -2,6 +2,8 @@
 
 所有构建、暂存、归档与旧版测试样本必须位于仓库 `build/` 或 `bin/`。不在 `D:/` 根目录创建任何文件。Windows 的 1.0.3 测试样本只保留在 `bin/old-versions/1.0.3/`；除非另行指定，不保留后续旧版。
 
+1.0.4/1.0.5 的冻结发布必须检出 `1.0.4` tag 后使用其随 tag 固化的脚本；不要将 1.0.6 的 keyring/过期策略回写到这两个桥接发布。
+
 ## 1.0.4 prerelease
 
 1. 在 `codex/awj-1.0.4` 上完成 Windows Release CTest、Studio/CLI smoke，以及普通 WSL Linux Release 构建、CTest、CLI、ELF 和归档检查。不要在 WSL 或虚拟机执行自动更新端到端测试。
@@ -54,4 +56,12 @@
   -UpdateSigningSeedFile $env:AWJ_UPDATE_SIGNING_SEED_FILE
 ```
 
-它不会把 1.0.5 添加为 v2 候选。Windows 本机从 `bin/old-versions/1.0.3/` 的隔离副本执行 1.0.3→1.0.5 下载、校验、安装、健康检查和回滚测试；通过后停止。未经新的明确授权，不创建或发布 1.0.6。
+它不会把 1.0.5 添加为 v2 候选。Windows 本机从 `bin/old-versions/1.0.3/` 的隔离副本执行 1.0.3→1.0.5 下载、校验、安装、健康检查和回滚测试；通过后停止。1.0.6 已获得单独授权，按下节执行，仍不在 VM 或 WSL 中执行更新端到端测试。
+
+## 1.0.6 security prerelease
+
+1. 先完成 1.0.4/1.0.5 冻结资产、公开下载和本机桥接测试；1.0.6 不得改写两者 tag 或资产。
+2. seed 固定保存在仓库外 `C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex`。不要读取、打印、提交或复制 seed；legacy、recovery root 和 release seed 都要有独立离线加密备份。
+3. 用两把 root 签名 `update-keyring-v1.json`，确认 `sequence` 严格递增、`expires_at` 不超过 180 天，并在公开更新 manifest 之前提交其 `.sig`。详见 [自动更新签名与密钥轮换](update-security.md)。
+4. 从干净的 1.0.6 tag 构建、归档并公开上传 `AWJ_Win.7z` 和 `AWJ_Linux.7z`；资产公开后运行 `scripts/package-release.ps1`，显式传入 `-ManifestKeyId`、`-ManifestExpiresAtUtc`、匹配的 release 公钥/seed，以及旧 manifest 公钥（如不同）。脚本会拒绝未撤销 keyring key 以外的签名者。
+5. GitHub Immutable Releases 已启用。创建前核对 tag、prerelease、资产名、大小和哈希；不可用“上传后修正”替代发布前验证。

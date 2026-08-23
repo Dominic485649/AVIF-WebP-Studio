@@ -38,8 +38,10 @@ module;
 export module awj.update_runtime;
 
 import awj.update_manifest;
+import awj.update_keyring;
 import awj.update_manifest_v2;
 import awj.update_model;
+import awj.update_security_state;
 
 export namespace awj::update {
 
@@ -53,6 +55,8 @@ struct VerifiedArchiveManifestV2 {
   ArchiveManifestV2 manifest{};
   std::string raw_bytes{};
   std::string signature_base64{};
+  std::string keyring_raw_bytes{};
+  std::string keyring_signature_envelope{};
 };
 
 std::expected<void, std::string> verify_asset_file(
@@ -539,22 +543,52 @@ std::expected<std::string, std::string> get_bytes(
 }  // namespace runtime_detail
 #endif
 
+std::expected<VerifiedUpdateKeyring, std::string> fetch_verified_update_keyring(
+    std::uint64_t last_verified_sequence = 0, std::stop_token token = {}) {
+  if (!update_keyring_roots_configured()) {
+    return std::unexpected{
+        "此构建未配置至少两把有效更新根公钥，已拒绝联网更新。"};
+  }
+  auto raw = runtime_detail::get_bytes(std::string{update_keyring_url},
+                                       maximum_manifest_bytes, token);
+  if (!raw) return std::unexpected{raw.error()};
+  auto signature = runtime_detail::get_bytes(
+      std::string{update_keyring_signature_url}, 16 * 1024, token);
+  if (!signature) return std::unexpected{signature.error()};
+  auto keyring = verify_and_parse_update_keyring(*raw, *signature);
+  if (!keyring) return std::unexpected{keyring.error()};
+  if (auto accepted = accept_verified_update_document(
+          UpdateSecurityDocument::keyring, keyring->sequence, *raw,
+          last_verified_sequence);
+      !accepted) {
+    return std::unexpected{accepted.error()};
+  }
+  return VerifiedUpdateKeyring{.keyring = std::move(*keyring),
+                               .raw_bytes = std::move(*raw),
+                               .signature_envelope = std::move(*signature)};
+}
+
 std::expected<VerifiedManifest, std::string> fetch_verified_manifest(
     std::uint64_t last_verified_sequence, std::stop_token token = {}) {
-  if (!update_public_key_configured()) {
-    return std::unexpected{
-        "此构建未配置有效的更新公钥，已拒绝联网更新。"};
-  }
+  auto keyring = fetch_verified_update_keyring(0, token);
+  if (!keyring) return std::unexpected{keyring.error()};
   auto raw = runtime_detail::get_bytes(std::string{manifest_url},
                                        maximum_manifest_bytes, token);
   if (!raw) return std::unexpected{raw.error()};
   auto signature = runtime_detail::get_bytes(
       std::string{manifest_signature_url}, maximum_signature_bytes, token);
   if (!signature) return std::unexpected{signature.error()};
-  auto manifest = verify_and_parse_manifest(*raw, *signature);
+  auto manifest = verify_and_parse_manifest_with_keyring(*raw, *signature,
+                                                          keyring->keyring);
   if (!manifest) return std::unexpected{manifest.error()};
   if (!is_manifest_fresh(*manifest, last_verified_sequence)) {
     return std::unexpected{"收到的签名 manifest sequence 低于本机已验证序号，已拒绝重放。"};
+  }
+  if (auto accepted = accept_verified_update_document(
+          UpdateSecurityDocument::legacy_manifest, manifest->sequence, *raw,
+          last_verified_sequence);
+      !accepted) {
+    return std::unexpected{accepted.error()};
   }
   return VerifiedManifest{.manifest = std::move(*manifest),
                           .raw_bytes = std::move(*raw),
@@ -564,10 +598,8 @@ std::expected<VerifiedManifest, std::string> fetch_verified_manifest(
 std::expected<VerifiedArchiveManifestV2, std::string>
 fetch_verified_archive_manifest_v2(std::uint64_t last_verified_sequence,
                                    std::stop_token token = {}) {
-  if (!update_public_key_configured()) {
-    return std::unexpected{
-        "此构建未配置有效的更新公钥，已拒绝联网更新。"};
-  }
+  auto keyring = fetch_verified_update_keyring(0, token);
+  if (!keyring) return std::unexpected{keyring.error()};
   auto raw = runtime_detail::get_bytes(std::string{archive_manifest_v2_url},
                                        maximum_manifest_bytes, token);
   if (!raw) return std::unexpected{raw.error()};
@@ -575,15 +607,25 @@ fetch_verified_archive_manifest_v2(std::uint64_t last_verified_sequence,
       std::string{archive_manifest_v2_signature_url}, maximum_signature_bytes,
       token);
   if (!signature) return std::unexpected{signature.error()};
-  auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature);
+  auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature,
+                                                        keyring->keyring);
   if (!manifest) return std::unexpected{manifest.error()};
   if (!is_archive_manifest_v2_fresh(*manifest, last_verified_sequence)) {
     return std::unexpected{
         "收到的签名 v2 manifest sequence 低于本机已验证序号，已拒绝重放。"};
   }
+  if (auto accepted = accept_verified_update_document(
+          UpdateSecurityDocument::archive_manifest_v2, manifest->sequence,
+          *raw, last_verified_sequence);
+      !accepted) {
+    return std::unexpected{accepted.error()};
+  }
   return VerifiedArchiveManifestV2{.manifest = std::move(*manifest),
                                    .raw_bytes = std::move(*raw),
-                                   .signature_base64 = std::move(*signature)};
+                                   .signature_base64 = std::move(*signature),
+                                   .keyring_raw_bytes = std::move(keyring->raw_bytes),
+                                   .keyring_signature_envelope =
+                                       std::move(keyring->signature_envelope)};
 }
 
 std::expected<void, std::string> download_https_asset(

@@ -174,6 +174,12 @@ struct Manifest {
   // 全局递增。用于拒绝重放攻击：签名正确但陈旧的 manifest 不能把用户降级回
   // 一个已被撤销的版本。
   std::uint64_t sequence{};
+  // Every 1.0.6+ manifest names the delegated release key and carries a
+  // bounded signed validity window.  Legacy clients ignore these extra JSON
+  // fields, while new clients fail closed when they are absent or expired.
+  std::string key_id{};
+  std::string issued_at{};
+  std::string expires_at{};
   std::vector<ManifestEntry> entries{};
 };
 

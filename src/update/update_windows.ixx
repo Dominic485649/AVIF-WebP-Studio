@@ -32,10 +32,12 @@ module;
 export module awj.update_windows;
 
 import awj.update_manifest;
+import awj.update_keyring;
 import awj.update_manifest_v2;
 import awj.update_model;
 import awj.update_archive;
 import awj.update_runtime;
+import awj.update_security_state;
 
 export namespace awj::update {
 
@@ -312,7 +314,8 @@ std::expected<void, std::string> restore_backups(
 void cleanup_stage_after_success(const std::filesystem::path& stage) noexcept {
   std::error_code ec;
   for (const auto* name : {L"AWJ.exe.old", L"AWJ.com.old", L"manifest-v2.json",
-                           L"manifest-v2.sig", L"version.txt", L"state.txt"}) {
+                           L"manifest-v2.sig", L"update-keyring-v1.json",
+                           L"update-keyring-v1.sig", L"version.txt", L"state.txt"}) {
     std::filesystem::remove(stage / name, ec);
     ec.clear();
   }
@@ -419,6 +422,18 @@ std::expected<void, std::string> stage_and_launch_update(
     cleanup_on_failure();
     return saved;
   }
+  if (auto saved = windows_detail::write_text(*stage / L"update-keyring-v1.json",
+                                               fetched->keyring_raw_bytes);
+      !saved) {
+    cleanup_on_failure();
+    return saved;
+  }
+  if (auto saved = windows_detail::write_text(*stage / L"update-keyring-v1.sig",
+                                               fetched->keyring_signature_envelope);
+      !saved) {
+    cleanup_on_failure();
+    return saved;
+  }
   if (auto saved = windows_detail::write_text(*stage / L"version.txt",
                                                requested_version);
       !saved) {
@@ -468,13 +483,25 @@ int run_update_helper(DWORD parent_pid) noexcept {
     auto version = read_file(stage / L"version.txt", 64);
     auto raw = read_file(stage / L"manifest-v2.json", maximum_manifest_bytes);
     auto signature = read_file(stage / L"manifest-v2.sig", maximum_signature_bytes);
-    if (!version || !raw || !signature) return 24;
+    auto keyring_raw = read_file(stage / L"update-keyring-v1.json",
+                                 maximum_manifest_bytes);
+    auto keyring_signature = read_file(stage / L"update-keyring-v1.sig", 16 * 1024);
+    if (!version || !raw || !signature || !keyring_raw || !keyring_signature) return 24;
     while (!version->empty() &&
            (version->back() == '\r' || version->back() == '\n')) {
       version->pop_back();
     }
-    auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature);
+    auto keyring = verify_and_parse_update_keyring(*keyring_raw, *keyring_signature);
+    if (!keyring) return 25;
+    auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature, *keyring);
     if (!manifest) return 25;
+    if (!accept_verified_update_document(UpdateSecurityDocument::keyring,
+                                         keyring->sequence, *keyring_raw, 0,
+                                         install) ||
+        !accept_verified_update_document(UpdateSecurityDocument::archive_manifest_v2,
+                                         manifest->sequence, *raw, 0, install)) {
+      return 25;
+    }
     const auto parsed_version = parse_version(*version);
     if (!parsed_version) return 26;
     const auto* entry = find_archive_manifest_v2_entry(*manifest, *parsed_version);
@@ -613,8 +640,9 @@ int run_update_recovery_helper(DWORD parent_pid) noexcept {
       return 43;
     }
     std::error_code ec;
-    for (const auto* name : {L"manifest-v2.json", L"manifest-v2.sig", L"version.txt",
-                             L"state.txt", L"AWJ.exe.new", L"AWJ.com.new"}) {
+    for (const auto* name : {L"manifest-v2.json", L"manifest-v2.sig",
+                             L"update-keyring-v1.json", L"update-keyring-v1.sig",
+                             L"version.txt", L"state.txt", L"AWJ.exe.new", L"AWJ.com.new"}) {
       std::filesystem::remove(stage / name, ec);
       ec.clear();
     }

@@ -5,6 +5,7 @@ module;
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -38,6 +39,62 @@ bool update_public_key_configured() noexcept {
          std::ranges::all_of(public_key_hex, [](unsigned char ch) {
            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
          });
+}
+
+bool valid_update_key_id(std::string_view value) noexcept {
+  return !value.empty() && value.size() <= 64 &&
+         std::ranges::all_of(value, [](unsigned char ch) {
+           return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+                  ch == '-';
+         });
+}
+
+std::expected<void, std::string> verify_detached_ed25519_signature(
+    std::string_view raw_bytes, std::string_view signature_base64,
+    std::string_view public_key_hex, std::string_view label) {
+  if (sodium_init() < 0) {
+    return std::unexpected{"初始化 Ed25519 验签库失败。"};
+  }
+  if (public_key_hex.size() != crypto_sign_PUBLICKEYBYTES * 2 ||
+      !std::ranges::all_of(public_key_hex, [](unsigned char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+      })) {
+    return std::unexpected{std::format("{} 的 Ed25519 公钥格式错误。", label)};
+  }
+  std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> public_key{};
+  std::size_t public_key_length = 0;
+  if (sodium_hex2bin(public_key.data(), public_key.size(), public_key_hex.data(),
+                     public_key_hex.size(), nullptr, &public_key_length,
+                     nullptr) != 0 ||
+      public_key_length != public_key.size()) {
+    return std::unexpected{std::format("{} 的 Ed25519 公钥格式错误。", label)};
+  }
+  std::string signature_text{signature_base64};
+  while (!signature_text.empty() &&
+         std::isspace(static_cast<unsigned char>(signature_text.back()))) {
+    signature_text.pop_back();
+  }
+  while (!signature_text.empty() &&
+         std::isspace(static_cast<unsigned char>(signature_text.front()))) {
+    signature_text.erase(signature_text.begin());
+  }
+  std::array<unsigned char, crypto_sign_BYTES> signature{};
+  std::size_t signature_length = 0;
+  if (sodium_base642bin(signature.data(), signature.size(),
+                        signature_text.data(), signature_text.size(), nullptr,
+                        &signature_length, nullptr,
+                        sodium_base64_VARIANT_ORIGINAL) != 0 ||
+      signature_length != signature.size()) {
+    return std::unexpected{std::format("{} 不是有效的 Ed25519 签名。", label)};
+  }
+  if (crypto_sign_verify_detached(
+          signature.data(),
+          reinterpret_cast<const unsigned char*>(raw_bytes.data()),
+          static_cast<unsigned long long>(raw_bytes.size()),
+          public_key.data()) != 0) {
+    return std::unexpected{std::format("{} 的 Ed25519 签名验证失败。", label)};
+  }
+  return {};
 }
 
 struct HttpsUrl {
@@ -256,6 +313,55 @@ std::expected<ManifestEntry, std::string> parse_entry(const Json& value) {
 
 }  // namespace manifest_detail
 
+std::expected<std::chrono::sys_seconds, std::string> parse_rfc3339_utc(
+    std::string_view value, std::string_view field_name) {
+  if (!manifest_detail::valid_rfc3339_utc(value)) {
+    return std::unexpected{
+        std::format("{} 必须是 YYYY-MM-DDTHH:MM:SSZ。", field_name)};
+  }
+  const auto two_digits = [&](std::size_t offset) noexcept {
+    return static_cast<unsigned>(value[offset] - '0') * 10u +
+           static_cast<unsigned>(value[offset + 1] - '0');
+  };
+  const auto year = static_cast<int>(two_digits(0) * 100u + two_digits(2));
+  const auto month = two_digits(5);
+  const auto day = two_digits(8);
+  const auto hour = two_digits(11);
+  const auto minute = two_digits(14);
+  const auto second = two_digits(17);
+  const auto ymd = std::chrono::year{year} / std::chrono::month{month} /
+                   std::chrono::day{day};
+  if (!ymd.ok()) {
+    return std::unexpected{
+        std::format("{} 包含无效日期。", field_name)};
+  }
+  return std::chrono::sys_days{ymd} + std::chrono::hours{hour} +
+         std::chrono::minutes{minute} + std::chrono::seconds{second};
+}
+
+inline constexpr auto maximum_signed_update_document_lifetime =
+    std::chrono::days{180};
+
+std::expected<void, std::string> validate_signed_update_document_window(
+    std::string_view issued_at, std::string_view expires_at,
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now()) {
+  auto issued = parse_rfc3339_utc(issued_at, "issued_at");
+  auto expires = parse_rfc3339_utc(expires_at, "expires_at");
+  if (!issued) return std::unexpected{issued.error()};
+  if (!expires) return std::unexpected{expires.error()};
+  if (*expires <= *issued || *expires - *issued > maximum_signed_update_document_lifetime) {
+    return std::unexpected{"签名更新文档的 expires_at 必须晚于 issued_at 且有效期不超过 180 天。"};
+  }
+  const auto current = std::chrono::floor<std::chrono::seconds>(now);
+  if (*issued > current + std::chrono::hours{24}) {
+    return std::unexpected{"签名更新文档的 issued_at 明显晚于本机时间，已拒绝。"};
+  }
+  if (*expires <= current) {
+    return std::unexpected{"签名更新文档已过期，已拒绝以防止 freeze attack。"};
+  }
+  return {};
+}
+
 std::expected<Manifest, std::string> parse_manifest_json(
     std::string_view raw_bytes) {
   if (raw_bytes.empty() || raw_bytes.size() > maximum_manifest_bytes ||
@@ -270,12 +376,33 @@ std::expected<Manifest, std::string> parse_manifest_json(
     auto json = manifest_detail::Json::parse(raw_bytes.begin(), raw_bytes.end());
     if (!json.is_object() || !json.contains("schema") ||
         !json.at("schema").is_number_unsigned() || !json.contains("sequence") ||
-        !json.at("sequence").is_number_unsigned() || !json.contains("entries") ||
-        !json.at("entries").is_array()) {
+        !json.at("sequence").is_number_unsigned() || !json.contains("key_id") ||
+        !json.contains("issued_at") || !json.contains("expires_at") ||
+        !json.contains("entries") || !json.at("entries").is_array()) {
       return std::unexpected{"manifest 根对象字段不完整或类型错误。"};
     }
+    auto key_id = manifest_detail::required_string(json, "key_id", 64);
+    auto issued_at = manifest_detail::required_string(json, "issued_at", 20);
+    auto expires_at = manifest_detail::required_string(json, "expires_at", 20);
+    if (!key_id || !issued_at || !expires_at) {
+      return std::unexpected{!key_id ? key_id.error()
+                          : !issued_at ? issued_at.error()
+                                       : expires_at.error()};
+    }
+    if (!valid_update_key_id(*key_id)) {
+      return std::unexpected{"manifest key_id 只能包含小写字母、数字和连字符。"};
+    }
+    auto issued = parse_rfc3339_utc(*issued_at, "manifest issued_at");
+    auto expires = parse_rfc3339_utc(*expires_at, "manifest expires_at");
+    if (!issued || !expires || *expires <= *issued ||
+        *expires - *issued > maximum_signed_update_document_lifetime) {
+      return std::unexpected{"manifest 的 issued_at/expires_at 有效期非法。"};
+    }
     Manifest manifest{.schema = json.at("schema").get<std::uint32_t>(),
-                      .sequence = json.at("sequence").get<std::uint64_t>()};
+                      .sequence = json.at("sequence").get<std::uint64_t>(),
+                      .key_id = std::move(*key_id),
+                      .issued_at = std::move(*issued_at),
+                      .expires_at = std::move(*expires_at)};
     if (manifest.sequence == 0 || json.at("entries").size() > 256) {
       return std::unexpected{"manifest sequence 或 entries 数量非法。"};
     }
@@ -302,48 +429,14 @@ std::expected<Manifest, std::string> parse_manifest_json(
 
 std::expected<void, std::string> verify_manifest_signature(
     std::string_view raw_bytes, std::string_view signature_base64) {
-  if (sodium_init() < 0) {
-    return std::unexpected{"初始化 Ed25519 验签库失败。"};
-  }
   constexpr std::string_view public_key_hex = AWJ_UPDATE_PUBLIC_KEY_HEX;
   if (!update_public_key_configured()) {
     return std::unexpected{
         "此构建未配置有效的更新公钥，已拒绝联网更新。"};
   }
-  std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> public_key{};
-  std::size_t public_key_length = 0;
-  if (sodium_hex2bin(public_key.data(), public_key.size(), public_key_hex.data(),
-                     public_key_hex.size(), nullptr, &public_key_length,
-                     nullptr) != 0 ||
-      public_key_length != public_key.size()) {
-    return std::unexpected{"内置更新公钥格式错误。"};
-  }
-  std::string signature_text{signature_base64};
-  while (!signature_text.empty() &&
-         std::isspace(static_cast<unsigned char>(signature_text.back()))) {
-    signature_text.pop_back();
-  }
-  while (!signature_text.empty() &&
-         std::isspace(static_cast<unsigned char>(signature_text.front()))) {
-    signature_text.erase(signature_text.begin());
-  }
-  std::array<unsigned char, crypto_sign_BYTES> signature{};
-  std::size_t signature_length = 0;
-  if (sodium_base642bin(signature.data(), signature.size(),
-                        signature_text.data(), signature_text.size(), nullptr,
-                        &signature_length, nullptr,
-                        sodium_base64_VARIANT_ORIGINAL) != 0 ||
-      signature_length != signature.size()) {
-    return std::unexpected{"update-manifest.json.sig 不是有效的 Ed25519 签名。"};
-  }
-  if (crypto_sign_verify_detached(
-          signature.data(),
-          reinterpret_cast<const unsigned char*>(raw_bytes.data()),
-          static_cast<unsigned long long>(raw_bytes.size()),
-          public_key.data()) != 0) {
-    return std::unexpected{"update-manifest.json 的 Ed25519 签名验证失败。"};
-  }
-  return {};
+  return verify_detached_ed25519_signature(raw_bytes, signature_base64,
+                                           public_key_hex,
+                                           "update-manifest.json.sig");
 }
 
 std::expected<Manifest, std::string> verify_and_parse_manifest(
@@ -352,7 +445,14 @@ std::expected<Manifest, std::string> verify_and_parse_manifest(
       !verified) {
     return std::unexpected{verified.error()};
   }
-  return parse_manifest_json(raw_bytes);
+  auto manifest = parse_manifest_json(raw_bytes);
+  if (!manifest) return std::unexpected{manifest.error()};
+  if (auto valid = validate_signed_update_document_window(
+          manifest->issued_at, manifest->expires_at);
+      !valid) {
+    return std::unexpected{valid.error()};
+  }
+  return manifest;
 }
 
 }  // namespace awj::update

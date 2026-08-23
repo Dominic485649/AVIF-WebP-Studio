@@ -18,6 +18,7 @@ module;
 export module awj.update_manifest_v2;
 
 import awj.update_manifest;
+import awj.update_keyring;
 import awj.update_model;
 
 export namespace awj::update {
@@ -31,6 +32,9 @@ inline constexpr std::uint32_t supported_archive_manifest_v2_schema = 2;
 struct ArchiveManifestV2 {
   std::uint32_t schema{};
   std::uint64_t sequence{};
+  std::string key_id{};
+  std::string issued_at{};
+  std::string expires_at{};
   std::vector<ManifestEntry> entries{};
 };
 
@@ -279,12 +283,31 @@ std::expected<ArchiveManifestV2, std::string> parse_archive_manifest_v2_json(
     auto json = archive_manifest_detail::Json::parse(raw_bytes.begin(), raw_bytes.end());
     if (!json.is_object() || !json.contains("schema") ||
         !json.at("schema").is_number_unsigned() || !json.contains("sequence") ||
-        !json.at("sequence").is_number_unsigned() || !json.contains("entries") ||
-        !json.at("entries").is_array()) {
+        !json.at("sequence").is_number_unsigned() || !json.contains("key_id") ||
+        !json.contains("issued_at") || !json.contains("expires_at") ||
+        !json.contains("entries") || !json.at("entries").is_array()) {
       return std::unexpected{"v2 manifest 根对象字段不完整或类型错误。"};
     }
+    auto key_id = archive_manifest_detail::required_string(json, "key_id", 64);
+    auto issued_at = archive_manifest_detail::required_string(json, "issued_at", 20);
+    auto expires_at = archive_manifest_detail::required_string(json, "expires_at", 20);
+    if (!key_id || !issued_at || !expires_at || !valid_update_key_id(*key_id)) {
+      return std::unexpected{!key_id ? key_id.error()
+                          : !issued_at ? issued_at.error()
+                          : !expires_at ? expires_at.error()
+                                        : "v2 manifest key_id 非法。"};
+    }
+    auto issued = parse_rfc3339_utc(*issued_at, "v2 manifest issued_at");
+    auto expires = parse_rfc3339_utc(*expires_at, "v2 manifest expires_at");
+    if (!issued || !expires || *expires <= *issued ||
+        *expires - *issued > maximum_signed_update_document_lifetime) {
+      return std::unexpected{"v2 manifest 的 issued_at/expires_at 有效期非法。"};
+    }
     ArchiveManifestV2 manifest{.schema = json.at("schema").get<std::uint32_t>(),
-                               .sequence = json.at("sequence").get<std::uint64_t>()};
+                               .sequence = json.at("sequence").get<std::uint64_t>(),
+                               .key_id = std::move(*key_id),
+                               .issued_at = std::move(*issued_at),
+                               .expires_at = std::move(*expires_at)};
     if (manifest.schema != supported_archive_manifest_v2_schema ||
         manifest.sequence == 0 || json.at("entries").size() > 256) {
       return std::unexpected{"v2 manifest schema、sequence 或 entries 数量非法。"};
@@ -315,7 +338,34 @@ std::expected<ArchiveManifestV2, std::string> verify_and_parse_archive_manifest_
       !verified) {
     return std::unexpected{verified.error()};
   }
-  return parse_archive_manifest_v2_json(raw_bytes);
+  auto manifest = parse_archive_manifest_v2_json(raw_bytes);
+  if (!manifest) return std::unexpected{manifest.error()};
+  if (auto valid = validate_signed_update_document_window(
+          manifest->issued_at, manifest->expires_at);
+      !valid) {
+    return std::unexpected{valid.error()};
+  }
+  return manifest;
+}
+
+std::expected<ArchiveManifestV2, std::string> verify_and_parse_archive_manifest_v2(
+    std::string_view raw_bytes, std::string_view signature_base64,
+    const UpdateKeyring& keyring) {
+  auto signing_key = verify_manifest_signature_with_keyring(raw_bytes,
+                                                            signature_base64,
+                                                            keyring);
+  if (!signing_key) return std::unexpected{signing_key.error()};
+  auto manifest = parse_archive_manifest_v2_json(raw_bytes);
+  if (!manifest) return std::unexpected{manifest.error()};
+  if (manifest->key_id != *signing_key) {
+    return std::unexpected{"v2 manifest key_id 与实际验签发布密钥不一致。"};
+  }
+  if (auto valid = validate_signed_update_document_window(
+          manifest->issued_at, manifest->expires_at);
+      !valid) {
+    return std::unexpected{valid.error()};
+  }
+  return manifest;
 }
 
 bool is_archive_manifest_v2_fresh(const ArchiveManifestV2& manifest,
@@ -327,6 +377,9 @@ std::optional<UpdateCandidate> select_archive_candidate_v2(
     const ArchiveManifestV2& manifest, const CandidateRequest& request) {
   Manifest compatibility{.schema = supported_manifest_schema,
                          .sequence = manifest.sequence,
+                         .key_id = manifest.key_id,
+                         .issued_at = manifest.issued_at,
+                         .expires_at = manifest.expires_at,
                          .entries = manifest.entries};
   return select_candidate(compatibility, request);
 }
@@ -340,6 +393,9 @@ const ManifestEntry* find_archive_manifest_v2_entry(
 Manifest archive_manifest_v2_for_history(const ArchiveManifestV2& manifest) {
   return {.schema = supported_manifest_schema,
           .sequence = manifest.sequence,
+          .key_id = manifest.key_id,
+          .issued_at = manifest.issued_at,
+          .expires_at = manifest.expires_at,
           .entries = manifest.entries};
 }
 

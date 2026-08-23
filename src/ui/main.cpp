@@ -66,6 +66,7 @@ import awj.preset;
 import awj.resource_planner;
 import awj.studio_defaults;
 import awj.update_model;
+import awj.update_keyring;
 import awj.update_manifest_v2;
 import awj.update_runtime;
 import awj.update_windows;
@@ -261,6 +262,8 @@ struct StudioConfigSnapshot {
   std::string update_manifest_signature{};
   std::string update_manifest_v2_raw{};
   std::string update_manifest_v2_signature{};
+  std::string update_keyring_raw{};
+  std::string update_keyring_signature{};
 
   bool operator==(const StudioConfigSnapshot&) const = default;
 };
@@ -316,6 +319,8 @@ struct UiState {
   std::string update_manifest_signature{};
   std::string update_manifest_v2_raw{};
   std::string update_manifest_v2_signature{};
+  std::string update_keyring_raw{};
+  std::string update_keyring_signature{};
   bool update_check_active{};
   std::string update_status_zh{"尚未检查"};
   std::string update_status_en{"Not checked yet"};
@@ -803,6 +808,8 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
     snapshot.update_manifest_signature = state->update_manifest_signature;
     snapshot.update_manifest_v2_raw = state->update_manifest_v2_raw;
     snapshot.update_manifest_v2_signature = state->update_manifest_v2_signature;
+    snapshot.update_keyring_raw = state->update_keyring_raw;
+    snapshot.update_keyring_signature = state->update_keyring_signature;
   }
   return snapshot;
 }
@@ -1365,6 +1372,10 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
                              state.update_manifest_v2_raw); !r) return r;
     if (auto r = load_string("update_manifest_v2_signature",
                              state.update_manifest_v2_signature); !r) return r;
+    if (auto r = load_string("update_keyring_raw", state.update_keyring_raw);
+        !r) return r;
+    if (auto r = load_string("update_keyring_signature",
+                             state.update_keyring_signature); !r) return r;
   }
 
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
@@ -1567,6 +1578,10 @@ std::expected<void, std::string> write_studio_config_file(
              defaults.update_manifest_v2_raw);
   add_string("update_manifest_v2_signature", current.update_manifest_v2_signature,
              defaults.update_manifest_v2_signature);
+  add_string("update_keyring_raw", current.update_keyring_raw,
+             defaults.update_keyring_raw);
+  add_string("update_keyring_signature", current.update_keyring_signature,
+             defaults.update_keyring_signature);
 
   for (std::size_t i = 0; i < current.menu_params.size(); ++i) {
     const auto prefix = menu_config_prefixes[i];
@@ -5699,6 +5714,8 @@ struct UpdatePersistentState {
   std::string manifest_signature{};
   std::string manifest_v2_raw{};
   std::string manifest_v2_signature{};
+  std::string keyring_raw{};
+  std::string keyring_signature{};
 };
 
 UpdatePersistentState capture_update_state(const UiState& state) {
@@ -5719,7 +5736,9 @@ UpdatePersistentState capture_update_state(const UiState& state) {
           .manifest_raw = state.update_manifest_raw,
           .manifest_signature = state.update_manifest_signature,
           .manifest_v2_raw = state.update_manifest_v2_raw,
-          .manifest_v2_signature = state.update_manifest_v2_signature};
+          .manifest_v2_signature = state.update_manifest_v2_signature,
+          .keyring_raw = state.update_keyring_raw,
+          .keyring_signature = state.update_keyring_signature};
 }
 
 void restore_update_state(UiState& state, UpdatePersistentState value) {
@@ -5741,6 +5760,8 @@ void restore_update_state(UiState& state, UpdatePersistentState value) {
   state.update_manifest_signature = std::move(value.manifest_signature);
   state.update_manifest_v2_raw = std::move(value.manifest_v2_raw);
   state.update_manifest_v2_signature = std::move(value.manifest_v2_signature);
+  state.update_keyring_raw = std::move(value.keyring_raw);
+  state.update_keyring_signature = std::move(value.keyring_signature);
 }
 
 void clear_pending_update(UiState& state) {
@@ -5869,11 +5890,21 @@ void sync_update_history(
 
 void restore_cached_update_history(UiState& state) {
   if (state.update_manifest_v2_raw.empty() ||
-      state.update_manifest_v2_signature.empty()) {
+      state.update_manifest_v2_signature.empty() ||
+      state.update_keyring_raw.empty() || state.update_keyring_signature.empty()) {
+    return;
+  }
+  auto keyring = awj::update::verify_and_parse_update_keyring(
+      state.update_keyring_raw, state.update_keyring_signature);
+  if (!keyring) {
+    state.update_manifest_v2_raw.clear();
+    state.update_manifest_v2_signature.clear();
+    state.update_keyring_raw.clear();
+    state.update_keyring_signature.clear();
     return;
   }
   auto manifest = awj::update::verify_and_parse_archive_manifest_v2(
-      state.update_manifest_v2_raw, state.update_manifest_v2_signature);
+      state.update_manifest_v2_raw, state.update_manifest_v2_signature, *keyring);
   if (!manifest ||
       manifest->sequence <
           static_cast<std::uint64_t>(std::max<std::int64_t>(
@@ -5883,6 +5914,8 @@ void restore_cached_update_history(UiState& state) {
     // 缓存只用于展示；验签失败或序号倒退时丢弃，联网检查仍按原状态继续。
     state.update_manifest_v2_raw.clear();
     state.update_manifest_v2_signature.clear();
+    state.update_keyring_raw.clear();
+    state.update_keyring_signature.clear();
     return;
   }
   state.last_verified_manifest_v2_sequence =
@@ -5941,6 +5974,8 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
           const auto before = capture_update_state(*state);
           state->update_manifest_v2_raw = fetched->raw_bytes;
           state->update_manifest_v2_signature = fetched->signature_base64;
+          state->update_keyring_raw = fetched->keyring_raw_bytes;
+          state->update_keyring_signature = fetched->keyring_signature_envelope;
           if (const auto pending =
                   awj::update::parse_version(state->pending_update_version);
               pending && awj::update::should_clear_pending_for_revocation(
@@ -7385,6 +7420,8 @@ struct LinuxUiState {
   std::string update_manifest_signature{};
   std::string update_manifest_v2_raw{};
   std::string update_manifest_v2_signature{};
+  std::string update_keyring_raw{};
+  std::string update_keyring_signature{};
   std::string update_status_zh{"尚未检查"};
   std::string update_status_en{"Not checked yet"};
 };
@@ -7629,6 +7666,8 @@ struct LinuxUpdatePersistentState {
   std::string manifest_signature{};
   std::string manifest_v2_raw{};
   std::string manifest_v2_signature{};
+  std::string keyring_raw{};
+  std::string keyring_signature{};
 };
 
 LinuxUpdatePersistentState capture_linux_update_state(
@@ -7650,7 +7689,9 @@ LinuxUpdatePersistentState capture_linux_update_state(
           .manifest_raw = state.update_manifest_raw,
           .manifest_signature = state.update_manifest_signature,
           .manifest_v2_raw = state.update_manifest_v2_raw,
-          .manifest_v2_signature = state.update_manifest_v2_signature};
+          .manifest_v2_signature = state.update_manifest_v2_signature,
+          .keyring_raw = state.update_keyring_raw,
+          .keyring_signature = state.update_keyring_signature};
 }
 
 void restore_linux_update_state(LinuxUiState& state,
@@ -7673,6 +7714,8 @@ void restore_linux_update_state(LinuxUiState& state,
   state.update_manifest_signature = std::move(value.manifest_signature);
   state.update_manifest_v2_raw = std::move(value.manifest_v2_raw);
   state.update_manifest_v2_signature = std::move(value.manifest_v2_signature);
+  state.update_keyring_raw = std::move(value.keyring_raw);
+  state.update_keyring_signature = std::move(value.keyring_signature);
 }
 
 void clear_linux_pending_update(LinuxUiState& state) {
@@ -7798,11 +7841,21 @@ void sync_linux_update_history(
 
 void restore_cached_linux_update_history(LinuxUiState& state) {
   if (state.update_manifest_v2_raw.empty() ||
-      state.update_manifest_v2_signature.empty()) {
+      state.update_manifest_v2_signature.empty() ||
+      state.update_keyring_raw.empty() || state.update_keyring_signature.empty()) {
+    return;
+  }
+  auto keyring = awj::update::verify_and_parse_update_keyring(
+      state.update_keyring_raw, state.update_keyring_signature);
+  if (!keyring) {
+    state.update_manifest_v2_raw.clear();
+    state.update_manifest_v2_signature.clear();
+    state.update_keyring_raw.clear();
+    state.update_keyring_signature.clear();
     return;
   }
   auto manifest = awj::update::verify_and_parse_archive_manifest_v2(
-      state.update_manifest_v2_raw, state.update_manifest_v2_signature);
+      state.update_manifest_v2_raw, state.update_manifest_v2_signature, *keyring);
   if (!manifest ||
       manifest->sequence <
           static_cast<std::uint64_t>(std::max<std::int64_t>(
@@ -7811,6 +7864,8 @@ void restore_cached_linux_update_history(LinuxUiState& state) {
           static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
     state.update_manifest_v2_raw.clear();
     state.update_manifest_v2_signature.clear();
+    state.update_keyring_raw.clear();
+    state.update_keyring_signature.clear();
     return;
   }
   state.last_verified_manifest_v2_sequence =
@@ -8023,6 +8078,10 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
       linux_config_string(state.config_document, "update_manifest_v2_raw");
   state.update_manifest_v2_signature = linux_config_string(
       state.config_document, "update_manifest_v2_signature");
+  state.update_keyring_raw =
+      linux_config_string(state.config_document, "update_keyring_raw");
+  state.update_keyring_signature =
+      linux_config_string(state.config_document, "update_keyring_signature");
   load_linux_menu_params(state.config_document, state.menu_params);
 }
 
@@ -8065,6 +8124,8 @@ std::expected<void, std::string> persist_linux_update_config(
   document["update_manifest_signature"] = state.update_manifest_signature;
   document["update_manifest_v2_raw"] = state.update_manifest_v2_raw;
   document["update_manifest_v2_signature"] = state.update_manifest_v2_signature;
+  document["update_keyring_raw"] = state.update_keyring_raw;
+  document["update_keyring_signature"] = state.update_keyring_signature;
   document["menu_params"] = nlohmann::ordered_json::array();
   for (const auto& params : state.menu_params) {
     document["menu_params"].push_back(linux_menu_params_json(params));
@@ -8158,6 +8219,9 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
               const auto before = capture_linux_update_state(*state);
               state->update_manifest_v2_raw = fetched->raw_bytes;
               state->update_manifest_v2_signature = fetched->signature_base64;
+              state->update_keyring_raw = fetched->keyring_raw_bytes;
+              state->update_keyring_signature =
+                  fetched->keyring_signature_envelope;
               if (const auto pending =
                       awj::update::parse_version(state->pending_update_version);
                   pending && awj::update::should_clear_pending_for_revocation(

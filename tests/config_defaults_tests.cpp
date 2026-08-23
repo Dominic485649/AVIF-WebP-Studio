@@ -260,6 +260,34 @@ int main() {
     std::filesystem::remove(preset_test_path, preset_test_ec);
     return fail("user preset did not validate JSONC or fill missing formats from defaults.");
   }
+  {
+    std::ofstream output{preset_test_path, std::ios::binary | std::ios::trunc};
+    output << R"json({
+  "schema": 1,
+  "name": "legacy optional scalar",
+  "description": "1.0.4 emitted one-item arrays for optional numbers",
+  "formats": { "avif": { "visual_quality": [null], "speed": [5] } }
+})json";
+  }
+  const auto legacy_preset = awj::load_user_preset_file(preset_test_path);
+  if (!legacy_preset || legacy_preset->formats[0].visual_quality ||
+      legacy_preset->formats[0].speed.value_or(-1) != 5) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("legacy one-item optional preset arrays were not migrated on load.");
+  }
+  {
+    std::ofstream output{preset_test_path, std::ios::binary | std::ios::trunc};
+    output << R"jsonc(// JSONC comments are accepted.
+{
+  "schema": 1,
+  "name": "测试预设",
+  "description": "only WebP overrides the hard-coded defaults",
+  "formats": {
+    "webp": { "quality": 61, "speed": 3 }
+  }
+}
+)jsonc";
+  }
   const auto preset_path_wide = preset_test_path.wstring();
   auto preset_args = awj::parse_arguments_with_user_preset(
       {L"--quality", L"82", L"--preset-file", preset_path_wide,

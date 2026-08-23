@@ -168,7 +168,8 @@ const pl_raw_primaries* primaries_from_cicp(int value) noexcept {
 
 std::expected<SignalKind, std::string> signal_kind(const ImageBuffer& image) {
   const bool marked_scrgb = image.source_info &&
-                            image.source_info->color_metadata_source == "wic-scrgb-half-linear";
+                            (image.source_info->color_metadata_source == "wic-scrgb-half-linear" ||
+                             image.source_info->color_metadata_source == "wgc-scrgb-half-linear");
   if (image.sample_representation == SampleRepresentation::ieee_half_float) {
     if (!marked_scrgb) {
       return std::unexpected{"浮点 RGBA 缺少 scRGB 色彩语义，拒绝猜测 HDR 色彩空间。"};

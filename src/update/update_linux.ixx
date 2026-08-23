@@ -36,10 +36,12 @@ export module awj.update_linux;
 
 import awj.core;
 import awj.update_archive;
+import awj.update_keyring;
 import awj.update_manifest;
 import awj.update_manifest_v2;
 import awj.update_model;
 import awj.update_runtime;
+import awj.update_security_state;
 
 export namespace awj::update {
 
@@ -280,15 +282,33 @@ std::expected<void, std::string> verify_stage(const fs::path& stage,
   auto version = read_text(stage / "version.txt", 64);
   auto raw = read_text(stage / "manifest-v2.json", maximum_manifest_bytes);
   auto signature = read_text(stage / "manifest-v2.sig", maximum_signature_bytes);
-  if (!version || !raw || !signature) {
+  auto keyring_raw = read_text(stage / "update-keyring-v1.json", maximum_manifest_bytes);
+  auto keyring_signature = read_text(stage / "update-keyring-v1.sig", 16 * 1024);
+  if (!version || !raw || !signature || !keyring_raw || !keyring_signature) {
     return std::unexpected{"Linux 更新事务缺少签名元数据。"};
   }
   while (!version->empty() &&
          (version->back() == '\r' || version->back() == '\n')) version->pop_back();
-  auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature);
+  auto keyring = verify_and_parse_update_keyring(*keyring_raw, *keyring_signature);
+  if (!keyring) {
+    return std::unexpected{"Linux 更新事务中的更新密钥环无效。"};
+  }
+  auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature, *keyring);
   const auto parsed = parse_version(*version);
   if (!manifest || !parsed) {
     return std::unexpected{"Linux 更新事务中的签名清单或版本无效。"};
+  }
+  if (auto accepted = accept_verified_update_document(
+          UpdateSecurityDocument::keyring, keyring->sequence, *keyring_raw,
+          0, install);
+      !accepted) {
+    return std::unexpected{accepted.error()};
+  }
+  if (auto accepted = accept_verified_update_document(
+          UpdateSecurityDocument::archive_manifest_v2, manifest->sequence,
+          *raw, 0, install);
+      !accepted) {
+    return std::unexpected{accepted.error()};
   }
   const auto* entry = find_archive_manifest_v2_entry(*manifest, *parsed);
   if (entry == nullptr || entry->revoked) {
@@ -378,6 +398,10 @@ std::expected<void, std::string> stage_and_launch_linux_update(
   fs::remove(archive, ec);
   if (ec || !atomic_write_text(*stage / "manifest-v2.json", fetched->raw_bytes) ||
       !atomic_write_text(*stage / "manifest-v2.sig", fetched->signature_base64) ||
+      !atomic_write_text(*stage / "update-keyring-v1.json",
+                         fetched->keyring_raw_bytes) ||
+      !atomic_write_text(*stage / "update-keyring-v1.sig",
+                         fetched->keyring_signature_envelope) ||
       !atomic_write_text(*stage / "version.txt", requested_version) ||
       !atomic_write_text(*stage / "state.txt", "staged")) {
     clean_failure();

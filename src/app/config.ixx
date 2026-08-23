@@ -834,6 +834,7 @@ std::string help_text() {
   --no-experimental-clamped-grid-padding 禁用 AVIF grid 较小边缘 cell；不可整除分割会报错
   -p, --preset <名称>         从程序同目录 preset/ 按 JSONC 内 name 加载用户预设；未指定使用当前内置默认
   --preset-file <路径>        加载指定 JSONC 用户预设；显式 CLI 参数始终覆盖预设
+  --list-presets              列出程序同目录 preset/ 中可用的用户预设及简介
   -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
   --memory-limit <auto|大小>  内存限制；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
   --large-image-priority <zenrav1e|grid> 超过 AOM 单图上限后的自动大图优先路径；默认 zenrav1e，失败回退另一路径
@@ -917,7 +918,8 @@ std::string help_text() {
   replace_all(help, "@WINDOWS_TIMESTAMP_OPTIONS@",
               "  --preserve-creation-time    输出成功后保留源文件创建时间\n"
               "  --preserve-modification-time 输出成功后保留源文件修改时间\n"
-              "  --preserve-access-time      输出成功后保留源文件访问时间\n");
+              "  --preserve-access-time      输出成功后保留源文件访问时间\n"
+              "  --stdin-wgc-rgba16f <宽>x<高> 从 stdin 读取单帧 DXGI R16G16B16A16_FLOAT 线性 scRGB；必须配合 -o，不能与 -i 同用\n");
 #else
   replace_all(help, "@WINDOWS_TIMESTAMP_OPTIONS@", "");
 #endif

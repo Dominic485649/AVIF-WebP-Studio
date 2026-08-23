@@ -291,14 +291,25 @@ std::expected<void, std::string> load_optional_int(
     std::optional<int>& target) {
   const auto name = std::string{key};
   if (!object.contains(name)) return {};
-  const auto& value = object.at(name);
-  if (value.is_null()) {
+  const Json* value = &object.at(name);
+  // 1.0.4 wrote optional scalars with Json{value}, which nlohmann::json
+  // serializes as a one-item array.  Accept exactly that malformed legacy
+  // shape once; all newly saved presets use a scalar/null below.
+  if (value->is_array()) {
+    if (value->size() != 1 ||
+        (!value->front().is_null() && !value->front().is_number_integer())) {
+      return std::unexpected{
+          std::format("预设字段 {} 必须是整数或 null。", key)};
+    }
+    value = &value->front();
+  }
+  if (value->is_null()) {
     target.reset();
     return {};
   }
-  if (auto valid = require_type(value, value.is_number_integer(), key, "整数或 null");
+  if (auto valid = require_type(*value, value->is_number_integer(), key, "整数或 null");
       !valid) return valid;
-  const auto number = value.get<long long>();
+  const auto number = value->get<long long>();
   if (number < minimum || number > maximum) {
     return std::unexpected{std::format("预设字段 {} 范围必须在 {} 到 {}。", key,
                                        minimum, maximum)};
@@ -445,7 +456,7 @@ std::expected<void, std::string> load_format(const Json& object,
 }
 
 Json optional_int_json(const std::optional<int>& value) {
-  return value ? Json{*value} : Json{nullptr};
+  return value ? Json(*value) : Json(nullptr);
 }
 
 Json size_limit_json(const ImageSizeLimit& limit) {
@@ -673,7 +684,16 @@ std::expected<UserPreset, std::string> find_user_preset(std::string_view name) {
   if (!catalog) return std::unexpected{catalog.error()};
   const auto it = std::ranges::find(catalog->presets, name, &UserPreset::name);
   if (it == catalog->presets.end()) {
-    return std::unexpected{std::format("未找到名称为“{}”的用户预设。", name)};
+    std::string available;
+    for (const auto& preset : catalog->presets) {
+      if (!available.empty()) available += "、";
+      available += preset.name;
+    }
+    return std::unexpected{available.empty()
+                               ? std::format("未找到名称为“{}”的用户预设；预设目录中没有有效预设。",
+                                             name)
+                               : std::format("未找到名称为“{}”的用户预设；可用预设：{}。",
+                                             name, available)};
   }
   return *it;
 }

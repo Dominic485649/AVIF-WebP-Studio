@@ -1837,25 +1837,41 @@ export component AwjStudio inherits Window {
                                     Text { text: @tr("队列设置在开始转换时统一快照；参数页格式仅用于编辑参数。"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                                 }
 
-                                HorizontalLayout {
+                                if root.width >= 1100px: HorizontalLayout {
                                     spacing: root.page-gap;
                                     CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; }
                                     CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; }
                                     CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; }
+                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; }
+                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; }
+                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
-
-                                if root.timestamp-ui-visible: VerticalLayout {
-                                    spacing: 5px;
-                                    Text { text: @tr("文件时间"); color: root.text-body; font-size: 13px; font-weight: 700; }
-                                    Text { text: @tr("勾选后在输出原子提交成功时保留源文件的对应时间；未勾选时使用本次编码后的自然时间。"); color: root.text-muted; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
+                                if root.width >= 760px && root.width < 1100px: VerticalLayout {
+                                    spacing: 6px;
                                     HorizontalLayout {
-                                        spacing: 16px;
+                                        spacing: root.page-gap;
+                                        CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; }
+                                        CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; }
+                                        CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    }
+                                    if root.timestamp-ui-visible: HorizontalLayout {
+                                        spacing: root.page-gap;
                                         CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; }
                                         CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; }
                                         CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; }
                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                     }
+                                }
+                                if root.width < 760px: VerticalLayout {
+                                    spacing: 6px;
+                                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; }
+                                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; }
+                                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; }
+                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; }
+                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; }
+                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; }
                                 }
 
                                 HorizontalLayout {
@@ -2113,6 +2129,7 @@ export component AwjStudio inherits Window {
                         background: root.panel-bg;
                         border-color: root.panel-border;
                         border-width: 1px;
+                        height: self.preferred-height;
                         min-height: parent.height;
                         VerticalLayout {
                             padding: 24px;
@@ -2305,20 +2322,24 @@ export component AwjStudio inherits Window {
                                         }
                                     }
                                 }
-                                CheckBox {
-                                    text: @tr("显示更新日志");
-                                    checked <=> root.show-update-changelog-enabled;
-                                    toggled => { root.show-update-changelog-requested(self.checked); }
-                                }
-                                CheckBox {
-                                    text: @tr("退出后隐藏更新日志");
-                                    checked <=> root.hide-update-changelog-after-exit;
-                                    toggled => { root.hide-update-changelog-after-exit-requested(self.checked); }
-                                }
-                                CheckBox {
-                                    text: @tr("更新后显示更新日志");
-                                    checked <=> root.show-update-changelog-after-update;
-                                    toggled => { root.show-update-changelog-after-update-requested(self.checked); }
+                                HorizontalLayout {
+                                    spacing: root.page-gap;
+                                    CheckBox {
+                                        text: @tr("显示更新日志");
+                                        checked <=> root.show-update-changelog-enabled;
+                                        toggled => { root.show-update-changelog-requested(self.checked); }
+                                    }
+                                    CheckBox {
+                                        text: @tr("退出后隐藏更新日志");
+                                        checked <=> root.hide-update-changelog-after-exit;
+                                        toggled => { root.hide-update-changelog-after-exit-requested(self.checked); }
+                                    }
+                                    CheckBox {
+                                        text: @tr("更新后显示更新日志");
+                                        checked <=> root.show-update-changelog-after-update;
+                                        toggled => { root.show-update-changelog-after-update-requested(self.checked); }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
                                 HorizontalLayout {
                                     spacing: root.page-gap;

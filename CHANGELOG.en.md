@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6 - 2026-08-24
+
+- Prerelease: the updater now has a two-root-authorized release keyring, key IDs, signed `issued_at` / `expires_at`, revocation, and a maximum 180-day lifetime. v1, v2, and keyring sequence plus raw SHA-256 persist through an inter-process lock and atomic state file; rollback, changed bytes at one sequence, and damaged state fail closed, while the helper re-verifies the keyring and v2 manifest.
+- Preset loading now accepts legacy `[null]` / `[integer]` `visual_quality` values and rewrites them as proper scalars on the next save, so `测试.jsonc` can again appear in Parameters and Queue. CLI adds `--list-presets` to dynamically show executable-adjacent valid presets and invalid-file diagnostics.
+- Windows CLI adds `--stdin-wgc-rgba16f <width>x<height>` for one exact-length piped `DXGI_FORMAT_R16G16B16A16_FLOAT` linear-scRGB frame; it uses a secure temporary file through the existing HDR path and rejects short/long data, missing dimensions, and unknown bare RAW.
+- Added a Windows 11-style rounded application icon; the three file-time choices follow “Write runtime log” and wrap on narrow windows. The changelog scrolls downward normally again, and the three automatic-update choices in Settings are horizontal.
+
 ## 1.0.5 - 2026-08-24
 
 - Prerelease: Functionally identical to 1.0.4. This build only supplies the raw `AWJ.exe` / `AWJ.com` needed for the Windows 1.0.3→1.0.5 updater bridge test; normal users should download the 1.0.4 archive assets.

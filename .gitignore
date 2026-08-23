@@ -18,6 +18,10 @@
 # Updater private signing material must never enter the repository.
 **/*update-ed25519-seed*.hex
 **/*update-ed25519*.seed
+
+# Per-install replay-protection state is generated beside the executable.
+.awj-update-security-state.json
+.awj-update-security-state.lock
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 

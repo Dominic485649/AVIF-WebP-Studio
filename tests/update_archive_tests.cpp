@@ -31,6 +31,9 @@ std::string valid_manifest() {
   return R"json({
   "schema": 2,
   "sequence": 11,
+  "key_id": "release-test-2026",
+  "issued_at": "2026-08-01T00:00:00Z",
+  "expires_at": "2026-09-01T00:00:00Z",
   "entries": [{
     "version": "1.0.4",
     "channel": "prerelease",

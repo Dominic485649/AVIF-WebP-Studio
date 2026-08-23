@@ -96,9 +96,9 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留�
 
 ## 自动更新
 
-1.0.4 的客户端只接受仓库静态、签名的 `update-manifest-v2.json`：独立递增 sequence、严格版本/渠道/主机校验后，下载一个平台归档并逐成员验证大小和 SHA-256。Windows 与可写 Linux 安装目录均在同卷 staging 中原子替换并进行健康检查/回滚；不可写 Linux 安装目录只打开 Release 页面，不静默提权。缓存日志从不作为执行权威。
+1.0.6 起，客户端先用三把编译 root 中至少两把验证的 `update-keyring-v1.json` 选择未撤销 release key，再验签带 `key_id`、递增 sequence、`issued_at` 和 `expires_at` 的 v1/v2 manifest。三类文档各自把最后已验签 sequence 和原始 SHA-256 以跨进程锁、刷盘、原子替换持久化到可执行文件同目录；状态损坏、回退或同 sequence 改写均 fail-closed。Windows 与可写 Linux 安装目录继续在同卷 staging 中原子替换、健康检查和回滚；不可写 Linux 安装目录只打开 Release 页面，不静默提权。
 
-旧 `update-manifest.json` schema 1 仅保留给 1.0.3→1.0.5 的 Windows 本机桥接测试；1.0.5 不加入 v2 候选。该测试完成后停止，不在 VM 或 WSL 中执行更新端到端测试，也不创建 1.0.6。
+旧 `update-manifest.json` schema 1 仍只用于 Windows 1.0.3→1.0.5 本机桥接；1.0.5 不加入 v2 候选。密钥保管、过期、撤销和轮换流程见 [自动更新签名与密钥轮换](docs/update-security.md)。
 
 `svt-av1-hdr` 与实验 `zenrav1e` 均静态链接进主程序，不需要 sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
 
@@ -125,9 +125,11 @@ AWJ -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
 AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 ```
 
-`-i` / `-o` 会去除外围空白和一对完整双引号，因此 `-i '"D:\example.jxr"'` 与 `-i D:\example.jxr` 等价；空路径、不配对引号或路径内部引号会明确报错。`-p/--preset <名称>` 从可执行文件旁 `preset/*.jsonc` 按名称加载，`--preset-file <路径>` 加载指定 JSONC；不选预设时使用当前内置默认，显式 CLI 参数始终覆盖预设且与参数顺序无关。AVIF 默认 speed 为 5。
+`-i` / `-o` 会去除外围空白和一对完整双引号，因此 `-i '"D:\example.jxr"'` 与 `-i D:\example.jxr` 等价；空路径、不配对引号或路径内部引号会明确报错。`--list-presets` 动态列出可执行文件旁有效的 `preset/*.jsonc`（无效文件也会报告具体原因）；`-p/--preset <名称>` 按名称加载，`--preset-file <路径>` 加载指定 JSONC。不选预设时使用当前内置默认，显式 CLI 参数始终覆盖预设且与参数顺序无关。AVIF 默认 speed 为 5。
 
 Windows CLI 还可在输出原子提交成功后保留源文件时间：`--preserve-creation-time`、`--preserve-modification-time`、`--preserve-access-time`。写回失败只产生 stderr/日志警告，不会丢弃有效输出。Linux 不显示并拒绝这些 Windows 专用参数。
+
+Windows CLI 可把单帧 WGC HDR 捕获管道接入：`捕获程序 | AWJ --stdin-wgc-rgba16f 3840x2160 -o D:\输出 --format avif`。它只接受精确长度的 `DXGI_FORMAT_R16G16B16A16_FLOAT`（小端 RGBA binary16、线性 scRGB）一帧，必须显式给出宽高和 `-o`，不能同时传 `-i`；短帧、额外帧字节或未知裸 RAW 一律拒绝，不猜测格式。
 
 `zenrav1e` 是实验编码器：普通单图必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`；自动大图链路可按资源使用它。Windows 与 Linux GCC Release 均可用。
 

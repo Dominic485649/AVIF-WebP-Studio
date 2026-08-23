@@ -30,6 +30,10 @@ option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
 set(AWJ_UPDATE_PUBLIC_KEY_HEX "ebdb1a49b8686f34a5791f7c0f2a0215e4cdc03ad99281e5bf8606cb62fcf1b1" CACHE STRING
     "Ed25519 update-manifest public key as 64 lowercase hexadecimal characters")
+set(AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX "652b506c2fbd71d75ae48cca3d0196cd5914605dd811c1a2b786c6bbd259f05f" CACHE STRING
+    "Offline recovery root A public key for the signed updater keyring")
+set(AWJ_UPDATE_ROOT_RECOVERY_B_PUBLIC_KEY_HEX "65a49e06e12dfc48bf26dbbcc5380d5fbd61198c6e7cd65af4f860dfe5b6f65a" CACHE STRING
+    "Offline recovery root B public key for the signed updater keyring")
 set(AWJ_SVTAV1HDR_GIT_TAG "8b4b9f5624cb70c2363a7cebb553110c1447dd4c" CACHE STRING "svt-av1-hdr source commit")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
 set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING "libavif git tag or commit")
@@ -939,7 +943,9 @@ add_library(awj_update STATIC)
 avif_enable_common_options(awj_update)
 target_compile_definitions(awj_update PRIVATE
     AWJ_BUILD_VERSION="${PROJECT_VERSION}"
-    AWJ_UPDATE_PUBLIC_KEY_HEX="${AWJ_UPDATE_PUBLIC_KEY_HEX}")
+    AWJ_UPDATE_PUBLIC_KEY_HEX="${AWJ_UPDATE_PUBLIC_KEY_HEX}"
+    AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX="${AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX}"
+    AWJ_UPDATE_ROOT_RECOVERY_B_PUBLIC_KEY_HEX="${AWJ_UPDATE_ROOT_RECOVERY_B_PUBLIC_KEY_HEX}")
 target_link_libraries(awj_update PUBLIC
     nlohmann_json::nlohmann_json
     unofficial-sodium::sodium
@@ -956,7 +962,9 @@ target_sources(awj_update
         FILE_SET awj_update_modules TYPE CXX_MODULES FILES
             src/update/update_model.ixx
             src/update/update_manifest.ixx
+            src/update/update_keyring.ixx
             src/update/update_manifest_v2.ixx
+            src/update/update_security_state.ixx
             src/update/update_archive.ixx
             src/update/update_runtime.ixx)
 if(WIN32)
@@ -983,6 +991,14 @@ if(BUILD_TESTING)
     add_executable(awj_update_archive_tests tests/update_archive_tests.cpp)
     avif_enable_common_options(awj_update_archive_tests)
     target_link_libraries(awj_update_archive_tests PRIVATE awj_update)
+
+    add_executable(awj_update_security_state_tests tests/update_security_state_tests.cpp)
+    avif_enable_common_options(awj_update_security_state_tests)
+    target_link_libraries(awj_update_security_state_tests PRIVATE awj_update)
+
+    add_executable(awj_update_keyring_tests tests/update_keyring_tests.cpp)
+    avif_enable_common_options(awj_update_keyring_tests)
+    target_link_libraries(awj_update_keyring_tests PRIVATE awj_update)
 
     add_executable(awj_changelog_history_tests tests/changelog_history_tests.cpp)
     avif_enable_common_options(awj_changelog_history_tests)
@@ -1073,6 +1089,10 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_memory_cancel_tests)
     target_link_libraries(awj_memory_cancel_tests PRIVATE awj_native_visual_search awj_native_codecs awj_raw_image_io)
 
+    add_executable(awj_raw_wgc_stdin_tests tests/raw_wgc_stdin_tests.cpp)
+    avif_enable_common_options(awj_raw_wgc_stdin_tests)
+    target_link_libraries(awj_raw_wgc_stdin_tests PRIVATE awj_raw_image_io)
+
     if(WIN32)
         add_executable(awj_cli_config_entry tests/cli_config_entry.cpp)
         avif_enable_common_options(awj_cli_config_entry)
@@ -1087,6 +1107,8 @@ if(BUILD_TESTING)
         awj_update_model_tests
         awj_update_manifest_tests
         awj_update_archive_tests
+        awj_update_security_state_tests
+        awj_update_keyring_tests
         awj_changelog_history_tests
         awj_visual_quality_tests
         awj_hdr_tonemap_tests
@@ -1102,7 +1124,8 @@ if(BUILD_TESTING)
         awj_bmp_codec_tests
         awj_native_visual_search_tests
         awj_decoder_registry_tests
-        awj_memory_cancel_tests)
+        awj_memory_cancel_tests
+        awj_raw_wgc_stdin_tests)
     if(WIN32)
         list(APPEND AWJ_TEST_TARGETS
             awj_jxr_codec_tests
@@ -1122,6 +1145,8 @@ if(BUILD_TESTING)
     add_test(NAME update_model_core COMMAND awj_update_model_tests)
     add_test(NAME update_manifest_security COMMAND awj_update_manifest_tests)
     add_test(NAME update_archive_security COMMAND awj_update_archive_tests)
+    add_test(NAME update_security_state COMMAND awj_update_security_state_tests)
+    add_test(NAME update_keyring_security COMMAND awj_update_keyring_tests)
     add_test(NAME changelog_history_complete COMMAND awj_changelog_history_tests)
     add_test(NAME hdr_tonemap_cpu COMMAND awj_hdr_tonemap_tests)
     add_test(NAME config_defaults_core COMMAND awj_config_defaults_tests)
@@ -1147,6 +1172,7 @@ if(BUILD_TESTING)
         add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
     endif()
     add_test(NAME memory_cancel_core COMMAND awj_memory_cancel_tests)
+    add_test(NAME raw_wgc_stdin_core COMMAND awj_raw_wgc_stdin_tests)
 
     if(WIN32)
         add_test(NAME cli_help COMMAND awj_cli_config_entry --help)

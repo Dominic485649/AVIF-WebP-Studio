@@ -12,6 +12,7 @@ module;
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <istream>
 #include <limits>
 #include <memory>
 #include <new>
@@ -39,6 +40,9 @@ export namespace awj {
 namespace raw_image_detail {
 
 inline constexpr char magic[] = {'A', 'W', 'S', 'R', 'A', 'W', '1', '\0'};
+// Windows Graphics Capture HDR frames are DXGI_FORMAT_R16G16B16A16_FLOAT:
+// packed little-endian RGBA binary16 values in linear scRGB.
+inline constexpr char wgc_scrgb_magic[] = {'A', 'W', 'J', 'W', 'G', 'C', '1', '\0'};
 inline constexpr std::uint32_t pixel_format_rgba = 1;
 inline constexpr std::uint32_t alpha_none = 0;
 inline constexpr std::uint32_t alpha_straight = 1;
@@ -54,6 +58,14 @@ struct Header {
   std::uint32_t stride{};
   std::uint64_t byte_count{};
 };
+
+bool is_raw_magic(const Header& header) noexcept {
+  return std::memcmp(header.magic, magic, sizeof(header.magic)) == 0;
+}
+
+bool is_wgc_scrgb_magic(const Header& header) noexcept {
+  return std::memcmp(header.magic, wgc_scrgb_magic, sizeof(header.magic)) == 0;
+}
 
 std::uint32_t alpha_to_raw(AlphaMode mode) noexcept {
   switch (mode) {
@@ -192,6 +204,101 @@ std::expected<void, std::string> write_all(UniqueFileHandle::native_handle file,
 
 }  // namespace raw_image_detail
 
+std::expected<void, std::string> write_wgc_scrgb_half_stream_file(
+    const fs::path& path, std::uint32_t width, std::uint32_t height,
+    std::istream& input) {
+  try {
+    if (width == 0 || height == 0 ||
+        width > std::numeric_limits<std::uint32_t>::max() / 8u ||
+        width > std::numeric_limits<std::uint64_t>::max() / 8ull ||
+        height > std::numeric_limits<std::uint64_t>::max() /
+                     (static_cast<std::uint64_t>(width) * 8ull)) {
+      return std::unexpected{"WGC raw 图像尺寸无效。"};
+    }
+    const auto stride = static_cast<std::uint64_t>(width) * 8ull;
+    const auto byte_count = stride * height;
+    if (byte_count > encoding_defaults::effective_max_input_file_bytes() -
+                         sizeof(raw_image_detail::Header)) {
+      return std::unexpected{"WGC raw 输入超过当前运行时上限。"};
+    }
+    raw_image_detail::Header header{};
+    std::ranges::copy(raw_image_detail::wgc_scrgb_magic, header.magic);
+    header.width = width;
+    header.height = height;
+    header.pixel_format = raw_image_detail::pixel_format_rgba;
+    header.alpha_mode = raw_image_detail::alpha_none;
+    header.bit_depth = 16;
+    header.stride = static_cast<std::uint32_t>(stride);
+    header.byte_count = byte_count;
+
+    const auto parent = path.parent_path();
+    std::error_code ec;
+    if (!parent.empty()) {
+      fs::create_directories(parent, ec);
+      if (ec) return std::unexpected{"无法创建 WGC raw 临时目录。"};
+    }
+#ifdef _WIN32
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+      return std::unexpected{"无法创建 WGC raw 临时文件。"};
+    }
+#else
+    const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (file < 0) return std::unexpected{"无法创建 WGC raw 临时文件。"};
+#endif
+    raw_image_detail::OutputFileCleanup cleanup{path};
+    raw_image_detail::UniqueFileHandle output{file};
+    if (auto written = raw_image_detail::write_all(output.get(), &header, sizeof(header), path);
+        !written) {
+      return std::unexpected{written.error()};
+    }
+    std::array<char, 64 * 1024> buffer{};
+    auto remaining = byte_count;
+    while (remaining != 0) {
+      const auto want = static_cast<std::streamsize>(
+          std::min<std::uint64_t>(remaining, buffer.size()));
+      input.read(buffer.data(), want);
+      const auto received = input.gcount();
+      if (received != want) {
+        return std::unexpected{"WGC stdin 数据短于声明的 16-bit RGBA 帧。"};
+      }
+      if (auto written = raw_image_detail::write_all(
+              output.get(), buffer.data(), static_cast<std::uint64_t>(received), path);
+          !written) {
+        return std::unexpected{written.error()};
+      }
+      remaining -= static_cast<std::uint64_t>(received);
+    }
+    char extra{};
+    if (input.get(extra)) {
+      return std::unexpected{"WGC stdin 数据长于声明的单帧，已拒绝。"};
+    }
+    if (!input.eof()) return std::unexpected{"读取 WGC stdin 失败。"};
+#ifdef _WIN32
+    if (!FlushFileBuffers(output.get())) {
+      return std::unexpected{"刷新 WGC raw 临时文件失败。"};
+    }
+    const HANDLE output_handle = output.get();
+    if (!CloseHandle(output_handle)) {
+      return std::unexpected{"关闭 WGC raw 临时文件失败。"};
+    }
+#else
+    const int output_handle = output.get();
+    if (::fsync(output_handle) != 0 || ::close(output_handle) != 0) {
+      return std::unexpected{"关闭 WGC raw 临时文件失败。"};
+    }
+#endif
+    output.release();
+    cleanup.release();
+    return {};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"WGC raw stdin 内存不足。"};
+  } catch (const std::filesystem::filesystem_error&) {
+    return std::unexpected{"WGC raw stdin 文件系统访问失败。"};
+  }
+}
+
 std::expected<void, std::string> write_raw_image_file(
     const fs::path& path,
     const ImageBuffer& image) {
@@ -325,7 +432,8 @@ std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs:
     }
     raw_image_detail::Header header{};
     input.read(reinterpret_cast<char*>(&header), sizeof(header));
-    if (!input || std::memcmp(header.magic, raw_image_detail::magic, sizeof(header.magic)) != 0) {
+    if (!input || (!raw_image_detail::is_raw_magic(header) &&
+                   !raw_image_detail::is_wgc_scrgb_magic(header))) {
       return std::unexpected{"raw 图像文件头无效。"};
     }
     if (header.pixel_format != raw_image_detail::pixel_format_rgba ||
@@ -384,7 +492,8 @@ std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path
     }
     raw_image_detail::Header header{};
     input.read(reinterpret_cast<char*>(&header), sizeof(header));
-    if (!input || std::memcmp(header.magic, raw_image_detail::magic, sizeof(header.magic)) != 0) {
+    if (!input || (!raw_image_detail::is_raw_magic(header) &&
+                   !raw_image_detail::is_wgc_scrgb_magic(header))) {
       return std::unexpected{"raw 图像文件头无效。"};
     }
     if (header.pixel_format != raw_image_detail::pixel_format_rgba ||
@@ -444,13 +553,29 @@ std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path
     if (!input) {
       return std::unexpected{"读取 raw 图像 payload 失败。"};
     }
+    const bool wgc_scrgb = raw_image_detail::is_wgc_scrgb_magic(header);
     ImageBuffer image{.width = header.width,
                       .height = header.height,
                       .pixel_format = PixelFormat::rgba,
                       .alpha_mode = raw_image_detail::alpha_from_raw(header.alpha_mode),
                       .bit_depth = static_cast<int>(header.bit_depth),
-                      .source_info = ImageSourceInfo{.pixel_format = PixelFormat::rgba,
-                                                     .bit_depth = static_cast<int>(header.bit_depth)}};
+                      .sample_representation = wgc_scrgb
+                                                   ? SampleRepresentation::ieee_half_float
+                                                   : SampleRepresentation::unorm,
+                      .source_info = wgc_scrgb
+                                         ? std::optional<ImageSourceInfo>{ImageSourceInfo{
+                                               .pixel_format = PixelFormat::rgba,
+                                               .bit_depth = 16,
+                                               .color_primaries = 1,
+                                               .transfer_characteristics = 8,
+                                               .matrix_coefficients = 0,
+                                               .color_range = 1,
+                                               .has_hdr_metadata = true,
+                                               .color_metadata_source =
+                                                   "wgc-scrgb-half-linear"}}
+                                         : std::optional<ImageSourceInfo>{ImageSourceInfo{
+                                               .pixel_format = PixelFormat::rgba,
+                                               .bit_depth = static_cast<int>(header.bit_depth)}}};
     try {
       image.planes.push_back(std::move(plane));
     } catch (const std::bad_alloc&) {

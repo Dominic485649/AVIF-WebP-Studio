@@ -11,6 +11,10 @@ param(
     [string]$PublishedAtUtc = "",
     [string]$UpdateSigningSeedFile = $env:AWJ_UPDATE_SIGNING_SEED_FILE,
     [string]$UpdatePublicKeyHex = $env:AWJ_UPDATE_PUBLIC_KEY_HEX,
+    [string]$ManifestKeyId = "",
+    [string]$ManifestExpiresAtUtc = "",
+    [string]$UpdateKeyringPath = "",
+    [string]$ExistingManifestPublicKeyHex = "",
     [string]$SignerPath = "",
     [switch]$SkipManifests
 )
@@ -24,6 +28,17 @@ if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
 if (-not $PublishedAtUtc) { $PublishedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
 if ($PublishedAtUtc -notmatch '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$') {
     throw "-PublishedAtUtc 必须是 YYYY-MM-DDTHH:MM:SSZ。"
+}
+
+function Parse-UtcStamp([string]$Value, [string]$Name) {
+    try {
+        return [DateTimeOffset]::ParseExact(
+            $Value, "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal)
+    } catch {
+        throw "-$Name 必须是 YYYY-MM-DDTHH:MM:SSZ。"
+    }
 }
 
 function Get-RepoPath([string]$Path) {
@@ -92,6 +107,87 @@ function Sign-Manifest([string]$ManifestPath, [string]$SignaturePath) {
     if ($LASTEXITCODE -ne 0) { throw "manifest 签名自检失败。" }
 }
 
+function Get-CmakePublicKey([string]$Name) {
+    $Cmake = Get-Content -LiteralPath (Join-Path $Repo "CMakeLists.txt") -Raw
+    $Match = [regex]::Match($Cmake, '(?m)^set\(' + [regex]::Escape($Name) + '\s+"(?<value>[0-9a-f]{64})"')
+    if (-not $Match.Success) { throw "无法从 CMakeLists.txt 读取 $Name。" }
+    return $Match.Groups['value'].Value
+}
+
+function Assert-TrustedUpdateKeyring([string]$KeyringPath) {
+    $SignaturePath = Assert-File "$KeyringPath.sig" "update keyring signature envelope"
+    try { $Envelope = Get-Content -LiteralPath $SignaturePath -Raw | ConvertFrom-Json -AsHashtable -DateKind String }
+    catch { throw "update keyring 签名封套不是有效 JSON: $SignaturePath" }
+    if ($Envelope.schema -ne 1 -or -not $Envelope.signatures -or
+        @($Envelope.signatures).Count -lt 2 -or @($Envelope.signatures).Count -gt 3) {
+        throw "update keyring 签名封套 schema 或签名数量非法。"
+    }
+    $Roots = [ordered]@{
+        'root-legacy-2026' = Get-CmakePublicKey 'AWJ_UPDATE_PUBLIC_KEY_HEX'
+        'root-recovery-a-2026' = Get-CmakePublicKey 'AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX'
+        'root-recovery-b-2026' = Get-CmakePublicKey 'AWJ_UPDATE_ROOT_RECOVERY_B_PUBLIC_KEY_HEX'
+    }
+    $TemporaryDirectory = Join-Path $Repo "build\keyring-verify-$PID"
+    Remove-OnlyInsideRepo $TemporaryDirectory
+    New-Item -ItemType Directory -Path $TemporaryDirectory -Force | Out-Null
+    try {
+        $Seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($Item in @($Envelope.signatures)) {
+            if ($Item.key_id -notmatch '^[a-z0-9-]{1,64}$' -or
+                -not $Roots.Contains([string]$Item.key_id) -or
+                -not $Seen.Add([string]$Item.key_id) -or
+                $Item.signature -isnot [string] -or $Item.signature.Length -gt 256) {
+                throw "update keyring 签名封套包含非法、未知或重复的根签名。"
+            }
+            $SignatureFile = Join-Path $TemporaryDirectory "$($Item.key_id).sig"
+            [IO.File]::WriteAllText($SignatureFile, [string]$Item.signature,
+                                    [Text.UTF8Encoding]::new($false))
+            & $SignerPath --verify $KeyringPath $Roots[[string]$Item.key_id] $SignatureFile | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "update keyring 的 $($Item.key_id) 根签名验证失败。"
+            }
+        }
+    } finally {
+        Remove-OnlyInsideRepo $TemporaryDirectory
+    }
+}
+
+function Assert-ManifestSigningKey {
+    if ($ManifestKeyId -notmatch '^[a-z0-9-]{1,64}$') {
+        throw "-ManifestKeyId 只能包含小写字母、数字和连字符。"
+    }
+    if (-not $UpdateKeyringPath) { $UpdateKeyringPath = Join-Path $Repo "update-keyring-v1.json" }
+    $KeyringPath = Assert-File $UpdateKeyringPath "update keyring"
+    # Authenticate the raw keyring before its contents choose a release key.
+    Assert-TrustedUpdateKeyring $KeyringPath
+    try { $Keyring = Get-Content -LiteralPath $KeyringPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String }
+    catch { throw "update keyring 不是有效 JSON: $KeyringPath" }
+    if ($Keyring.schema -ne 1 -or [UInt64]$Keyring.sequence -eq 0 -or
+        -not $Keyring.release_keys -or @($Keyring.release_keys).Count -gt 16) {
+        throw "update keyring schema、sequence 或 release_keys 非法。"
+    }
+    $KeyringIssued = Parse-UtcStamp ([string]$Keyring.issued_at) "keyring.issued_at"
+    $KeyringExpires = Parse-UtcStamp ([string]$Keyring.expires_at) "keyring.expires_at"
+    if ($KeyringExpires -le $KeyringIssued -or
+        $KeyringExpires - $KeyringIssued -gt [TimeSpan]::FromDays(180) -or
+        $KeyringExpires -le $ManifestIssuedAt -or
+        $KeyringIssued -gt $ManifestIssuedAt.AddHours(24)) {
+        throw "update keyring 的有效期不适用于本次 manifest。"
+    }
+    $Key = @($Keyring.release_keys | Where-Object { $_.key_id -eq $ManifestKeyId })
+    if ($Key.Count -ne 1 -or $Key[0].revoked -eq $true -or
+        $Key[0].public_key -cne $UpdatePublicKeyHex) {
+        throw "-ManifestKeyId 必须引用 keyring 中唯一、未撤销且与 -UpdatePublicKeyHex 匹配的发布密钥。"
+    }
+    $KeyNotBefore = Parse-UtcStamp ([string]$Key[0].not_before) "release_keys.not_before"
+    $KeyExpires = Parse-UtcStamp ([string]$Key[0].expires_at) "release_keys.expires_at"
+    if ($KeyExpires -le $KeyNotBefore -or
+        $KeyExpires - $KeyNotBefore -gt [TimeSpan]::FromDays(366) -or
+        $ManifestIssuedAt -lt $KeyNotBefore -or $ManifestIssuedAt -ge $KeyExpires) {
+        throw "-ManifestKeyId 在本次 manifest 的发布时间无效。"
+    }
+}
+
 function Get-ArchiveMembers([string]$Directory, [string]$ArchiveUrl) {
     return @(
         Get-ChildItem -LiteralPath $Directory -File -Recurse | Sort-Object FullName | ForEach-Object {
@@ -146,6 +242,19 @@ if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) { throw "未找到 
 if (-not $SkipManifests) {
     if (-not $SignerPath) { $SignerPath = Join-Path (Split-Path -Parent $WindowsExePath) "awj_update_manifest_sign.exe" }
     $SignerPath = Assert-File $SignerPath "manifest 签名工具"
+    if ($UpdatePublicKeyHex -notmatch '^[0-9a-f]{64}$') { throw "需要 64 位小写 -UpdatePublicKeyHex。" }
+    if (-not $ManifestExpiresAtUtc) { throw "签名 manifest 需要 -ManifestExpiresAtUtc。" }
+    $ManifestIssuedAt = Parse-UtcStamp $PublishedAtUtc "PublishedAtUtc"
+    $ManifestExpiresAt = Parse-UtcStamp $ManifestExpiresAtUtc "ManifestExpiresAtUtc"
+    if ($ManifestExpiresAt -le $ManifestIssuedAt -or
+        $ManifestExpiresAt - $ManifestIssuedAt -gt [TimeSpan]::FromDays(180)) {
+        throw "manifest 有效期必须为 1 秒到 180 天。"
+    }
+    if (-not $ExistingManifestPublicKeyHex) { $ExistingManifestPublicKeyHex = $UpdatePublicKeyHex }
+    if ($ExistingManifestPublicKeyHex -notmatch '^[0-9a-f]{64}$') {
+        throw "-ExistingManifestPublicKeyHex 必须是 64 位小写十六进制。"
+    }
+    Assert-ManifestSigningKey
 }
 
 $Stage = Join-Path $Repo "build\release\$Version"
@@ -223,7 +332,7 @@ if (-not $SkipManifests) {
         $SignaturePath = "$ManifestPath.sig"
         $Old = if (Test-Path -LiteralPath $ManifestPath) { Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json -AsHashtable } else { $null }
         if ($Old) {
-            & $SignerPath --verify $ManifestPath $UpdatePublicKeyHex $SignaturePath
+            & $SignerPath --verify $ManifestPath $ExistingManifestPublicKeyHex $SignaturePath
             if ($LASTEXITCODE -ne 0) { throw "现有 v2 manifest 签名无效。" }
             if ($ArchiveManifestSequence -le [UInt64]$Old.sequence) { throw "v2 sequence 必须递增。" }
         }
@@ -241,7 +350,7 @@ if (-not $SkipManifests) {
         $Entries = @($(if ($Old) { $Old.entries } else { @() }) + $Entry)
         if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v2 manifest 版本重复。" }
         $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
-        $Json = ([ordered]@{ schema = 2; sequence = $ArchiveManifestSequence; entries = $SortedEntries } | ConvertTo-Json -Depth 32).Replace("`r`n", "`n") + "`n"
+        $Json = ([ordered]@{ schema = 2; sequence = $ArchiveManifestSequence; key_id = $ManifestKeyId; issued_at = $PublishedAtUtc; expires_at = $ManifestExpiresAtUtc; entries = $SortedEntries } | ConvertTo-Json -Depth 32).Replace("`r`n", "`n") + "`n"
         if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v2 manifest entries 必须序列化为数组。" }
         Write-Utf8NoBom $ManifestPath $Json
         Sign-Manifest $ManifestPath $SignaturePath
@@ -250,7 +359,7 @@ if (-not $SkipManifests) {
         if ($LegacyManifestSequence -eq 0) { throw "1.0.5 桥接更新需要 -LegacyManifestSequence。" }
         $LegacyPath = Join-Path $Repo "update-manifest.json"
         $LegacySignature = "$LegacyPath.sig"
-        & $SignerPath --verify $LegacyPath $UpdatePublicKeyHex $LegacySignature
+        & $SignerPath --verify $LegacyPath $ExistingManifestPublicKeyHex $LegacySignature
         if ($LASTEXITCODE -ne 0) { throw "现有 v1 manifest 签名无效。" }
         $Old = Get-Content -LiteralPath $LegacyPath -Raw | ConvertFrom-Json -AsHashtable
         if ($Old.schema -ne 1 -or $LegacyManifestSequence -le [UInt64]$Old.sequence) { throw "v1 sequence 必须递增。" }
@@ -267,7 +376,7 @@ if (-not $SkipManifests) {
         $Entries = @($Old.entries + $Entry)
         if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v1 manifest 版本重复。" }
         $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
-        $Json = ([ordered]@{ schema = 1; sequence = $LegacyManifestSequence; entries = $SortedEntries } | ConvertTo-Json -Depth 20).Replace("`r`n", "`n") + "`n"
+        $Json = ([ordered]@{ schema = 1; sequence = $LegacyManifestSequence; key_id = $ManifestKeyId; issued_at = $PublishedAtUtc; expires_at = $ManifestExpiresAtUtc; entries = $SortedEntries } | ConvertTo-Json -Depth 20).Replace("`r`n", "`n") + "`n"
         if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v1 manifest entries 必须序列化为数组。" }
         Write-Utf8NoBom $LegacyPath $Json
         Sign-Manifest $LegacyPath $LegacySignature
