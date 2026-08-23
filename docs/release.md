@@ -22,7 +22,7 @@
    ```
 
    该步骤仅写入 `build/release/1.0.4/`，执行 `7z t`、全新解压、逐文件 SHA-256 和 Windows CLI `--help`。归档包含二进制、校验文件、`LICENSE`、`THIRD_PARTY_NOTICES.txt`、`THIRD_PARTY_LICENSES/` 和 `BUILD_INFO.txt`。Linux `AWJ --help` 与 `readelf -d` 在 WSL 普通验证中执行。
-4. 创建 prerelease 并且只上传该次打包产生的 `build/release/1.0.4/assets/AWJ_Win.7z` 与 `AWJ_Linux.7z`。先核对公开下载、大小、哈希和 Release prerelease 状态；不要为签 manifest 再运行一次打包，以免归档成员时间变化导致哈希失配。
+4. 先创建 draft prerelease，再只上传该次打包产生的 `build/release/1.0.4/assets/AWJ_Win.7z` 与 `AWJ_Linux.7z`；确认资产完整后发布。Immutable Release 发布后不能改动资产或 tag。先核对公开下载、大小、哈希和 Release prerelease 状态；不要为签 manifest 再运行一次打包，以免归档成员时间变化导致哈希失配。
 5. 资产可下载后，只提交步骤 3 已生成的 v2 manifest：
 
    ```powershell
@@ -37,7 +37,7 @@
 
 从 1.0.4 的锁定源码创建 1.0.5，只改版本、更新日志和发布说明。完成同一组构建和归档验证后，发布四个自定义资产：`AWJ_Win.7z`、`AWJ_Linux.7z`、`AWJ.exe`、`AWJ.com`。Release 正文必须明确：功能与 1.0.4 相同，仅用于 1.0.3 自动更新桥接测试；普通用户应下载 1.0.4。
 
-在上传 1.0.5 的 Immutable Release 前，使用 `-BridgeRelease` 只运行一次打包脚本以同时生成资产和 v1 manifest；上传同一次生成的四个资产后，资产公开可下载时仅提交已生成的 v1 manifest：
+在上传 1.0.5 的 Immutable Release 前，使用 `-BridgeRelease` 只运行一次打包脚本以同时生成资产和 v1 manifest；先创建 draft、上传同一次生成的四个资产、确认完整后发布，资产公开可下载时仅提交已生成的 v1 manifest：
 
 ```powershell
 .\scripts\package-release.ps1 `
@@ -59,4 +59,4 @@
 2. seed 固定保存在仓库外 `C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex`。不要读取、打印、提交或复制 seed；legacy、recovery root 和 release seed 都要有独立离线加密备份。
 3. 用两把 root 签名 `update-keyring-v1.json`，确认 `sequence` 严格递增、`expires_at` 不超过 180 天，并在公开更新 manifest 之前提交其 `.sig`。详见 [自动更新签名与密钥轮换](update-security.md)。
 4. 从干净的 1.0.6 tag 只运行一次 `scripts/package-release.ps1`，构建并归档 `AWJ_Win.7z` 和 `AWJ_Linux.7z`，同时显式传入 `-ManifestKeyId`、`-ManifestExpiresAtUtc`、匹配的 release 公钥/seed，以及旧 manifest 公钥（如不同）生成待发布的签名 v2 manifest。v1 仍只保留给 1.0.5 桥接。上传该次生成的资产；公开下载验证后只提交已生成的 manifest，绝不为签 manifest 重跑打包。脚本会拒绝未撤销 keyring key 以外的签名者。
-5. GitHub Immutable Releases 已启用。创建前核对 tag、prerelease、资产名、大小和哈希；不可用“上传后修正”替代发布前验证。
+5. GitHub Immutable Releases 已启用。必须先创建 draft、上传并核对完整资产后才发布；发布后核对 tag、prerelease、资产名、大小和哈希。不可用“上传后修正”替代发布前验证。
