@@ -200,7 +200,7 @@ function Get-ArchiveMembers([string]$Directory, [string]$ArchiveUrl) {
 function Add-Archive([string]$PackageDirectory, [string]$ArchivePath) {
     Push-Location $PackageDirectory
     try {
-        & 7z.exe a -t7z $ArchivePath .\* -m0=lzma2 -mx=9 -mmt=1 -mf=off | Out-Host
+        & 7z.exe a -t7z $ArchivePath .\* -m0=lzma2 -mx=9 -mmt=1 -mf=off -mtc=off -mta=off -mtm=off | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "7z 创建失败: $ArchivePath" }
     } finally { Pop-Location }
     & 7z.exe t $ArchivePath | Out-Host
