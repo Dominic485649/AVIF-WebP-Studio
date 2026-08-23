@@ -279,7 +279,7 @@ int run_cli_args(std::vector<std::wstring> args) {
     }
 #endif
 
-    const auto parsed = awj::parse_arguments_with_user_preset(args);
+    auto parsed = awj::parse_arguments_with_user_preset(args);
     if (!parsed) {
       print_line(std::format("[FAIL] {}", parsed.error()));
       return 1;

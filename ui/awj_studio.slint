@@ -2129,8 +2129,7 @@ export component AwjStudio inherits Window {
                         background: root.panel-bg;
                         border-color: root.panel-border;
                         border-width: 1px;
-                        height: self.preferred-height;
-                        min-height: parent.height;
+                        height: max(self.preferred-height, parent.height);
                         VerticalLayout {
                             padding: 24px;
                             spacing: 14px;
