@@ -240,7 +240,9 @@ if (-not $SkipManifests) {
         }
         $Entries = @($(if ($Old) { $Old.entries } else { @() }) + $Entry)
         if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v2 manifest 版本重复。" }
-        $Json = ([ordered]@{ schema = 2; sequence = $ArchiveManifestSequence; entries = Get-SortedEntries $Entries } | ConvertTo-Json -Depth 32).Replace("`r`n", "`n") + "`n"
+        $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
+        $Json = ([ordered]@{ schema = 2; sequence = $ArchiveManifestSequence; entries = $SortedEntries } | ConvertTo-Json -Depth 32).Replace("`r`n", "`n") + "`n"
+        if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v2 manifest entries 必须序列化为数组。" }
         Write-Utf8NoBom $ManifestPath $Json
         Sign-Manifest $ManifestPath $SignaturePath
     }
@@ -264,7 +266,9 @@ if (-not $SkipManifests) {
         }
         $Entries = @($Old.entries + $Entry)
         if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v1 manifest 版本重复。" }
-        $Json = ([ordered]@{ schema = 1; sequence = $LegacyManifestSequence; entries = Get-SortedEntries $Entries } | ConvertTo-Json -Depth 20).Replace("`r`n", "`n") + "`n"
+        $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
+        $Json = ([ordered]@{ schema = 1; sequence = $LegacyManifestSequence; entries = $SortedEntries } | ConvertTo-Json -Depth 20).Replace("`r`n", "`n") + "`n"
+        if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v1 manifest entries 必须序列化为数组。" }
         Write-Utf8NoBom $LegacyPath $Json
         Sign-Manifest $LegacyPath $LegacySignature
     }
