@@ -35,7 +35,7 @@ No app-local mechanism can resist an attacker with equal local write access that
      -SignerPath .\bin\x64\Release\awj_update_manifest_sign.exe
    ```
 
-3. Commit and make the signed keyring plus `.sig` publicly downloadable, confirm its sequence is higher than any previously issued value, then sign manifests with the matching release seed. `scripts/package-release.ps1` requires `-ManifestKeyId` and `-ManifestExpiresAtUtc`, and checks that the ID names a non-revoked keyring key matching `-UpdatePublicKeyHex`. When the existing manifest was signed by the preceding key, pass `-ExistingManifestPublicKeyHex` explicitly.
+3. Commit and make the signed keyring plus `.sig` publicly downloadable, confirm its sequence is higher than any previously issued value, then sign manifests with the matching release seed. `scripts/package-release.ps1` verifies the keyring envelope with compiled roots before parsing it, requires `-ManifestKeyId` and `-ManifestExpiresAtUtc`, and checks that the ID names a non-revoked keyring key matching `-UpdatePublicKeyHex`. When the existing manifest was signed by the preceding key, pass `-ExistingManifestPublicKeyHex` explicitly.
 4. If a release seed is exposed, have two uncompromised roots publish a higher-sequence keyring that marks it `revoked: true`, adds a new release key, and then sign manifests only with the new key. Do not wait for the old manifest to expire.
 5. If a root seed is lost or exposed, first use the other two roots to rotate release keys. Deliver a normally signed client with a replacement compiled root set before retiring the old root. Roots are bootstrap trust anchors and cannot be changed by a single release key.
 

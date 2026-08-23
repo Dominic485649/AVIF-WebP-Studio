@@ -35,7 +35,7 @@ v1、v2 manifest 也必须有已签名的 `key_id`、`issued_at`、`expires_at`�
      -SignerPath .\bin\x64\Release\awj_update_manifest_sign.exe
    ```
 
-3. 提交并公开下载已签名的 keyring 与 `.sig`，确认它的 sequence 比任何客户端已见版本高；然后用 keyring 中对应的 release seed 签 manifest。`scripts/package-release.ps1` 强制 `-ManifestKeyId`、`-ManifestExpiresAtUtc`，并验证该 ID 是 keyring 中未撤销且与 `-UpdatePublicKeyHex` 相同的公钥。已有 manifest 仍由上一把公钥验签时，显式传入 `-ExistingManifestPublicKeyHex`。
+3. 提交并公开下载已签名的 keyring 与 `.sig`，确认它的 sequence 比任何客户端已见版本高；然后用 keyring 中对应的 release seed 签 manifest。`scripts/package-release.ps1` 先用编译 root 验签 keyring 封套后才解析，强制 `-ManifestKeyId`、`-ManifestExpiresAtUtc`，并验证该 ID 是 keyring 中未撤销且与 `-UpdatePublicKeyHex` 相同的公钥。已有 manifest 仍由上一把公钥验签时，显式传入 `-ExistingManifestPublicKeyHex`。
 4. release seed 泄露时，用两把未泄露 root 发布更高 sequence 的 keyring：把泄露 release key 的 `revoked` 设为 `true`，加入新 release key，随后只由新 key 签 manifest。不要等待旧 manifest 过期。
 5. root seed 丢失或泄露时，先用其余两把 root 发布 release-key 轮换；随后在一个正常签名的新客户端中替换编译 root 集，等旧客户端停止支持后才退役旧 root。root 是 bootstrap trust anchor，不能由单把 release key 自行改写。
 
