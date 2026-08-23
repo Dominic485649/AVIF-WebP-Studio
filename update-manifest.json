@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sequence": 7,
+  "sequence": 8,
   "entries": [
     {
       "version": "1.0.1",
@@ -87,6 +87,35 @@
       "changelog": {
         "zh-CN": "- prerelease：修正 Windows 更新请求中当前用户代理配置的生命周期，手动代理和 PAC/自动代理解析结果在整个请求期间保持有效；没有可用代理发现时继续安全回退到直连。\n- prerelease：修正更新渠道切换后的焦点状态，焦点环保持与下拉框同宽并使用统一的蓝色样式，不再残留黑色边框。",
         "en": "- Prerelease: fixed the lifetime of the current user's Windows proxy configuration during update requests, keeping manual proxy and PAC/auto-detected results valid for the whole request and safely falling back to direct routing when discovery is unavailable.\n- Prerelease: fixed update-channel focus after switching, keeping one blue focus ring the same width as the combo box instead of leaving a black border behind."
+      }
+    },
+    {
+      "version": "1.0.5",
+      "channel": "prerelease",
+      "published_at": "2026-08-23T19:45:49Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.5",
+      "minimum_updater_version": "1.0.1",
+      "revoked": false,
+      "assets": {
+        "windows_x64_exe": {
+          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.5/AWJ.exe",
+          "size": 43824640,
+          "sha256": "7e378920c88282bc7c01504ef3004db85fdf80c98df97c561e545d37e06b5b8a"
+        },
+        "windows_x64_com": {
+          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.5/AWJ.com",
+          "size": 451072,
+          "sha256": "ae13e9dd9c7a227e591463ab3b852a409f149ac085501a0a2489f766c997f0aa"
+        },
+        "linux_x64": {
+          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.5/AWJ_Linux.7z",
+          "size": 19380740,
+          "sha256": "96a6ed581c01ccf8a90fd3c9ca53f8722672d20879767537fbd5d4162fc74949"
+        }
+      },
+      "changelog": {
+        "zh-CN": "- prerelease：功能与 1.0.4 完全相同。本版本仅提供 1.0.3→1.0.5 的 Windows 自动更新桥接测试所需裸 `AWJ.exe` / `AWJ.com`；普通用户请下载 1.0.4 的归档资产。",
+        "en": "- Prerelease: Functionally identical to 1.0.4. This build only supplies the raw `AWJ.exe` / `AWJ.com` needed for the Windows 1.0.3→1.0.5 updater bridge test; normal users should download the 1.0.4 archive assets."
       }
     }
   ]
