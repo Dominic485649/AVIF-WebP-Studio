@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "sequence": 2,
+  "sequence": 3,
   "key_id": "release-2026",
-  "issued_at": "2026-08-24T14:00:43Z",
+  "issued_at": "2026-08-24T14:55:59Z",
   "expires_at": "2027-02-18T17:00:00Z",
   "entries": [
     {
@@ -235,6 +235,122 @@
       "changelog": {
         "zh-CN": "- prerelease：更新器新增双 root 授权的 release keyring、key ID、签名 `issued_at` / `expires_at`、撤销标志和最多 180 天有效期。v1、v2 与 keyring 的 sequence 和原始 SHA-256 通过跨进程锁及原子状态文件持久化；回退、同 sequence 篡改或状态损坏均 fail-closed，helper 会再次验证 keyring 与 v2 清单。\n- 预设兼容加载历史的 `[null]` / `[整数]` `visual_quality` 写法，并在下次保存时写成正确标量；参数页和队列可再次预览 `测试.jsonc`。CLI 新增 `--list-presets`，动态列出同目录有效预设及无效文件原因。\n- Windows CLI 新增 `--stdin-wgc-rgba16f <宽>x<高>`，可从管道读取一帧精确长度的 `DXGI_FORMAT_R16G16B16A16_FLOAT` 线性 scRGB；输入会以安全临时文件走原有 HDR 路径，短/长帧、无尺寸或未知裸 RAW 均拒绝。\n- Windows 11 风格圆角应用图标；队列三个文件时间选项移到“写入运行日志”后，窄窗口自动换行。更新日志恢复正常向下滚动；设置页自动更新三项横向排列。\n- 修复左侧“发现新版本”悬浮卡片：改为不透明、裁切受控的紧凑提示，完整发布说明仍在更新日志页，长摘要不再穿透卡片或遮挡导航。\n- 发布工具链固定签名 keyring/v2 manifest 的 LF 原始字节，修复单条旧 manifest 续签时的 PowerShell 数组处理；`AWJ_Linux.7z` 改由原生 Linux 打包并验证可执行位，Windows 端只复核其内容和哈希。",
         "en": "- Prerelease: the updater now has a two-root-authorized release keyring, key IDs, signed `issued_at` / `expires_at`, revocation, and a maximum 180-day lifetime. v1, v2, and keyring sequence plus raw SHA-256 persist through an inter-process lock and atomic state file; rollback, changed bytes at one sequence, and damaged state fail closed, while the helper re-verifies the keyring and v2 manifest.\n- Preset loading now accepts legacy `[null]` / `[integer]` `visual_quality` values and rewrites them as proper scalars on the next save, so `测试.jsonc` can again appear in Parameters and Queue. CLI adds `--list-presets` to dynamically show executable-adjacent valid presets and invalid-file diagnostics.\n- Windows CLI adds `--stdin-wgc-rgba16f <width>x<height>` for one exact-length piped `DXGI_FORMAT_R16G16B16A16_FLOAT` linear-scRGB frame; it uses a secure temporary file through the existing HDR path and rejects short/long data, missing dimensions, and unknown bare RAW.\n- Added a Windows 11-style rounded application icon; the three file-time choices follow “Write runtime log” and wrap on narrow windows. The changelog scrolls downward normally again, and the three automatic-update choices in Settings are horizontal.\n- Fixed the sidebar “New version available” hover card: it is now opaque and clipped as a compact prompt, while the full release notes remain on the Changelog page so long summaries cannot bleed through the card or cover navigation.\n- The release tooling now fixes LF raw bytes for signed keyring/v2 manifests and handles an existing one-entry manifest safely. `AWJ_Linux.7z` is packaged natively on Linux and verifies its executable bit; Windows only verifies its content and hashes."
+      }
+    },
+    {
+      "version": "1.0.7",
+      "channel": "prerelease",
+      "published_at": "2026-08-24T14:55:59Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.7",
+      "minimum_updater_version": "1.0.4",
+      "revoked": false,
+      "assets": {
+        "windows_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+            "size": 12274717,
+            "sha256": "72531ec9487a299e7cb06bda2296932766d809ab82fd2871f28ea86d29aac88b"
+          },
+          "members": [
+            {
+              "path": "AWJ.com",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 451072,
+              "sha256": "7217c8f2901213e3aba3ee629be6792fa498b2bf8265776b699a0be56e0d359a"
+            },
+            {
+              "path": "AWJ.com.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "40a793656254520dc98a3821c6dddce3fed795e228ce4c7db7c20e4c2d41c743"
+            },
+            {
+              "path": "AWJ.exe",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 44206592,
+              "sha256": "a6c3e150dab14fefc0f2508c6ffc7e173dd4f5f978d55d20a711a5a00d4d7c0a"
+            },
+            {
+              "path": "AWJ.exe.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "c12e7aea6b5049a546c181420aa9ef2f0b9bbc64e80227de01bbb493a86d928d"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 511,
+              "sha256": "444462c9806d2a9343b0c7890b2449cb48184633b44a88081b7e1864ef0100f2"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 24936,
+              "sha256": "575888be9ac31801886babca6456e1beb346fa4fb3dd76f52111f8048e38d58a"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Win.7z",
+              "size": 64085,
+              "sha256": "e048fde08cd4d372c0484d5856034c09d3a27a05e661b703fd0a99b262313e9c"
+            }
+          ]
+        },
+        "linux_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Linux.7z",
+            "size": 19434040,
+            "sha256": "89dad5490c9c53b64d1fa0be2bdadb55ac1586817f2495a8eb4d7a7107d11b85"
+          },
+          "members": [
+            {
+              "path": "AWJ",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Linux.7z",
+              "size": 66413128,
+              "sha256": "bb310053b17e6485b6adbef950bbf57c8e892c73d28873e37f3ddfaacc5d7629"
+            },
+            {
+              "path": "AWJ.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Linux.7z",
+              "size": 70,
+              "sha256": "eefa22bda436d8dddc47e81028cde1f3cb60cf917d5a24bc11883b77ebc3bea2"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Linux.7z",
+              "size": 498,
+              "sha256": "f02eaa33126c40ad3505f24a30557c77aa10a679c0af56ba57a7f7d524153bc9"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Linux.7z",
+              "size": 34523,
+              "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Linux.7z",
+              "size": 24478,
+              "sha256": "b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.7/AWJ_Linux.7z",
+              "size": 62836,
+              "sha256": "c750b5dc44ce24b70f20b43404b6b662128ff83d7dcae16c50d3c2fd2b14ebc4"
+            }
+          ]
+        }
+      },
+      "changelog": {
+        "zh-CN": "- prerelease：功能与 1.0.6 完全一致，仅用于 1.0.6→1.0.7 的归档自动更新测试；普通用户请继续下载 1.0.6。",
+        "en": "- Prerelease: Functionally identical to 1.0.6 and provided only for the 1.0.6→1.0.7 archive auto-update test; normal users should continue to download 1.0.6."
       }
     }
   ]
