@@ -1186,25 +1186,24 @@ export component AwjStudio inherits Window {
                                 }
                                 if version-touch.has-hover && root.update-available && root.show-update-changelog: Rectangle {
                                     x: 0px;
-                                    y: parent.height + 4px;
+                                    y: parent.height + 6px;
                                     width: root.nav-width - root.page-gap * 2;
-                                    height: 78px;
-                                    z: 20;
-                                    border-radius: 7px;
-                                    background: root.panel-bg;
+                                    height: 70px;
+                                    z: 100;
+                                    clip: true;
+                                    border-radius: 8px;
+                                    background: root.dark-mode ? #1c2a3c : #ffffff;
                                     border-width: 1px;
-                                    border-color: root.panel-border;
+                                    border-color: root.dark-mode ? #4b6380 : #a9c7e8;
                                     VerticalLayout {
                                         padding: 9px;
-                                        spacing: 4px;
+                                        spacing: 3px;
                                         Text { text: @tr("发现新版本 ") + root.update-version; color: root.text-strong; font-size: 12px; font-weight: 800; }
                                         Text {
-                                            text: root.language-index == 1 ? root.update-summary-en : root.update-summary-zh-cn;
+                                            text: @tr("点击版本号安装；完整说明见更新日志。");
                                             color: root.text-muted;
                                             font-size: 11px;
                                             wrap: word-wrap;
-                                            max-height: 42px;
-                                            overflow: elide;
                                         }
                                     }
                                 }

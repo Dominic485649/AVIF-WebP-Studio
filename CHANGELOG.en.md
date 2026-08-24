@@ -6,6 +6,7 @@
 - Preset loading now accepts legacy `[null]` / `[integer]` `visual_quality` values and rewrites them as proper scalars on the next save, so `测试.jsonc` can again appear in Parameters and Queue. CLI adds `--list-presets` to dynamically show executable-adjacent valid presets and invalid-file diagnostics.
 - Windows CLI adds `--stdin-wgc-rgba16f <width>x<height>` for one exact-length piped `DXGI_FORMAT_R16G16B16A16_FLOAT` linear-scRGB frame; it uses a secure temporary file through the existing HDR path and rejects short/long data, missing dimensions, and unknown bare RAW.
 - Added a Windows 11-style rounded application icon; the three file-time choices follow “Write runtime log” and wrap on narrow windows. The changelog scrolls downward normally again, and the three automatic-update choices in Settings are horizontal.
+- Fixed the sidebar “New version available” hover card: it is now opaque and clipped as a compact prompt, while the full release notes remain on the Changelog page so long summaries cannot bleed through the card or cover navigation.
 
 ## 1.0.5 - 2026-08-24
 

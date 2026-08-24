@@ -607,6 +607,9 @@ msgstr "Current version "
 msgid "发现新版本 "
 msgstr "New version available: "
 
+msgid "点击版本号安装；完整说明见更新日志。"
+msgstr "Click the version to install; see Changelog for details."
+
 msgid "更新日志"
 msgstr "Changelog"
 
