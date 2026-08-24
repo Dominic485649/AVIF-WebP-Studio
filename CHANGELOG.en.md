@@ -7,6 +7,7 @@
 - Windows CLI adds `--stdin-wgc-rgba16f <width>x<height>` for one exact-length piped `DXGI_FORMAT_R16G16B16A16_FLOAT` linear-scRGB frame; it uses a secure temporary file through the existing HDR path and rejects short/long data, missing dimensions, and unknown bare RAW.
 - Added a Windows 11-style rounded application icon; the three file-time choices follow “Write runtime log” and wrap on narrow windows. The changelog scrolls downward normally again, and the three automatic-update choices in Settings are horizontal.
 - Fixed the sidebar “New version available” hover card: it is now opaque and clipped as a compact prompt, while the full release notes remain on the Changelog page so long summaries cannot bleed through the card or cover navigation.
+- The release tooling now fixes LF raw bytes for signed keyring/v2 manifests and handles an existing one-entry manifest safely. `AWJ_Linux.7z` is packaged natively on Linux and verifies its executable bit; Windows only verifies its content and hashes.
 
 ## 1.0.5 - 2026-08-24
 

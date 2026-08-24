@@ -23,5 +23,13 @@ Before creating the immutable 1.0.5 Release, run the packager once with `-Bridge
 1. Finish frozen 1.0.4/1.0.5 assets, public-download validation, and the local bridge test first; 1.0.6 must not rewrite either tag or asset.
 2. Keep the seed outside the repository at `C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex`. Do not read, print, commit, or copy it; legacy, recovery-root, and release seeds all need independent encrypted offline backups.
 3. Have two roots sign `update-keyring-v1.json`, confirm its sequence increases strictly and its `expires_at` is at most 180 days out, and commit the `.sig` before publishing an update manifest. See [update signing and key rotation](update-security.en.md).
-4. From a clean 1.0.6 tag, run `scripts/package-release.ps1` once to build and archive `AWJ_Win.7z` and `AWJ_Linux.7z`, with explicit `-ManifestKeyId`, `-ManifestExpiresAtUtc`, matching release public key/seed, and the preceding manifest public key when it differs. It stages the signed v2 manifest before the release; v1 remains only for the 1.0.5 bridge. Upload the resulting assets; after public-download validation, commit only that already-generated manifest rather than rerunning packaging. The script rejects a signer outside the non-revoked keyring entry.
+4. From a clean 1.0.6 tag, first create the Linux archive in a native Linux worktree; never compile or package a Linux asset under `/mnt/...`:
+
+   ```bash
+   bash scripts/package-linux-release.sh \
+     --binary bin/x64/Release/AWJ \
+     --output-dir build/release-linux/1.0.6
+   ```
+
+   The script runs `7z t`, freshly extracts the archive, verifies every file hash, and launches extracted `AWJ --help`, so the executable bit is a release gate. Then run `scripts/package-release.ps1` exactly once on Windows with the native `-LinuxPackagePath` and `-LinuxArchivePath` (for example `\\wsl.localhost\<distro>\home\...`), explicit `-ManifestKeyId`, `-ManifestExpiresAtUtc`, the matching release public key/seed, and the preceding manifest public key when it differs. Windows creates `AWJ_Win.7z`, freshly extracts and hash-checks the native `AWJ_Linux.7z`, then stages the signed v2 manifest. v1 remains only for the 1.0.5 bridge. Upload the resulting assets; after public-download validation, commit only that already-generated manifest rather than rerunning packaging. The script rejects a signer outside the non-revoked keyring entry.
 5. GitHub Immutable Releases is enabled. Create a draft, attach and verify the complete asset set, then publish; verify tag, prerelease state, asset names, sizes, and hashes afterward. Publishing first and correcting later is not an option.

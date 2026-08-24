@@ -58,5 +58,13 @@
 1. 先完成 1.0.4/1.0.5 冻结资产、公开下载和本机桥接测试；1.0.6 不得改写两者 tag 或资产。
 2. seed 固定保存在仓库外 `C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex`。不要读取、打印、提交或复制 seed；legacy、recovery root 和 release seed 都要有独立离线加密备份。
 3. 用两把 root 签名 `update-keyring-v1.json`，确认 `sequence` 严格递增、`expires_at` 不超过 180 天，并在公开更新 manifest 之前提交其 `.sig`。详见 [自动更新签名与密钥轮换](update-security.md)。
-4. 从干净的 1.0.6 tag 只运行一次 `scripts/package-release.ps1`，构建并归档 `AWJ_Win.7z` 和 `AWJ_Linux.7z`，同时显式传入 `-ManifestKeyId`、`-ManifestExpiresAtUtc`、匹配的 release 公钥/seed，以及旧 manifest 公钥（如不同）生成待发布的签名 v2 manifest。v1 仍只保留给 1.0.5 桥接。上传该次生成的资产；公开下载验证后只提交已生成的 manifest，绝不为签 manifest 重跑打包。脚本会拒绝未撤销 keyring key 以外的签名者。
+4. 从干净的 1.0.6 tag 先在原生 Linux 工作树生成 Linux 归档；不得在 `/mnt/...` 编译或打包 Linux 资产：
+
+   ```bash
+   bash scripts/package-linux-release.sh \
+     --binary bin/x64/Release/AWJ \
+     --output-dir build/release-linux/1.0.6
+   ```
+
+   该脚本会 `7z t`、全新解压、核对全部文件哈希并启动解压后的 `AWJ --help`，因此可执行位是发布门槛。再在 Windows 端只运行一次 `scripts/package-release.ps1`，传入原生目录的 `-LinuxPackagePath` 和 `-LinuxArchivePath`（例如 `\\wsl.localhost\<发行版>\home\...`），以及 `-ManifestKeyId`、`-ManifestExpiresAtUtc`、匹配的 release 公钥/seed 和旧 manifest 公钥（如不同）。Windows 脚本生成 `AWJ_Win.7z`，重新解压并逐文件复核原生 `AWJ_Linux.7z`，再生成待发布的签名 v2 manifest。v1 仍只保留给 1.0.5 桥接。上传该次生成的资产；公开下载验证后只提交已生成的 manifest，绝不为签 manifest 重跑打包。脚本会拒绝未撤销 keyring key 以外的签名者。
 5. GitHub Immutable Releases 已启用。必须先创建 draft、上传并核对完整资产后才发布；发布后核对 tag、prerelease、资产名、大小和哈希。不可用“上传后修正”替代发布前验证。

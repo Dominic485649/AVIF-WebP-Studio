@@ -24,7 +24,7 @@ Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 
 | [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z) | Linux ELF：`AWJ`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
 | [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
 
-归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。
+归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。自 1.0.6 起，`AWJ_Linux.7z` 必须在原生 Linux 文件系统中打包和解压验证，保留 `AWJ` 的可执行位；Windows 端只复核归档内容与哈希。
 
 如需使用ffmpeg作为后端可用参考下面两个仓库
 

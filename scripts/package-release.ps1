@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)] [string]$WindowsExePath,
     [Parameter(Mandatory)] [string]$WindowsComPath,
-    [Parameter(Mandatory)] [string]$LinuxBinaryPath,
+    [Parameter(Mandatory)] [string]$LinuxPackagePath,
+    [Parameter(Mandatory)] [string]$LinuxArchivePath,
     [string]$Version = "",
     [ValidateSet("stable", "prerelease")] [string]$Channel = "prerelease",
     [UInt64]$ArchiveManifestSequence = 0,
@@ -48,6 +49,12 @@ function Get-RepoPath([string]$Path) {
 function Assert-File([string]$Path, [string]$Label) {
     $Resolved = Get-RepoPath $Path
     if (-not (Test-Path -LiteralPath $Resolved -PathType Leaf)) { throw "$Label 不存在: $Resolved" }
+    return $Resolved
+}
+
+function Assert-Directory([string]$Path, [string]$Label) {
+    $Resolved = Get-RepoPath $Path
+    if (-not (Test-Path -LiteralPath $Resolved -PathType Container)) { throw "$Label 不存在: $Resolved" }
     return $Resolved
 }
 
@@ -232,11 +239,14 @@ function Assert-ArchiveRoundTrip([string]$ArchivePath, [string]$PackageDirectory
 
 $WindowsExePath = Assert-File $WindowsExePath "AWJ.exe"
 $WindowsComPath = Assert-File $WindowsComPath "AWJ.com"
-$LinuxBinaryPath = Assert-File $LinuxBinaryPath "Linux AWJ"
+$LinuxPackagePath = Assert-Directory $LinuxPackagePath "native Linux package"
+$LinuxArchivePath = Assert-File $LinuxArchivePath "native Linux archive"
 if (([IO.Path]::GetFileName($WindowsExePath) -ne "AWJ.exe") -or
-    ([IO.Path]::GetFileName($WindowsComPath) -ne "AWJ.com") -or
-    ([IO.Path]::GetFileName($LinuxBinaryPath) -ne "AWJ")) {
-    throw "输入文件名必须严格为 AWJ.exe、AWJ.com 和 AWJ。"
+    ([IO.Path]::GetFileName($WindowsComPath) -ne "AWJ.com")) {
+    throw "输入文件名必须严格为 AWJ.exe 和 AWJ.com。"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $LinuxPackagePath "AWJ") -PathType Leaf)) {
+    throw "native Linux package 必须包含 AWJ。"
 }
 if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) { throw "未找到 7z.exe。" }
 if (-not $SkipManifests) {
@@ -261,8 +271,8 @@ $Stage = Join-Path $Repo "build\release\$Version"
 Remove-OnlyInsideRepo $Stage
 $Assets = Join-Path $Stage "assets"
 $WinPackage = Join-Path $Stage "package\AWJ_Win"
-$LinuxPackage = Join-Path $Stage "package\AWJ_Linux"
-New-Item -ItemType Directory -Path $Assets, $WinPackage, $LinuxPackage -Force | Out-Null
+$LinuxPackage = $LinuxPackagePath
+New-Item -ItemType Directory -Path $Assets, $WinPackage -Force | Out-Null
 
 $Commit = (git -C $Repo rev-parse HEAD).Trim()
 $VcpkgConfiguration = Get-Content -LiteralPath (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
@@ -305,12 +315,13 @@ Source: https://github.com/Dominic485649/AWJimage
 Stage-Package $WinPackage $WindowsExePath "Windows"
 Copy-Item -LiteralPath $WindowsComPath -Destination (Join-Path $WinPackage "AWJ.com") -Force
 Write-Checksum (Join-Path $WinPackage "AWJ.com")
-Stage-Package $LinuxPackage $LinuxBinaryPath "Linux"
 
 $WindowsArchive = Join-Path $Assets "AWJ_Win.7z"
 $LinuxArchive = Join-Path $Assets "AWJ_Linux.7z"
 Add-Archive $WinPackage $WindowsArchive
-Add-Archive $LinuxPackage $LinuxArchive
+Copy-Item -LiteralPath $LinuxArchivePath -Destination $LinuxArchive -Force
+& 7z.exe t $LinuxArchive | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "Linux 7z 完整性检查失败: $LinuxArchive" }
 $WinVerify = Join-Path $Stage "verify\AWJ_Win"
 $LinuxVerify = Join-Path $Stage "verify\AWJ_Linux"
 Assert-ArchiveRoundTrip $WindowsArchive $WinPackage $WinVerify

@@ -123,9 +123,9 @@ Debug 使用 `linux-gcc-x64-debug`。Release 验证应确认 `bin/x64/Release/AW
 
 测试可执行文件只在明确需要测试验证时单独构建，不能混入普通构建步骤。0.10.4 的 Windows MSVC Release 为 31/31，Linux GCC Release 为 16/16；Linux 测试配置需显式传 `-DBUILD_TESTING=ON`。Slint component smoke 使用 testing backend，不打开窗口；Windows 取消/强制终止由 `scripts/cli-worker-smoke.ps1` 直接测试 CLI worker、命名事件与 Job Object，不依赖 UI Automation。
 
-## GitHub 发行归档（1.0.4 / 1.0.5）
+## GitHub 发行归档（1.0.4+）
 
-所有暂存、归档和旧版样本都位于仓库 `build/`、`bin/`：`scripts/package-release.ps1` 会在 `build/release/<版本>` 生成、`7z t`、全新解压并逐文件哈希校验 `AWJ_Linux.7z` 与 `AWJ_Win.7z`。两个包分别包含平台二进制及其校验、`LICENSE`、`THIRD_PARTY_NOTICES.txt`、`BUILD_INFO.txt`，不混装跨平台二进制。
+所有暂存、归档和旧版样本都位于仓库 `build/`、`bin/`。从 1.0.6 起，`scripts/package-linux-release.sh` 必须在原生 Linux 文件系统中生成、`7z t`、全新解压并启动验证 `AWJ_Linux.7z`，以保留 `AWJ` 可执行位；Windows `scripts/package-release.ps1` 只生成 `AWJ_Win.7z`，并重新解压、逐文件哈希复核原生 Linux 归档。两个包分别包含平台二进制及其校验、`LICENSE`、`THIRD_PARTY_NOTICES.txt`、`BUILD_INFO.txt`，不混装跨平台二进制。
 
 1.0.4 prerelease 只上传这两个归档，并由签名 `update-manifest-v2.json` 记录归档和每个必需成员的 URL、大小和 SHA-256。客户端严格拒绝路径穿越、链接、额外成员和解压炸弹。1.0.5 是功能等价的 1.0.3 自动更新桥接 prerelease：除两个归档外仅额外上传裸 `AWJ.exe`、`AWJ.com`，只写入旧 v1 manifest；普通用户应下载 1.0.4。Windows 更新在本机测试，WSL 仅进行普通构建、CTest、CLI、ELF 和归档验证。
 

@@ -24,7 +24,7 @@ Download the platform-matched archive from [GitHub Release 1.0.4](https://github
 | [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z) | Linux ELF: `AWJ`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
 | [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
 
-Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2.
+Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2. From 1.0.6, `AWJ_Linux.7z` must be packaged and freshly extracted on a native Linux filesystem so `AWJ` retains its executable bit; Windows only rechecks archive content and hashes.
 
 ## Build
 

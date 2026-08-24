@@ -58,9 +58,9 @@ Studio uses the same CLI pipeline in a child process. Its versioned ITEM/DETAIL 
 
 0.10.4 Windows MSVC Release passes 31/31 tests. The 55,614,152-byte Linux GCC 16.1 Release passes 16/16; its ELF retains `-O3`, LTO, `x86-64-v3`, static `libstdc++`/`libgcc`, and no dynamic `libstdc++.so.6` or `libgcc_s.so.1` dependency.
 
-## GitHub release archives (1.0.4 / 1.0.5)
+## GitHub release archives (1.0.4+)
 
-All staging, archives, and old-version samples stay under repository `build/` and `bin/`. `scripts/package-release.ps1` creates `AWJ_Linux.7z` and `AWJ_Win.7z` under `build/release/<version>`, runs `7z t`, extracts into a fresh directory, and verifies every file hash. Each archive carries its platform binary/checksum plus `LICENSE`, `THIRD_PARTY_NOTICES.txt`, and `BUILD_INFO.txt`; platform binaries are never mixed.
+All staging, archives, and old-version samples stay under repository `build/` and `bin/`. From 1.0.6, native Linux `scripts/package-linux-release.sh` creates, `7z t` checks, freshly extracts, and launches `AWJ_Linux.7z` so `AWJ` retains its executable bit; Windows `scripts/package-release.ps1` creates only `AWJ_Win.7z` and rechecks the native Linux archive by fresh extraction and per-file hashes. Each archive carries its platform binary/checksum plus `LICENSE`, `THIRD_PARTY_NOTICES.txt`, and `BUILD_INFO.txt`; platform binaries are never mixed.
 
 The 1.0.4 prerelease uploads only those two archives and records each archive plus every required member URL, size, and SHA-256 in signed `update-manifest-v2.json`. Clients reject traversal, links, extra members, and archive bombs. 1.0.5 is a functionally equivalent 1.0.3 bridge prerelease: it additionally uploads only raw `AWJ.exe` and `AWJ.com`, writes only legacy v1 manifest state, and recommends 1.0.4 to normal users. Windows update testing is local; WSL is limited to normal build, CTest, CLI, ELF, and archive validation.
 
