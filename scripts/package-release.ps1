@@ -347,7 +347,8 @@ if (-not $SkipManifests) {
             }
             changelog = $Changelog
         }
-        $Entries = @($(if ($Old) { $Old.entries } else { @() }) + $Entry)
+        [object[]]$Entries = if ($Old) { @($Old.entries) } else { @() }
+        $Entries += ,$Entry
         if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v2 manifest 版本重复。" }
         $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
         $Json = ([ordered]@{ schema = 2; sequence = $ArchiveManifestSequence; key_id = $ManifestKeyId; issued_at = $PublishedAtUtc; expires_at = $ManifestExpiresAtUtc; entries = $SortedEntries } | ConvertTo-Json -Depth 32).Replace("`r`n", "`n") + "`n"
@@ -373,7 +374,8 @@ if (-not $SkipManifests) {
             }
             changelog = $Changelog
         }
-        $Entries = @($Old.entries + $Entry)
+        [object[]]$Entries = @($Old.entries)
+        $Entries += ,$Entry
         if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v1 manifest 版本重复。" }
         $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
         $Json = ([ordered]@{ schema = 1; sequence = $LegacyManifestSequence; key_id = $ManifestKeyId; issued_at = $PublishedAtUtc; expires_at = $ManifestExpiresAtUtc; entries = $SortedEntries } | ConvertTo-Json -Depth 20).Replace("`r`n", "`n") + "`n"
