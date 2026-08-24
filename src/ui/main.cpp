@@ -7326,6 +7326,7 @@ import awj.pipeline;
 import awj.preset;
 import awj.studio_defaults;
 import awj.update_linux;
+import awj.update_keyring;
 import awj.update_manifest;
 import awj.update_manifest_v2;
 import awj.update_model;
