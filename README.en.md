@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-Current prerelease: [GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4)
+Recommended for normal users: [GitHub Release 1.0.6](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.6). The current test prerelease, [1.0.7](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.7), is functionally identical to 1.0.6 and exists only for the 1.0.6→1.0.7 archive auto-update test.
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -15,14 +15,14 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
-## 1.0.4 GitHub release archives
+## 1.0.6 GitHub release archives
 
-Download the platform-matched archive from [GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4). 1.0.4 has only these two custom assets, and the archives deliberately do not mix platform binaries:
+Download the platform-matched archive from [GitHub Release 1.0.6](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.6). 1.0.6 has only these two custom assets, and the archives deliberately do not mix platform binaries:
 
 | Archive | Exact contents | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z) | Linux ELF: `AWJ`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z) | Linux ELF: `AWJ`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z) | Windows: `AWJ.exe`, `AWJ.com`, checksums, licenses, third-party notices, and `BUILD_INFO.txt` | Release body |
 
 Both use 7-Zip LZMA2 at maximum compression with one compression thread (`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`) and were checked with `7z t` before upload. `-mf=off` prevents the automatic BCJ2 filter for `.exe` files so the method stays LZMA2. From 1.0.6, `AWJ_Linux.7z` must be packaged and freshly extracted on a native Linux filesystem so `AWJ` retains its executable bit; Windows only rechecks archive content and hashes.
 

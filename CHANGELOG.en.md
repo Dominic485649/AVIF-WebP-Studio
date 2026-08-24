@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.7 - 2026-08-24
+
+- Prerelease: Functionally identical to 1.0.6 and provided only for the 1.0.6→1.0.7 archive auto-update test; normal users should continue to download 1.0.6.
+
 ## 1.0.6 - 2026-08-24
 
 - Prerelease: the updater now has a two-root-authorized release keyring, key IDs, signed `issued_at` / `expires_at`, revocation, and a maximum 180-day lifetime. v1, v2, and keyring sequence plus raw SHA-256 persist through an inter-process lock and atomic state file; rollback, changed bytes at one sequence, and damaged state fail closed, while the helper re-verifies the keyring and v2 manifest.

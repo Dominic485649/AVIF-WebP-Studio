@@ -1,6 +1,6 @@
-# AWJ 1.0.4 / 1.0.5 发版
+# AWJ 1.0.4–1.0.7 发版
 
-所有构建、暂存、归档与旧版测试样本必须位于仓库 `build/` 或 `bin/`。不在 `D:/` 根目录创建任何文件。Windows 的 1.0.3 测试样本只保留在 `bin/old-versions/1.0.3/`；除非另行指定，不保留后续旧版。
+所有构建、暂存、归档与旧版测试样本必须位于仓库 `build/` 或 `bin/`。不在 `D:/` 根目录创建任何文件。Windows 的 1.0.3 和 1.0.6 测试样本分别只保留在 `bin/old-versions/1.0.3/` 与 `bin/old-versions/1.0.6/`；除非另行指定，不保留其他后续旧版。
 
 1.0.4/1.0.5 的冻结发布必须检出 `1.0.4` tag 后使用其随 tag 固化的脚本；不要将 1.0.6 的 keyring/过期策略回写到这两个桥接发布。
 
@@ -68,3 +68,10 @@
 
    该脚本会 `7z t`、全新解压、核对全部文件哈希并启动解压后的 `AWJ --help`，因此可执行位是发布门槛。再在 Windows 端只运行一次 `scripts/package-release.ps1`，传入原生目录的 `-LinuxPackagePath` 和 `-LinuxArchivePath`（例如 `\\wsl.localhost\<发行版>\home\...`），以及 `-ManifestKeyId`、`-ManifestExpiresAtUtc`、匹配的 release 公钥/seed 和旧 manifest 公钥（如不同）。Windows 脚本生成 `AWJ_Win.7z`，重新解压并逐文件复核原生 `AWJ_Linux.7z`，再生成待发布的签名 v2 manifest。v1 仍只保留给 1.0.5 桥接。上传该次生成的资产；公开下载验证后只提交已生成的 manifest，绝不为签 manifest 重跑打包。脚本会拒绝未撤销 keyring key 以外的签名者。
 5. GitHub Immutable Releases 已启用。必须先创建 draft、上传并核对完整资产后才发布；发布后核对 tag、prerelease、资产名、大小和哈希。不可用“上传后修正”替代发布前验证。
+
+## 1.0.7 归档自动更新测试 prerelease
+
+1. 从锁定的 1.0.6 源码创建 1.0.7，只改版本、更新日志和发布说明；功能代码与 1.0.6 必须一致。
+2. 从干净的 1.0.7 tag 在 Windows 构建 Windows 资产、在原生 Linux 工作树构建和打包 Linux 资产；不得在 `/mnt/...` 跨系统编译或打包。
+3. 以严格递增的 v2 sequence 发布且只上传 `AWJ_Win.7z`、`AWJ_Linux.7z`，公开下载、哈希和签名验证后只提交该次生成的 v2 manifest。不要上传裸 `AWJ.exe` 或 `AWJ.com`。
+4. Release 正文必须明确：功能与 1.0.6 相同，仅用于 1.0.6→1.0.7 自动更新测试；普通用户继续下载 1.0.6。需要本机测试时只从 `bin/old-versions/1.0.6/` 的隔离副本执行，不在 VM 或 WSL 中执行更新端到端测试。

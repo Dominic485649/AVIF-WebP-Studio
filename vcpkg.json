@@ -1,6 +1,6 @@
 {
   "name": "awjimage",
-  "version": "1.0.4",
+  "version": "1.0.7",
   "dependencies": [
     "aom",
     "dav1d",

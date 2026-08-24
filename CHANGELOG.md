@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.0.7 - 2026-08-24
+
+- prerelease：功能与 1.0.6 完全一致，仅用于 1.0.6→1.0.7 的归档自动更新测试；普通用户请继续下载 1.0.6。
+
 ## 1.0.6 - 2026-08-24
 
 - prerelease：更新器新增双 root 授权的 release keyring、key ID、签名 `issued_at` / `expires_at`、撤销标志和最多 180 天有效期。v1、v2 与 keyring 的 sequence 和原始 SHA-256 通过跨进程锁及原子状态文件持久化；回退、同 sequence 篡改或状态损坏均 fail-closed，helper 会再次验证 keyring 与 v2 清单。

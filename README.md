@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-当前 prerelease：[GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4)
+普通用户推荐：[GitHub Release 1.0.6](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.6)。当前测试 prerelease [1.0.7](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.7) 与 1.0.6 功能完全一致，仅用于 1.0.6→1.0.7 的归档自动更新测试。
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
 
@@ -15,14 +15,14 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
-## 1.0.4 GitHub 发行包
+## 1.0.6 GitHub 发行包
 
-从 [GitHub Release 1.0.4](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4) 下载与系统匹配的归档；1.0.4 的自定义资产只有这两个包，且不混装跨平台二进制：
+从 [GitHub Release 1.0.6](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.6) 下载与系统匹配的归档；1.0.6 的自定义资产只有这两个包，且不混装跨平台二进制：
 
 | 归档 | 精确内容 | SHA-256 |
 |---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z) | Linux ELF：`AWJ`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
+| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z) | Linux ELF：`AWJ`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
+| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
 
 归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。自 1.0.6 起，`AWJ_Linux.7z` 必须在原生 Linux 文件系统中打包和解压验证，保留 `AWJ` 的可执行位；Windows 端只复核归档内容与哈希。
 

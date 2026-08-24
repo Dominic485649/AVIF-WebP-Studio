@@ -1,6 +1,6 @@
-# AWJ 1.0.4 / 1.0.5 release
+# AWJ 1.0.4–1.0.7 release
 
-Keep every build, staging directory, archive, and old-version sample under repository `build/` or `bin/`; never create release files at the `D:/` root. Keep the Windows 1.0.3 sample only in `bin/old-versions/1.0.3/` and retain no later old version unless explicitly requested.
+Keep every build, staging directory, archive, and old-version sample under repository `build/` or `bin/`; never create release files at the `D:/` root. Keep the Windows 1.0.3 and 1.0.6 samples only in `bin/old-versions/1.0.3/` and `bin/old-versions/1.0.6/`; retain no other later old version unless explicitly requested.
 
 Frozen 1.0.4/1.0.5 publication must check out the `1.0.4` tag and use the scripts frozen with that tag; do not backport the 1.0.6 keyring/expiry policy into either bridge release.
 
@@ -33,3 +33,10 @@ Before creating the immutable 1.0.5 Release, run the packager once with `-Bridge
 
    The script runs `7z t`, freshly extracts the archive, verifies every file hash, and launches extracted `AWJ --help`, so the executable bit is a release gate. Then run `scripts/package-release.ps1` exactly once on Windows with the native `-LinuxPackagePath` and `-LinuxArchivePath` (for example `\\wsl.localhost\<distro>\home\...`), explicit `-ManifestKeyId`, `-ManifestExpiresAtUtc`, the matching release public key/seed, and the preceding manifest public key when it differs. Windows creates `AWJ_Win.7z`, freshly extracts and hash-checks the native `AWJ_Linux.7z`, then stages the signed v2 manifest. v1 remains only for the 1.0.5 bridge. Upload the resulting assets; after public-download validation, commit only that already-generated manifest rather than rerunning packaging. The script rejects a signer outside the non-revoked keyring entry.
 5. GitHub Immutable Releases is enabled. Create a draft, attach and verify the complete asset set, then publish; verify tag, prerelease state, asset names, sizes, and hashes afterward. Publishing first and correcting later is not an option.
+
+## 1.0.7 archive update-test prerelease
+
+1. Create 1.0.7 from locked 1.0.6 source, changing only version, changelog, and release notes; its functional code must remain identical to 1.0.6.
+2. Build Windows assets on Windows and build/package Linux assets in a native Linux worktree from a clean 1.0.7 tag. Never compile or package across systems under `/mnt/...`.
+3. Publish a strictly higher v2 sequence with exactly `AWJ_Win.7z` and `AWJ_Linux.7z`; after public-download, hash, and signature validation, commit only the generated v2 manifest. Do not upload raw `AWJ.exe` or `AWJ.com`.
+4. The release notes must say that it is functionally identical to 1.0.6 and exists only for the 1.0.6→1.0.7 update test; normal users should continue to download 1.0.6. If a local test is run, use only an isolated copy from `bin/old-versions/1.0.6/`, never a VM or WSL updater E2E.
