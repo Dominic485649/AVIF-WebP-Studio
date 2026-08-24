@@ -1,122 +1,241 @@
 {
   "schema": 2,
-  "sequence": 1,
+  "sequence": 2,
+  "key_id": "release-2026",
+  "issued_at": "2026-08-24T14:00:43Z",
+  "expires_at": "2027-02-18T17:00:00Z",
   "entries": [
     {
-    "version": "1.0.4",
-    "channel": "prerelease",
-    "published_at": "2026-08-23T18:45:37Z",
-    "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4",
-    "minimum_updater_version": "1.0.4",
-    "revoked": false,
-    "assets": {
-      "windows_x64_archive": {
-        "archive": {
-          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-          "size": 12242136,
-          "sha256": "72211d48a3c64fa9bb9b43f12243a80ab480ddb6a447ecea511348ed32d5c177"
+      "version": "1.0.4",
+      "channel": "prerelease",
+      "published_at": "2026-08-23T18:45:37Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.4",
+      "minimum_updater_version": "1.0.4",
+      "revoked": false,
+      "assets": {
+        "windows_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+            "size": 12242136,
+            "sha256": "72211d48a3c64fa9bb9b43f12243a80ab480ddb6a447ecea511348ed32d5c177"
+          },
+          "members": [
+            {
+              "path": "AWJ.com",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 451072,
+              "sha256": "8188b9dce4a65fea6065ba84ad329546d7c602fd16fa6d9f6854a4e70af7442e"
+            },
+            {
+              "path": "AWJ.com.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "d3607b0bb804d5ce957acc1e924df94217dbd74c0a618a44af2419fa6c94e397"
+            },
+            {
+              "path": "AWJ.exe",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 43795968,
+              "sha256": "3917f913b205d536b35856432f609499fc67c9be02c0cd25028a7b3990d392dd"
+            },
+            {
+              "path": "AWJ.exe.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "8fea333ecd32a2f38d3cef80397d91a99c2e893081b1d2b9897ddddad0e22524"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 511,
+              "sha256": "e866efb089e14c35c126d5f453fd3a1de70b739bf246f9a8cc3903f15def3349"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 24936,
+              "sha256": "575888be9ac31801886babca6456e1beb346fa4fb3dd76f52111f8048e38d58a"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
+              "size": 64085,
+              "sha256": "e048fde08cd4d372c0484d5856034c09d3a27a05e661b703fd0a99b262313e9c"
+            }
+          ]
         },
-        "members": [
-          {
-            "path": "AWJ.com",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 451072,
-            "sha256": "8188b9dce4a65fea6065ba84ad329546d7c602fd16fa6d9f6854a4e70af7442e"
+        "linux_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
+            "size": 19379264,
+            "sha256": "2df82910b90958eae569ef07387ef98bd768518d2370777f5b5c23b6084b994f"
           },
-          {
-            "path": "AWJ.com.sha256",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 73,
-            "sha256": "d3607b0bb804d5ce957acc1e924df94217dbd74c0a618a44af2419fa6c94e397"
-          },
-          {
-            "path": "AWJ.exe",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 43795968,
-            "sha256": "3917f913b205d536b35856432f609499fc67c9be02c0cd25028a7b3990d392dd"
-          },
-          {
-            "path": "AWJ.exe.sha256",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 73,
-            "sha256": "8fea333ecd32a2f38d3cef80397d91a99c2e893081b1d2b9897ddddad0e22524"
-          },
-          {
-            "path": "BUILD_INFO.txt",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 511,
-            "sha256": "e866efb089e14c35c126d5f453fd3a1de70b739bf246f9a8cc3903f15def3349"
-          },
-          {
-            "path": "LICENSE",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 35184,
-            "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
-          },
-          {
-            "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 24936,
-            "sha256": "575888be9ac31801886babca6456e1beb346fa4fb3dd76f52111f8048e38d58a"
-          },
-          {
-            "path": "THIRD_PARTY_NOTICES.txt",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Win.7z",
-            "size": 64085,
-            "sha256": "e048fde08cd4d372c0484d5856034c09d3a27a05e661b703fd0a99b262313e9c"
-          }
-        ]
+          "members": [
+            {
+              "path": "AWJ",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
+              "size": 66179656,
+              "sha256": "fd2ffdf5372e1ba91dc9f33452a4b1393db4d66cfa31a6e4ba614461fe622ddd"
+            },
+            {
+              "path": "AWJ.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
+              "size": 69,
+              "sha256": "5964916f11a4ee1b0f852f1a09030913039430c638505821287a30bbcd87a414"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
+              "size": 509,
+              "sha256": "5c62ed2cbff2bb83e9e3e24568f215f995046773b4120a71d2d85e3d824280f0"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
+              "size": 24936,
+              "sha256": "575888be9ac31801886babca6456e1beb346fa4fb3dd76f52111f8048e38d58a"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
+              "size": 64085,
+              "sha256": "e048fde08cd4d372c0484d5856034c09d3a27a05e661b703fd0a99b262313e9c"
+            }
+          ]
+        }
       },
-      "linux_x64_archive": {
-        "archive": {
-          "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
-          "size": 19379264,
-          "sha256": "2df82910b90958eae569ef07387ef98bd768518d2370777f5b5c23b6084b994f"
-        },
-        "members": [
-          {
-            "path": "AWJ",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
-            "size": 66179656,
-            "sha256": "fd2ffdf5372e1ba91dc9f33452a4b1393db4d66cfa31a6e4ba614461fe622ddd"
-          },
-          {
-            "path": "AWJ.sha256",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
-            "size": 69,
-            "sha256": "5964916f11a4ee1b0f852f1a09030913039430c638505821287a30bbcd87a414"
-          },
-          {
-            "path": "BUILD_INFO.txt",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
-            "size": 509,
-            "sha256": "5c62ed2cbff2bb83e9e3e24568f215f995046773b4120a71d2d85e3d824280f0"
-          },
-          {
-            "path": "LICENSE",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
-            "size": 35184,
-            "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
-          },
-          {
-            "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
-            "size": 24936,
-            "sha256": "575888be9ac31801886babca6456e1beb346fa4fb3dd76f52111f8048e38d58a"
-          },
-          {
-            "path": "THIRD_PARTY_NOTICES.txt",
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.4/AWJ_Linux.7z",
-            "size": 64085,
-            "sha256": "e048fde08cd4d372c0484d5856034c09d3a27a05e661b703fd0a99b262313e9c"
-          }
-        ]
+      "changelog": {
+        "zh-CN": "- prerelease：修复更新日志卡片正文被固定高度裁切、相互覆盖的问题；页面直接嵌入并显示从最早版本开始的完整历史，英语界面对尚未翻译的旧条目保留中文原文。左栏标题仍居中，版本号和上方线段组合改为向左偏移 16 px。\n- 编码队列现在独立选择 AVIF、WebP、JXL、JPGLI 或 PNG 及用户预设，并在开始时快照整批任务；普通队列默认 AVIF、保留元数据且不保留 Windows 创建/修改/访问时间。参数页的格式只切换正在编辑的五组参数，默认内置参数不会写入根配置。\n- 输入和输出路径接受一对完整双引号包住的路径；Slint 原生拖放同时接受文件和目录，输入不受文件/目录下拉框限制，输出拒绝多个目标。队列右键菜单不再改变详情选择。\n- 参数页新增可执行文件同目录 `preset/*.jsonc` 用户预设：支持五种格式的完整参数、Unicode 安全文件名、严格 schema 校验、缺失字段默认回退，以及带名称和多行简介的全窗口浮层保存。\n- `AWJ.jsonc` 改为白名单保存设置、右键菜单参数和更新安全状态；普通队列、路径、窗口和普通参数不再持久化。视觉质量未达标时兜底输出默认开启；AVIF 默认 speed 改为 5，空 speed 会恢复该默认值。\n- Windows CLI 增加创建/修改/访问时间保留选项；成功提交输出后才尝试写回时间，失败只记录警告而不丢弃有效图片。Linux CLI 不显示也拒绝这些参数。\n- HDR→SDR 改用 libplacebo 的 CPU-only spline 色调映射与 perceptual gamut mapping；PQ、HLG 和 FP16 scRGB 按明确 HDR 语义处理，目标为 100-nit BT.709/sRGB SDR，并保留非色彩元数据。\n- 更新器采用签名的 v2 归档清单：Windows/Linux 下载 `AWJ_Win.7z` / `AWJ_Linux.7z`，逐成员验证大小与 SHA-256，严格拒绝路径穿越、链接、额外成员和解压炸弹；Windows 与可写 Linux 安装目录均进行原子替换、健康检查和回滚。\n- 更新 Slint、vcpkg baseline 与发布锁定依赖；新增 libplacebo CPU-only overlay、libarchive 7z 提取和相应第三方通知。",
+        "en": "- Prerelease: fixed changelog cards whose fixed body height clipped and overlapped text; the page now embeds the complete history from the earliest release, retaining the Chinese original for legacy entries without an English translation. The sidebar title remains centered while the version marker and rule move 16 px left.\n- The encoding queue now independently selects AVIF, WebP, JXL, JPGLI, or PNG plus an optional user preset, and snapshots that choice for the whole batch at start. Ordinary queues default to AVIF, keep metadata, and do not preserve Windows creation/modification/access times. The Parameters format switch only edits one of five parameter groups; built-in defaults are not written to root config.\n- Input and output paths accept one complete pair of surrounding double quotes. Native Slint drops accept files and directories regardless of the file/folder selector; output rejects multiple targets. Right-clicking a queue item no longer changes the detail selection.\n- Added executable-adjacent `preset/*.jsonc` user presets with five complete format parameter sets, Unicode-safe names, strict schema validation, default fallback for missing fields, and a full-window name/description save overlay.\n- `AWJ.jsonc` now white-lists settings, context-menu parameters, and update-security state; ordinary queues, paths, window state, and ordinary parameters are not persisted. Visual-quality fallback output defaults on; AVIF's default speed is 5 and an empty speed restores that value.\n- Windows CLI now exposes creation/modification/access timestamp preservation. Times are captured before input read and written only after the output commits; a write failure warns without discarding a valid image. Linux CLI neither lists nor accepts those options.\n- HDR-to-SDR now uses libplacebo's CPU-only spline tone mapping and perceptual gamut mapping. PQ, HLG, and FP16 scRGB follow explicit HDR semantics and target 100-nit BT.709/sRGB SDR while retaining non-color metadata.\n- The updater now uses a signed v2 archive manifest: Windows/Linux download `AWJ_Win.7z` / `AWJ_Linux.7z`, verify every required member's size and SHA-256, and reject traversal, links, extra members, and archive bombs. Windows and writable Linux installs atomically replace, health-check, and roll back.\n- Updated Slint, the vcpkg baseline, and release locks; added the CPU-only libplacebo overlay, libarchive 7z extraction, and their third-party notices."
       }
     },
-    "changelog": {
-      "zh-CN": "- prerelease：修复更新日志卡片正文被固定高度裁切、相互覆盖的问题；页面直接嵌入并显示从最早版本开始的完整历史，英语界面对尚未翻译的旧条目保留中文原文。左栏标题仍居中，版本号和上方线段组合改为向左偏移 16 px。\n- 编码队列现在独立选择 AVIF、WebP、JXL、JPGLI 或 PNG 及用户预设，并在开始时快照整批任务；普通队列默认 AVIF、保留元数据且不保留 Windows 创建/修改/访问时间。参数页的格式只切换正在编辑的五组参数，默认内置参数不会写入根配置。\n- 输入和输出路径接受一对完整双引号包住的路径；Slint 原生拖放同时接受文件和目录，输入不受文件/目录下拉框限制，输出拒绝多个目标。队列右键菜单不再改变详情选择。\n- 参数页新增可执行文件同目录 `preset/*.jsonc` 用户预设：支持五种格式的完整参数、Unicode 安全文件名、严格 schema 校验、缺失字段默认回退，以及带名称和多行简介的全窗口浮层保存。\n- `AWJ.jsonc` 改为白名单保存设置、右键菜单参数和更新安全状态；普通队列、路径、窗口和普通参数不再持久化。视觉质量未达标时兜底输出默认开启；AVIF 默认 speed 改为 5，空 speed 会恢复该默认值。\n- Windows CLI 增加创建/修改/访问时间保留选项；成功提交输出后才尝试写回时间，失败只记录警告而不丢弃有效图片。Linux CLI 不显示也拒绝这些参数。\n- HDR→SDR 改用 libplacebo 的 CPU-only spline 色调映射与 perceptual gamut mapping；PQ、HLG 和 FP16 scRGB 按明确 HDR 语义处理，目标为 100-nit BT.709/sRGB SDR，并保留非色彩元数据。\n- 更新器采用签名的 v2 归档清单：Windows/Linux 下载 `AWJ_Win.7z` / `AWJ_Linux.7z`，逐成员验证大小与 SHA-256，严格拒绝路径穿越、链接、额外成员和解压炸弹；Windows 与可写 Linux 安装目录均进行原子替换、健康检查和回滚。\n- 更新 Slint、vcpkg baseline 与发布锁定依赖；新增 libplacebo CPU-only overlay、libarchive 7z 提取和相应第三方通知。",
-      "en": "- Prerelease: fixed changelog cards whose fixed body height clipped and overlapped text; the page now embeds the complete history from the earliest release, retaining the Chinese original for legacy entries without an English translation. The sidebar title remains centered while the version marker and rule move 16 px left.\n- The encoding queue now independently selects AVIF, WebP, JXL, JPGLI, or PNG plus an optional user preset, and snapshots that choice for the whole batch at start. Ordinary queues default to AVIF, keep metadata, and do not preserve Windows creation/modification/access times. The Parameters format switch only edits one of five parameter groups; built-in defaults are not written to root config.\n- Input and output paths accept one complete pair of surrounding double quotes. Native Slint drops accept files and directories regardless of the file/folder selector; output rejects multiple targets. Right-clicking a queue item no longer changes the detail selection.\n- Added executable-adjacent `preset/*.jsonc` user presets with five complete format parameter sets, Unicode-safe names, strict schema validation, default fallback for missing fields, and a full-window name/description save overlay.\n- `AWJ.jsonc` now white-lists settings, context-menu parameters, and update-security state; ordinary queues, paths, window state, and ordinary parameters are not persisted. Visual-quality fallback output defaults on; AVIF's default speed is 5 and an empty speed restores that value.\n- Windows CLI now exposes creation/modification/access timestamp preservation. Times are captured before input read and written only after the output commits; a write failure warns without discarding a valid image. Linux CLI neither lists nor accepts those options.\n- HDR-to-SDR now uses libplacebo's CPU-only spline tone mapping and perceptual gamut mapping. PQ, HLG, and FP16 scRGB follow explicit HDR semantics and target 100-nit BT.709/sRGB SDR while retaining non-color metadata.\n- The updater now uses a signed v2 archive manifest: Windows/Linux download `AWJ_Win.7z` / `AWJ_Linux.7z`, verify every required member's size and SHA-256, and reject traversal, links, extra members, and archive bombs. Windows and writable Linux installs atomically replace, health-check, and roll back.\n- Updated Slint, the vcpkg baseline, and release locks; added the CPU-only libplacebo overlay, libarchive 7z extraction, and their third-party notices."
+    {
+      "version": "1.0.6",
+      "channel": "prerelease",
+      "published_at": "2026-08-24T14:00:43Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.6",
+      "minimum_updater_version": "1.0.4",
+      "revoked": false,
+      "assets": {
+        "windows_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+            "size": 12275066,
+            "sha256": "ec80e7560549505884969fd77114726e41411b91a0436313ed99638a394e48ee"
+          },
+          "members": [
+            {
+              "path": "AWJ.com",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 451072,
+              "sha256": "281fec9397ca560408515336c05270e626d6114b407a9cfa7badaf4274c50723"
+            },
+            {
+              "path": "AWJ.com.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "f5056b427fc050ab9b7524795e1f090ef40b4dd0af10ffa08e705dccd95e560f"
+            },
+            {
+              "path": "AWJ.exe",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 44195328,
+              "sha256": "3d7e94ce08795ef96230a1004633136bdc95f1b302386940bb3b9c777018d4f5"
+            },
+            {
+              "path": "AWJ.exe.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "5e160435e23c1e9094ac4528e5042251276de4c6c28ef48e5a4fd8467f564f3e"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 511,
+              "sha256": "53997ec414ec52a9e6d2d80a12cadc891f1629a554102ecca7eabe77b7e46924"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 24936,
+              "sha256": "575888be9ac31801886babca6456e1beb346fa4fb3dd76f52111f8048e38d58a"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z",
+              "size": 64085,
+              "sha256": "e048fde08cd4d372c0484d5856034c09d3a27a05e661b703fd0a99b262313e9c"
+            }
+          ]
+        },
+        "linux_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z",
+            "size": 19442629,
+            "sha256": "1e4c575e814d5389f289446fff5f421b2a88f8c2af5a84ca660b474bf11c0c97"
+          },
+          "members": [
+            {
+              "path": "AWJ",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z",
+              "size": 66409032,
+              "sha256": "6aa3959e857fa16d967af6d40b7aed95429cd835f93039dc5b5f67de329592cc"
+            },
+            {
+              "path": "AWJ.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z",
+              "size": 70,
+              "sha256": "55c1a14f86b782ed34630f8bfad67fe32d48084d8f7fbc582d2c5a206f603308"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z",
+              "size": 498,
+              "sha256": "74ac432ca43ff085036099c69cfb01029fc6ab687399ef31b05f98b45dfbd95c"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z",
+              "size": 34523,
+              "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z",
+              "size": 24478,
+              "sha256": "b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z",
+              "size": 62836,
+              "sha256": "c750b5dc44ce24b70f20b43404b6b662128ff83d7dcae16c50d3c2fd2b14ebc4"
+            }
+          ]
+        }
+      },
+      "changelog": {
+        "zh-CN": "- prerelease：更新器新增双 root 授权的 release keyring、key ID、签名 `issued_at` / `expires_at`、撤销标志和最多 180 天有效期。v1、v2 与 keyring 的 sequence 和原始 SHA-256 通过跨进程锁及原子状态文件持久化；回退、同 sequence 篡改或状态损坏均 fail-closed，helper 会再次验证 keyring 与 v2 清单。\n- 预设兼容加载历史的 `[null]` / `[整数]` `visual_quality` 写法，并在下次保存时写成正确标量；参数页和队列可再次预览 `测试.jsonc`。CLI 新增 `--list-presets`，动态列出同目录有效预设及无效文件原因。\n- Windows CLI 新增 `--stdin-wgc-rgba16f <宽>x<高>`，可从管道读取一帧精确长度的 `DXGI_FORMAT_R16G16B16A16_FLOAT` 线性 scRGB；输入会以安全临时文件走原有 HDR 路径，短/长帧、无尺寸或未知裸 RAW 均拒绝。\n- Windows 11 风格圆角应用图标；队列三个文件时间选项移到“写入运行日志”后，窄窗口自动换行。更新日志恢复正常向下滚动；设置页自动更新三项横向排列。\n- 修复左侧“发现新版本”悬浮卡片：改为不透明、裁切受控的紧凑提示，完整发布说明仍在更新日志页，长摘要不再穿透卡片或遮挡导航。\n- 发布工具链固定签名 keyring/v2 manifest 的 LF 原始字节，修复单条旧 manifest 续签时的 PowerShell 数组处理；`AWJ_Linux.7z` 改由原生 Linux 打包并验证可执行位，Windows 端只复核其内容和哈希。",
+        "en": "- Prerelease: the updater now has a two-root-authorized release keyring, key IDs, signed `issued_at` / `expires_at`, revocation, and a maximum 180-day lifetime. v1, v2, and keyring sequence plus raw SHA-256 persist through an inter-process lock and atomic state file; rollback, changed bytes at one sequence, and damaged state fail closed, while the helper re-verifies the keyring and v2 manifest.\n- Preset loading now accepts legacy `[null]` / `[integer]` `visual_quality` values and rewrites them as proper scalars on the next save, so `测试.jsonc` can again appear in Parameters and Queue. CLI adds `--list-presets` to dynamically show executable-adjacent valid presets and invalid-file diagnostics.\n- Windows CLI adds `--stdin-wgc-rgba16f <width>x<height>` for one exact-length piped `DXGI_FORMAT_R16G16B16A16_FLOAT` linear-scRGB frame; it uses a secure temporary file through the existing HDR path and rejects short/long data, missing dimensions, and unknown bare RAW.\n- Added a Windows 11-style rounded application icon; the three file-time choices follow “Write runtime log” and wrap on narrow windows. The changelog scrolls downward normally again, and the three automatic-update choices in Settings are horizontal.\n- Fixed the sidebar “New version available” hover card: it is now opaque and clipped as a compact prompt, while the full release notes remain on the Changelog page so long summaries cannot bleed through the card or cover navigation.\n- The release tooling now fixes LF raw bytes for signed keyring/v2 manifests and handles an existing one-entry manifest safely. `AWJ_Linux.7z` is packaged natively on Linux and verifies its executable bit; Windows only verifies its content and hashes."
+      }
     }
-  }
   ]
 }
