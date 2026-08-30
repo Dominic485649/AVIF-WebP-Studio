@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "sequence": 4,
+  "sequence": 5,
   "key_id": "release-2026",
-  "issued_at": "2026-08-30T06:28:26Z",
+  "issued_at": "2026-08-30T08:42:29Z",
   "expires_at": "2027-02-18T17:00:00Z",
   "entries": [
     {
@@ -467,6 +467,80 @@
       "changelog": {
         "zh-CN": "- prerelease：AVIF 新增显式颜色表示模式：默认 `yuv` 始终使用非 Identity matrix；`source` 按源图的 YUV/RGB Identity 表示跟随；`rgb` 强制 RGB(A)/GBR(A) Identity + 4:4:4，并在自动编码器模式下选择 AOM。CLI、预设、Studio 与编码诊断保持一致。\n- AVIF 可选追加 `.png` 形成完整 `.avif.png` 文件名，实际内容仍为 AVIF；碰撞编号、同目录 `-converted` 命名和 Studio worker manifest 都将双后缀作为整体处理。\n- 修正 AVIF 无损颜色语义和码流直通判定：符合条件的 YUV 420/422/444 AVIF 可保持原始码流；YUV 不再因 q100/4:4:4 隐式切换 Identity，BT.2020 源的无效/未知 matrix 回退为 BT.2020 NCL，其余回退为 BT.709。\n- Studio 参数页新增 AVIF 颜色表示与 `.avif.png` 兼容选项；预设保存/加载新增字段，队列拖放和多目标扫描统一为确定性排序，并补强队列右键操作、失败筛选与 prerelease 更新日志标记。",
         "en": "- Prerelease: AVIF now has explicit color-representation modes. The default `yuv` always uses a non-Identity matrix; `source` follows the source YUV/RGB Identity representation; `rgb` forces RGB(A)/GBR(A) Identity + 4:4:4 and selects AOM when the encoder is automatic. CLI, presets, Studio, and encoding diagnostics use the same contract.\n- AVIF can optionally append `.png` to produce a complete `.avif.png` filename while the payload remains AVIF. Collision numbering, same-directory `-converted` naming, and Studio worker manifests treat the double extension as one unit.\n- Fixed lossless AVIF color semantics and bitstream-passthrough eligibility: eligible YUV 420/422/444 AVIF files can preserve the original bitstream; YUV no longer switches implicitly to Identity at q100/4:4:4, invalid or unknown matrices on BT.2020 sources fall back to BT.2020 NCL, and other sources fall back to BT.709.\n- Studio Parameters adds AVIF color-representation and `.avif.png` compatibility controls; presets persist the new field, queue drag/drop and multi-target scans use deterministic ordering, and queue context actions, failed-only filtering, and prerelease changelog markers are tightened."
+      }
+    },
+    {
+      "version": "1.0.9",
+      "channel": "prerelease",
+      "published_at": "2026-08-30T08:42:29Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.9",
+      "minimum_updater_version": "1.0.4",
+      "revoked": false,
+      "assets": {
+        "windows_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Win.7z",
+            "size": 12325786,
+            "sha256": "b665ed17899ccc2cf65f31479a6530e762311d67723266588a19a41fa355b999"
+          },
+          "members": [
+            {
+              "path": "AWJ.com",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Win.7z",
+              "size": 451072,
+              "sha256": "76e2940983ee306d1ae1b32a33760161f33c39b1097172f32529d64ee2137b39"
+            },
+            {
+              "path": "AWJ.exe",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Win.7z",
+              "size": 44527104,
+              "sha256": "8478272aa8cc4ab66bee3bf6cf340b492740087d65880fbdd0bbcdead33a8041"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Win.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "NOTICE.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Win.7z",
+              "size": 89099,
+              "sha256": "7964b81aa6f51961db473927d137e91e70d9d1f43db410af2148fac31513181f"
+            }
+          ]
+        },
+        "linux_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Linux.7z",
+            "size": 19514397,
+            "sha256": "2e3b756514f1357b514fa4ef3da6bd50d2c4391d3767cccbf781ca23be5bfa87"
+          },
+          "members": [
+            {
+              "path": "AWJ",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Linux.7z",
+              "size": 66974280,
+              "sha256": "964e4ad767c7c510f055e7ad7b470240fd076bf76248a436e085a44c0cc845a1"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Linux.7z",
+              "size": 34523,
+              "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+            },
+            {
+              "path": "NOTICE.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.9/AWJ_Linux.7z",
+              "size": 88533,
+              "sha256": "f58a37dfc189b59dfd5cf063e21ca57e24130864f4f37807b0c95f2b9097f243"
+            }
+          ]
+        }
+      },
+      "changelog": {
+        "zh-CN": "- prerelease：修复 7z 自动更新对合法目录 entry 的误判。更新器现在只跳过由签名 manifest 文件路径必然隐含的安全目录，同时继续拒绝额外目录、路径穿越、链接、特殊成员、重复成员和未签名文件；补充真实目录 entry 的通过/拒绝回归测试，恢复旧归档（包括 1.0.8）的兼容提取。\n- 固定 Windows 发行归档为严格扁平的 4 文件结构：`AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；包内不再携带 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或 `THIRD_PARTY_LICENSES/`。归档及成员的大小/SHA-256 继续由签名 v2 manifest 绑定。\n- `NOTICE.txt` 统一收纳构建信息、第三方 notices 和发行所需的第三方完整许可证文本；Linux 归档同步改为严格扁平的 `AWJ`、`LICENSE`、`NOTICE.txt` 三文件结构，并在打包脚本中加入精确成员校验。",
+        "en": "- Prerelease: fixed the 7z updater rejecting legitimate directory entries. The extractor now skips only safe directories that are necessarily implied by signed manifest member paths, while continuing to reject extra directories, traversal, links, special entries, duplicates, and unsigned files. Regression coverage includes accepted and rejected real directory entries, restoring compatibility with older archives including 1.0.8.\n- The Windows release archive is now a strict flat four-file package: `AWJ.exe`, `AWJ.com`, `LICENSE`, and `NOTICE.txt`. In-archive `.sha256` files, `BUILD_INFO.txt`, `THIRD_PARTY_NOTICES.txt`, and `THIRD_PARTY_LICENSES/` are removed; the signed v2 manifest continues to bind archive/member size and SHA-256.\n- `NOTICE.txt` consolidates build information, third-party notices, and required full third-party license texts. The Linux archive is likewise flattened to exactly `AWJ`, `LICENSE`, and `NOTICE.txt`, with exact-member validation in the packagers."
       }
     }
   ]
