@@ -15,6 +15,17 @@ int main() {
     return 1;
   }
 
+  constexpr std::string_view prerelease_zh =
+      "## 1.0.5 - 2026-08-24\n\n- prerelease：桥接更新\n";
+  constexpr std::string_view prerelease_en =
+      "## 1.0.5 - 2026-08-24\n\n- Prerelease: bridge update\n";
+  const auto prerelease = awj::ui::changelog_detail::parse(prerelease_zh,
+                                                             prerelease_en);
+  if (prerelease.size() != 1 || prerelease.front().channel != "prerelease") {
+    std::cerr << "embedded 1.0.5 prerelease channel was not inferred\n";
+    return 1;
+  }
+
   const auto embedded = awj::ui::embedded_changelog_history();
   const auto all_zh = awj::ui::changelog_detail::parse_sections(
       awj::embedded_changelog::zh);

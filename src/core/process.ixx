@@ -144,6 +144,8 @@ struct EncodeResult {
   std::string requested_chroma{};
   std::string applied_chroma{};
   std::string chroma_reason{};
+  std::string requested_color_representation{};
+  std::string applied_color_representation{};
   std::optional<int> source_bit_depth{};
   std::optional<int> requested_bit_depth{};
   std::optional<int> applied_bit_depth{};
@@ -1063,6 +1065,14 @@ std::wstring output_extension_for(OutputFormat format) {
   return L".avif";
 }
 
+std::wstring output_extension_for(const AppConfig& cfg) {
+  auto extension = output_extension_for(cfg.output_format);
+  if (cfg.output_format == OutputFormat::avif && cfg.append_png_suffix) {
+    extension += L".png";
+  }
+  return extension;
+}
+
 std::string output_format_name(OutputFormat format) {
   switch (format) {
     case OutputFormat::png:
@@ -1621,7 +1631,8 @@ std::wstring collision_suffix(CollisionMode mode) {
 
 std::expected<fs::path, std::string> resolve_collision_output_path(
     const fs::path& planned, CollisionMode mode,
-    std::unordered_map<std::wstring, int>* reserved_outputs = nullptr) {
+    std::unordered_map<std::wstring, int>* reserved_outputs = nullptr,
+    std::wstring_view complete_extension = {}) {
   try {
     const auto reserve_available =
         [&](const fs::path& path) -> std::expected<bool, std::string> {
@@ -1672,8 +1683,16 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
     }
 
     const auto parent = planned.parent_path();
-    const auto stem = planned.stem().wstring();
-    const auto extension = planned.extension().wstring();
+    auto stem = planned.stem().wstring();
+    auto extension = planned.extension().wstring();
+    if (!complete_extension.empty()) {
+      const auto filename = planned.filename().wstring();
+      if (filename.size() > complete_extension.size() &&
+          filename.ends_with(complete_extension)) {
+        stem = filename.substr(0, filename.size() - complete_extension.size());
+        extension = std::wstring{complete_extension};
+      }
+    }
     const auto planned_key = normalized_lower_path_key(planned);
 
     if (mode == CollisionMode::suffix_number) {
@@ -1753,7 +1772,8 @@ std::expected<void, std::string> resolve_batch_output_paths(
     reserved_outputs.reserve(files.size());
     for (auto& image : files) {
       auto output = resolve_collision_output_path(
-          output_path_for(cfg, image), cfg.collision_mode, &reserved_outputs);
+          output_path_for(cfg, image), cfg.collision_mode, &reserved_outputs,
+          output_extension_for(cfg));
       if (!output) {
         return std::unexpected{output.error()};
       }
@@ -1962,7 +1982,8 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
   }
 
   std::ranges::sort(files, [](const ImageFile& left, const ImageFile& right) {
-    return left.path.native() < right.path.native();
+    return normalized_lower_path_key(left.path) <
+           normalized_lower_path_key(right.path);
   });
   for (const auto i : std::views::iota(std::size_t{}, files.size())) {
     files[i].index = i;
@@ -2025,6 +2046,10 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
         files.push_back(std::move(image));
       }
     }
+    std::ranges::sort(files, [](const ImageFile& left, const ImageFile& right) {
+      return normalized_lower_path_key(left.path) <
+             normalized_lower_path_key(right.path);
+    });
     for (const auto i : std::views::iota(std::size_t{}, files.size())) {
       files[i].index = i;
     }
@@ -2136,7 +2161,7 @@ std::wstring output_name_for(const AppConfig& cfg, const ImageFile& image) {
 
   name = core_detail::sanitize_output_stem(std::move(name), image.index);
   name += image.source_extension_disambiguator;
-  name += output_extension_for(cfg.output_format);
+  name += output_extension_for(cfg);
   return name;
 }
 
@@ -2164,8 +2189,15 @@ fs::path output_path_for(const AppConfig& cfg, const ImageFile& image) {
     return output;
   }
 
-  const auto extension = output.extension().wstring();
-  const auto stem = output.stem().wstring();
+  auto extension = output.extension().wstring();
+  auto stem = output.stem().wstring();
+  const auto complete_extension = output_extension_for(cfg);
+  const auto filename = output.filename().wstring();
+  if (filename.size() > complete_extension.size() &&
+      filename.ends_with(complete_extension)) {
+    stem = filename.substr(0, filename.size() - complete_extension.size());
+    extension = complete_extension;
+  }
   output.replace_filename(stem + L"-converted" + extension);
   return output;
 }
@@ -2496,7 +2528,7 @@ std::expected<void, std::string> write_csv(
          "integration_mode,svtav1hdr_helper_path,svtav1hdr_crf,svtav1hdr_"
          "preset,svtav1hdr_tune,svtav1hdr_keyint,svtav1hdr_hdr_metadata,"
          "svtav1hdr_note,"
-         "requested_chroma,applied_chroma,requested_bit_depth,applied_bit_"
+         "requested_chroma,applied_chroma,requested_color_representation,applied_color_representation,requested_bit_depth,applied_bit_"
          "depth,bit_depth_reason,"
          "fallback_reason,speed_parameter_kind,applied_speed,encoder_threads,"
          "memory_budget_bytes,"
@@ -2617,6 +2649,8 @@ std::expected<void, std::string> write_csv(
         << core_detail::csv_escape(result.svtav1hdr_note) << ','
         << core_detail::csv_escape(result.requested_chroma) << ','
         << core_detail::csv_escape(result.applied_chroma) << ','
+        << core_detail::csv_escape(result.requested_color_representation) << ','
+        << core_detail::csv_escape(result.applied_color_representation) << ','
         << optional_int(result.requested_bit_depth) << ','
         << optional_int(result.applied_bit_depth) << ','
         << core_detail::csv_escape(result.bit_depth_reason) << ','

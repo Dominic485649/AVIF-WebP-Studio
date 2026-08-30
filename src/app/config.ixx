@@ -33,6 +33,8 @@ enum class BackendMode { native };
 enum class OutputPolicy { normal, shell };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random, suffix_number };
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
+// AVIF 的颜色表示与 YUV 4:2:0/4:2:2/4:4:4 采样是两件事。
+enum class AvifColorRepresentation { yuv, source, rgb_identity };
 enum class AvifEncoderMode { automatic, svt, aom, zenrav1e };
 enum class AlphaModePolicy { force, automatic, off };
 enum class ImageSizeLimitMode { automatic, none, manual };
@@ -117,7 +119,11 @@ struct AppConfig {
   OutputPolicy output_policy{OutputPolicy::normal};
   CollisionMode collision_mode{CollisionMode::overwrite};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
+  AvifColorRepresentation avif_color_representation{
+      AvifColorRepresentation::yuv};
   AvifEncoderMode avif_encoder{AvifEncoderMode::automatic};
+  // AVIF 文件内容不变，只把完整输出后缀写成 .avif.png。
+  bool append_png_suffix{};
   AlphaModePolicy alpha_policy{AlphaModePolicy::automatic};
   bool enable_experimental_encoders{true};
   bool experimental_clamped_grid_padding{
@@ -538,6 +544,34 @@ std::string chroma_name(ChromaMode mode) {
   }
 }
 
+std::optional<AvifColorRepresentation> parse_avif_color_representation(
+    std::wstring_view value) {
+  const auto lower = lower_copy(value);
+  if (lower == L"yuv" || lower == L"ycbcr" || lower == L"默认") {
+    return AvifColorRepresentation::yuv;
+  }
+  if (lower == L"source" || lower == L"follow-source" || lower == L"跟随源") {
+    return AvifColorRepresentation::source;
+  }
+  if (lower == L"rgb" || lower == L"rgba" || lower == L"gbr" ||
+      lower == L"identity") {
+    return AvifColorRepresentation::rgb_identity;
+  }
+  return std::nullopt;
+}
+
+std::string avif_color_representation_name(AvifColorRepresentation value) {
+  switch (value) {
+    case AvifColorRepresentation::source:
+      return "source";
+    case AvifColorRepresentation::rgb_identity:
+      return "rgb";
+    case AvifColorRepresentation::yuv:
+    default:
+      return "yuv";
+  }
+}
+
 std::optional<AvifEncoderMode> parse_avif_encoder(std::wstring_view value) {
   const auto lower = lower_copy(value);
   if (lower == L"auto" || lower == L"automatic" || lower == L"自动") {
@@ -637,6 +671,11 @@ std::string avif_encoder_mode_name(AvifEncoderMode mode) {
   return config_detail::avif_encoder_name(mode);
 }
 
+std::string avif_color_representation_name(
+    AvifColorRepresentation value) {
+  return config_detail::avif_color_representation_name(value);
+}
+
 std::string alpha_mode_policy_name(AlphaModePolicy policy) {
   return config_detail::alpha_policy_name(policy);
 }
@@ -666,6 +705,10 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
         std::format("输出命名模板长度不能超过 {} 个字符。",
                     config_detail::max_output_template_length)};
   }
+  if (cfg.append_png_suffix && cfg.output_format != OutputFormat::avif) {
+    return std::unexpected{
+        "--append-png-suffix 仅可与 AVIF 输出一起使用。"};
+  }
   switch (cfg.output_format) {
     case OutputFormat::png:
       if (cfg.speed) {
@@ -684,6 +727,28 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
         return std::unexpected{
             "当前 native AVIF 输出仅支持 8、10、12-bit "
             "位深；留空表示自动选择。"};
+      }
+      if (cfg.avif_color_representation ==
+          AvifColorRepresentation::rgb_identity) {
+        if (cfg.chroma_mode != ChromaMode::auto_keep &&
+            cfg.chroma_mode != ChromaMode::yuv444) {
+          return std::unexpected{
+              "RGB(A)/GBR(A) Identity AVIF 必须使用 4:4:4；请使用 --chroma auto/444。"};
+        }
+        if (cfg.avif_encoder == AvifEncoderMode::svt ||
+            cfg.avif_encoder == AvifEncoderMode::zenrav1e) {
+          return std::unexpected{
+              "RGB(A)/GBR(A) Identity AVIF 仅支持 AOM；请使用 --avif-encoder auto/aom。"};
+        }
+        if (cfg.matrix_coefficients && *cfg.matrix_coefficients != 0) {
+          return std::unexpected{
+              "RGB(A)/GBR(A) Identity 与非 Identity matrix-coefficients 冲突。"};
+        }
+      } else if (cfg.avif_color_representation ==
+                     AvifColorRepresentation::yuv &&
+                 cfg.matrix_coefficients && *cfg.matrix_coefficients == 0) {
+        return std::unexpected{
+            "YUV 颜色表示不能使用 Identity matrix-coefficients；请选择 RGB(A)/GBR(A) 或移除该参数。"};
       }
       if (cfg.avif_encoder == AvifEncoderMode::svt) {
         if ((cfg.visual_quality ? *cfg.visual_quality >= 100 : cfg.quality >= 100) ||
@@ -793,7 +858,7 @@ std::string help_text() {
 
 默认后端：内置 native（libavif/AOM/zenrav1e/svt-av1-hdr/WebP/JXL/JPGLI）
 默认质量：PNG 无损，AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
-质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入原始流直通，其他输入使用 AOM 无损量化并按 auto 色度规则重编码；显式 --avif-encoder svt 不支持 q100/visual-quality 100、alpha、444/422 或高于 10-bit
+质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入使用 AOM 无损量化并按 auto 色度规则重编码；默认颜色表示始终为非 Identity 的 YUV；显式 --avif-encoder svt 不支持 q100/visual-quality 100、alpha、444/422 或高于 10-bit
 
 用法:
   AWJ [选项]
@@ -802,8 +867,8 @@ std::string help_text() {
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
   -f, --format <png|avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；PNG 为无损 RGBA，JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
-  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入原始流直通，其他输入走 AOM 无损量化并按 auto 色度规则重编码：保留源 YUV 420/422/444，RGB/RGBA 用 444 + identity matrix 直通存储原始 RGB 而不做色彩转换，灰度或未知为 420；显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的 YUV420 AVIF 输入直通，其他输入走 AOM 无损量化并按 auto 色度规则重编码（保留源 YUV 420/422/444，RGB/RGBA 用 444 + identity matrix 直通，灰度或未知为 420）；显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
+  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入走 AOM 无损量化：默认 YUV 保留 420/422/444 采样但始终使用非 Identity matrix；--avif-color-representation source 仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；--avif-color-representation rgb 强制 Identity + 444。显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入直通，其他输入走 AOM 无损量化；默认 YUV 不会因无损自动切换 Identity。显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
@@ -811,7 +876,9 @@ std::string help_text() {
   --no-visual-quality-fallback visual_quality 搜索未达标时失败
 @WINDOWS_TIMESTAMP_OPTIONS@
   -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPGLI 输出 JPEG 兼容 8-bit precision
-  --chroma <auto|444|422|420> AVIF/JPGLI 色度采样；AVIF auto 保留 YUV 源的 420/422/444，RGB/RGBA 转为 444，灰度或未知为 420，始终输出 YUV；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
+  --chroma <auto|444|422|420> AVIF/JPGLI 色度采样；AVIF auto 保留 YUV 源的 420/422/444，RGB/RGBA 转为 444，灰度或未知为 420；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
+  --avif-color-representation <yuv|source|rgb> AVIF 颜色表示；默认 yuv，source 跟随源的 YUV 或 RGB Identity，rgb 强制 RGB(A)/GBR(A) Identity 与 4:4:4（自动选择 AOM）
+  --append-png-suffix        AVIF 输出额外添加 .png 后缀，实际字节仍为 AVIF
   --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
   --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
@@ -824,7 +891,7 @@ std::string help_text() {
   --svtav1hdr-params <key=value> svt-av1-hdr 专家参数，可重复；按原样传给 --svtav1-params
   --color-primaries <n>      AVIF CICP color primaries；未指定时保留源值（含 BT.2020 等 HDR 源），源与用户都没有时才回退 BT.709；AOM/libavif 与 svt-av1-hdr 可应用
   --transfer-characteristics <n> AVIF CICP transfer characteristics；未指定时保留源值（含 PQ/HLG 等 HDR 传输函数），源与用户都没有时才回退 sRGB；AOM/libavif 与 svt-av1-hdr 可应用
-  --matrix-coefficients <n>  AVIF CICP matrix coefficients；未指定时保留源值，无损 444 使用 identity 直通，源与用户都没有时才回退 BT.709；AOM/libavif 与 svt-av1-hdr 可应用
+  --matrix-coefficients <n>  AVIF CICP matrix coefficients；未指定时保留源的有效非 Identity 值；YUV 中 Identity/未知值会对 BT.2020 源回退 BT.2020 NCL，其他源回退 BT.709；Identity 仅可与 --avif-color-representation source/rgb 配合；AOM/libavif 与 svt-av1-hdr 可应用
   --color-range <0|1>        AVIF color range；显式指定时覆盖源值，未指定时保留源 PC/full 或 TV/limited，未知源使用 full；AOM/libavif 与 svt-av1-hdr 可应用
   --mastering-display <值>   svt-av1-hdr mastering display metadata
   --content-light <值>       svt-av1-hdr content light metadata
@@ -1214,6 +1281,32 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.chroma_mode = *chroma;
+      continue;
+    }
+
+    if (lower == L"--avif-color-representation" ||
+        lower == L"--avif_color_representation") {
+      const auto value = require_value(i, args[i]);
+      if (!value) {
+        return std::unexpected{value.error()};
+      }
+      const auto representation =
+          config_detail::parse_avif_color_representation(*value);
+      if (!representation) {
+        return std::unexpected{std::format(
+            "avif-color-representation 不支持: {}。可选值：yuv、source、rgb。",
+            config_detail::narrow_ascii_for_diagnostics(*value))};
+      }
+      cfg.avif_color_representation = *representation;
+      continue;
+    }
+
+    if (lower == L"--append-png-suffix") {
+      cfg.append_png_suffix = true;
+      continue;
+    }
+    if (lower == L"--no-append-png-suffix") {
+      cfg.append_png_suffix = false;
       continue;
     }
 

@@ -753,20 +753,34 @@ std::string default_bit_depth_reason(const ImageBuffer& image,
 }
 
 avifMatrixCoefficients matrix_coefficients_for_encode(const NativeEncodeSettings& settings,
-                                                      ChromaMode chroma,
-                                                      bool lossless) noexcept {
+                                                      ChromaMode /*chroma*/,
+                                                      bool /*lossless*/) noexcept {
+  if (settings.avif_color_representation ==
+      AvifColorRepresentation::rgb_identity) {
+    return AVIF_MATRIX_COEFFICIENTS_IDENTITY;
+  }
+  if (settings.avif_color_representation == AvifColorRepresentation::yuv) {
+    if (settings.applied_matrix_coefficients &&
+        *settings.applied_matrix_coefficients != 0 &&
+        *settings.applied_matrix_coefficients !=
+            AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED) {
+      return static_cast<avifMatrixCoefficients>(
+          *settings.applied_matrix_coefficients);
+    }
+    return static_cast<avifMatrixCoefficients>(
+        settings.applied_color_primaries == 9
+            ? AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
+            : AVIF_MATRIX_COEFFICIENTS_BT709);
+  }
   if (const auto value = color_value_for_encode(settings.applied_matrix_coefficients,
                                                 AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED,
                                                 settings.color_metadata_source == "user-cicp-settings")) {
     return static_cast<avifMatrixCoefficients>(*value);
   }
-  if (lossless && chroma == ChromaMode::yuv444) {
-    return AVIF_MATRIX_COEFFICIENTS_IDENTITY;
-  }
-  if (lossless || settings.applied_icc == "kept") {
-    return AVIF_MATRIX_COEFFICIENTS_UNSPECIFIED;
-  }
-  return AVIF_MATRIX_COEFFICIENTS_BT709;
+  return static_cast<avifMatrixCoefficients>(
+      settings.applied_color_primaries == 9
+          ? AVIF_MATRIX_COEFFICIENTS_BT2020_NCL
+          : AVIF_MATRIX_COEFFICIENTS_BT709);
 }
 
 int chroma_numeric(ChromaMode chroma) noexcept {

@@ -248,6 +248,21 @@ int verify_avif_source_info(const awj::EncodedImage& encoded,
   return 0;
 }
 
+int verify_avif_matrix(const awj::EncodedImage& encoded, int expected_matrix) {
+  auto decoder = awj::make_avif_image_decoder(1);
+  auto decoded = decoder->decode_memory(encoded.bytes, "AVIF color representation regression");
+  if (!decoded || !decoded->image.source_info ||
+      decoded->image.source_info->matrix_coefficients.value_or(-1) !=
+          expected_matrix) {
+    return fail(decoded ? "AVIF matrix coefficients did not match the requested color representation."
+                        : decoded.error());
+  }
+  if (const int rc = verify_preferred_decoder(*decoded); rc != 0) {
+    return rc;
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -338,6 +353,42 @@ int main() {
   }
   if (const int rc = verify_auto_chroma(awj::PixelFormat::rgba,
                                         awj::PixelFormat::yuv444, "444");
+      rc != 0) {
+    return rc;
+  }
+
+  auto default_yuv_q100 = lossless_auto_chroma_settings;
+  default_yuv_q100.avif_color_representation =
+      awj::AvifColorRepresentation::yuv;
+  auto default_yuv_q100_encoded =
+      aom->encode(make_test_image(), default_yuv_q100);
+  if (!default_yuv_q100_encoded || !default_yuv_q100_encoded->lossless ||
+      default_yuv_q100_encoded->diagnostics.applied_color_representation !=
+          "yuv") {
+    return fail(default_yuv_q100_encoded
+                    ? "default q100 AVIF did not retain the YUV representation."
+                    : default_yuv_q100_encoded.error());
+  }
+  if (const int rc = verify_avif_matrix(default_yuv_q100_encoded->encoded, 1);
+      rc != 0) {
+    return rc;
+  }
+
+  auto rgb_identity = default_yuv_q100;
+  rgb_identity.quality = 80;
+  rgb_identity.chroma_mode = awj::ChromaMode::yuv444;
+  rgb_identity.avif_color_representation =
+      awj::AvifColorRepresentation::rgb_identity;
+  auto rgb_identity_encoded = aom->encode(make_test_image(), rgb_identity);
+  if (!rgb_identity_encoded ||
+      rgb_identity_encoded->diagnostics.applied_color_representation !=
+          "rgb" ||
+      rgb_identity_encoded->diagnostics.applied_chroma != "444") {
+    return fail(rgb_identity_encoded
+                    ? "RGB Identity AVIF did not force the expected representation."
+                    : rgb_identity_encoded.error());
+  }
+  if (const int rc = verify_avif_matrix(rgb_identity_encoded->encoded, 0);
       rc != 0) {
     return rc;
   }

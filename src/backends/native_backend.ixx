@@ -877,6 +877,25 @@ ChromaMode lossless_source_chroma(const ImageBuffer& image) noexcept {
   return ChromaMode::auto_keep;
 }
 
+AvifColorRepresentation effective_avif_color_representation(
+    const AppConfig& cfg, const ImageBuffer& image) noexcept {
+  if (cfg.avif_color_representation != AvifColorRepresentation::source) {
+    return cfg.avif_color_representation;
+  }
+  if (!image.source_info) {
+    return image.pixel_format == PixelFormat::rgb ||
+                   image.pixel_format == PixelFormat::rgba
+               ? AvifColorRepresentation::rgb_identity
+               : AvifColorRepresentation::yuv;
+  }
+  const auto format = image.source_info->pixel_format;
+  if (format == PixelFormat::rgb || format == PixelFormat::rgba ||
+      image.source_info->matrix_coefficients == 0) {
+    return AvifColorRepresentation::rgb_identity;
+  }
+  return AvifColorRepresentation::yuv;
+}
+
 std::optional<int> lossless_source_bit_depth(const ImageBuffer& image) noexcept {
   if (image.source_info && image.source_info->bit_depth > 0) {
     if (image.source_info->bit_depth < 8 && image.bit_depth >= 8) {
@@ -928,6 +947,7 @@ bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
                                        const fs::path& path) {
   return avif_lossless_requested(cfg) && avif_lossless_passthrough_source(path) &&
          cfg.avif_encoder == AvifEncoderMode::automatic && cfg.chroma_mode == ChromaMode::auto_keep &&
+         cfg.avif_color_representation != AvifColorRepresentation::rgb_identity &&
          !cfg.bit_depth && cfg.alpha_policy != AlphaModePolicy::off && !cfg.strip_metadata &&
          !has_user_color_settings(cfg);
 }
@@ -1224,6 +1244,22 @@ void populate_applied_avif_color_diagnostics(NativeEncodeSettings& settings,
     settings.applied_transfer_characteristics = settings.svtav1hdr.transfer_characteristics.value_or(13);
     settings.applied_matrix_coefficients = settings.svtav1hdr.matrix_coefficients.value_or(1);
     settings.applied_color_range = settings.svtav1hdr.color_range.value_or(1);
+    if (settings.avif_color_representation !=
+            AvifColorRepresentation::rgb_identity &&
+        (*settings.applied_matrix_coefficients == 0 ||
+         *settings.applied_matrix_coefficients == 2)) {
+      const bool bt2020 = settings.source_color_primaries == 9 ||
+                          settings.source_matrix_coefficients == 9;
+      settings.applied_matrix_coefficients = bt2020 ? 9 : 1;
+      settings.svtav1hdr.matrix_coefficients =
+          settings.applied_matrix_coefficients;
+      settings.color_metadata_source =
+          bt2020 ? "source-bt2020-ncl" : "yuv-bt709-fallback";
+      settings.color_reason =
+          bt2020
+              ? "YUV 颜色表示将 Identity/未知 matrix 回退为 BT.2020 NCL"
+              : "YUV 颜色表示将 Identity/未知 matrix 回退为 BT.709";
+    }
     if (has_user_hdr_settings(cfg)) {
       settings.applied_hdr_metadata = "user-svt-settings";
     }
@@ -1266,18 +1302,29 @@ void populate_applied_avif_color_diagnostics(NativeEncodeSettings& settings,
   if (!settings.applied_transfer_characteristics && !lossless && settings.applied_icc != "kept") {
     settings.applied_transfer_characteristics = 13;
   }
-  if (!settings.applied_matrix_coefficients) {
-    if (lossless && chroma == ChromaMode::yuv444) {
-      settings.applied_matrix_coefficients = 0;
-    } else if (!lossless && settings.applied_icc != "kept") {
-      settings.applied_matrix_coefficients = 1;
-    }
+  if (settings.avif_color_representation ==
+      AvifColorRepresentation::rgb_identity) {
+    settings.applied_matrix_coefficients = 0;
+    settings.applied_color_range = 1;
+    settings.color_metadata_source = "aom-rgb-identity";
+    settings.color_reason = "RGB(A)/GBR(A) Identity 强制使用 identity matrix 与 4:4:4";
+  } else if (!settings.applied_matrix_coefficients ||
+             *settings.applied_matrix_coefficients == 0 ||
+             *settings.applied_matrix_coefficients == 2) {
+    const bool bt2020 = settings.source_color_primaries == 9 ||
+                        settings.source_matrix_coefficients == 9;
+    settings.applied_matrix_coefficients = bt2020 ? 9 : 1;
+    settings.color_metadata_source = bt2020 ? "source-bt2020-ncl" : "yuv-bt709-fallback";
+    settings.color_reason = bt2020
+                                ? "YUV 颜色表示将 Identity/未知 matrix 回退为 BT.2020 NCL"
+                                : "YUV 颜色表示将 Identity/未知 matrix 回退为 BT.709";
   }
 
-  if (lossless && chroma == ChromaMode::yuv444 && !cfg.matrix_coefficients &&
+  if (settings.avif_color_representation == AvifColorRepresentation::yuv &&
+      lossless && chroma == ChromaMode::yuv444 && !cfg.matrix_coefficients &&
       !settings.source_matrix_coefficients) {
-    settings.color_metadata_source = user_cicp_settings ? "user-cicp-settings" : "aom-lossless-transform";
-    settings.color_reason = "无损 yuv444 使用 identity matrix 执行 RGB/YUV 转换，因为源图 matrix 未指定";
+    settings.color_metadata_source = "yuv-bt709-fallback";
+    settings.color_reason = "无损 YUV 4:4:4 使用 BT.709 matrix，不隐式切换 Identity";
   } else if (settings.color_metadata_source == "stripped" &&
              (settings.applied_color_primaries || settings.applied_transfer_characteristics ||
               settings.applied_matrix_coefficients || settings.applied_color_range)) {
@@ -1596,9 +1643,12 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
                               .bit_depth = cfg.bit_depth,
                               .bit_depth_explicit = cfg.bit_depth.has_value(),
                               .chroma_mode = cfg.chroma_mode,
+                              .avif_color_representation = cfg.avif_color_representation,
                               .avif_encoder = cfg.avif_encoder,
                               .alpha_policy = cfg.alpha_policy,
                               .requested_chroma_mode = cfg.chroma_mode,
+                              .requested_avif_color_representation =
+                                  cfg.avif_color_representation,
                               .requested_avif_encoder = cfg.avif_encoder,
                               .requested_alpha_policy = cfg.alpha_policy,
                               .requested_bit_depth = cfg.bit_depth,
@@ -1642,6 +1692,10 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.requested_chroma = native.diagnostics.requested_chroma;
   result.applied_chroma = native.diagnostics.applied_chroma;
   result.chroma_reason = native.diagnostics.chroma_reason;
+  result.requested_color_representation =
+      native.diagnostics.requested_color_representation;
+  result.applied_color_representation =
+      native.diagnostics.applied_color_representation;
   result.source_bit_depth = native.diagnostics.source_bit_depth;
   result.requested_bit_depth = native.diagnostics.requested_bit_depth;
   result.applied_bit_depth = native.diagnostics.applied_bit_depth;
@@ -1743,9 +1797,12 @@ void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResul
 
 void populate_avif_passthrough_diagnostics(const ImageBuffer& image,
                                            AvifEncoderMode requested_encoder,
+                                           AvifColorRepresentation requested_representation,
                                            EncodeResult& result) {
   NativeEncodeSettings settings{};
   settings.requested_avif_encoder = requested_encoder;
+  settings.requested_avif_color_representation = requested_representation;
+  settings.avif_color_representation = AvifColorRepresentation::yuv;
   settings.requested_chroma_mode = ChromaMode::auto_keep;
   settings.chroma_mode = native_backend_detail::lossless_source_chroma(image);
   settings.requested_alpha_policy = AlphaModePolicy::automatic;
@@ -1793,6 +1850,10 @@ void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResul
   result.requested_chroma = chroma_mode_name(settings.requested_chroma_mode);
   result.applied_chroma = chroma_mode_name(settings.chroma_mode);
   result.chroma_reason = diagnostics.chroma_reason;
+  result.requested_color_representation =
+      diagnostics.requested_color_representation;
+  result.applied_color_representation =
+      diagnostics.applied_color_representation;
   result.source_bit_depth = diagnostics.source_bit_depth;
   result.requested_bit_depth = settings.requested_bit_depth;
   result.applied_bit_depth = settings.bit_depth;
@@ -1889,7 +1950,9 @@ class NativeBackend final {
     const auto planned_output_path = output_path_for(cfg_, image);
     auto output_path = image.output_path_resolved
                            ? std::expected<fs::path, std::string>{planned_output_path}
-                           : resolve_collision_output_path(planned_output_path, cfg_.collision_mode);
+                           : resolve_collision_output_path(
+                                 planned_output_path, cfg_.collision_mode, nullptr,
+                                 output_extension_for(cfg_));
     auto result = EncodeResult{.index = image.index,
                                .input_path = image.path,
                                .output_path = output_path ? *output_path : planned_output_path,
@@ -1999,7 +2062,11 @@ class NativeBackend final {
       return std::nullopt;
     }
     if (!container_info->source_info ||
-        container_info->source_info->pixel_format != PixelFormat::yuv420) {
+        (container_info->source_info->pixel_format != PixelFormat::yuv420 &&
+         container_info->source_info->pixel_format != PixelFormat::yuv422 &&
+         container_info->source_info->pixel_format != PixelFormat::yuv444) ||
+        container_info->source_info->matrix_coefficients == 0 ||
+        container_info->source_info->matrix_coefficients == 2) {
       return std::nullopt;
     }
     if (cancel_if_requested(result, stop_token)) {
@@ -2025,6 +2092,7 @@ class NativeBackend final {
     result.lossless = true;
     native_backend_detail::populate_avif_passthrough_diagnostics(*container_info,
                                                                  cfg_.avif_encoder,
+                                                                 cfg_.avif_color_representation,
                                                                  result);
     result.decoder_id = "libavif-parse";
     result.encoder_id = "avif-passthrough";
@@ -2155,6 +2223,8 @@ class NativeBackend final {
     const auto requested_avif_encoder = overrides.avif_encoder.value_or(cfg_.avif_encoder);
     prepared.settings.requested_avif_encoder = requested_avif_encoder;
     prepared.settings.requested_chroma_mode = cfg_.chroma_mode;
+    prepared.settings.requested_avif_color_representation =
+        cfg_.avif_color_representation;
     prepared.settings.requested_alpha_policy = cfg_.alpha_policy;
     prepared.settings.requested_bit_depth = cfg_.bit_depth;
     if (overrides.avif_grid_plan) {
@@ -2169,6 +2239,9 @@ class NativeBackend final {
       native_backend_detail::populate_source_diagnostics(prepared.settings,
                                                          decoded.image,
                                                          requested_avif_encoder);
+      prepared.settings.avif_color_representation =
+          native_backend_detail::effective_avif_color_representation(
+              cfg_, decoded.image);
       native_backend_detail::populate_color_decision(prepared.settings, cfg_);
       if (decoded.image.width == 0 || decoded.image.height == 0 ||
           decoded.image.width > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
@@ -2194,6 +2267,37 @@ class NativeBackend final {
           native_backend_detail::avif_lossless_requested(cfg_);
       const bool avif_lossless = requested_avif_lossless;
 
+      const bool identity_representation =
+          prepared.settings.avif_color_representation ==
+          AvifColorRepresentation::rgb_identity;
+      if (identity_representation &&
+          (cfg_.chroma_mode == ChromaMode::yuv420 ||
+           cfg_.chroma_mode == ChromaMode::yuv422)) {
+        return prepare_failed(
+            "RGB(A)/GBR(A) Identity AVIF 必须使用 4:4:4；请使用 chroma=auto/444。",
+            prepared.settings);
+      }
+      if (identity_representation &&
+          (requested_avif_encoder == AvifEncoderMode::svt ||
+           requested_avif_encoder == AvifEncoderMode::zenrav1e)) {
+        return prepare_failed(
+            "RGB(A)/GBR(A) Identity AVIF 仅支持 AOM；请使用 avif-encoder=auto/aom。",
+            prepared.settings);
+      }
+      if (identity_representation && cfg_.matrix_coefficients &&
+          *cfg_.matrix_coefficients != 0) {
+        return prepare_failed(
+            "RGB(A)/GBR(A) Identity 与非 Identity matrix-coefficients 冲突。",
+            prepared.settings);
+      }
+      if (!identity_representation && cfg_.matrix_coefficients &&
+          *cfg_.matrix_coefficients == 0) {
+        return prepare_failed(
+            "YUV 颜色表示不能使用 Identity matrix-coefficients；请选择 "
+            "RGB(A)/GBR(A) 或移除该参数。",
+            prepared.settings);
+      }
+
       if (explicit_svt) {
         if (must_preserve_alpha) {
           prepared.settings.alpha_reason = cfg_.alpha_policy == AlphaModePolicy::force
@@ -2211,11 +2315,16 @@ class NativeBackend final {
       }
 
       const auto selection_requested_encoder =
-          avif_lossless && requested_avif_encoder == AvifEncoderMode::automatic
+          (identity_representation || avif_lossless) &&
+                  requested_avif_encoder == AvifEncoderMode::automatic
               ? AvifEncoderMode::aom
               : requested_avif_encoder;
       ChromaMode selection_requested_chroma = ChromaMode::auto_keep;
-      if (explicit_svt) {
+      if (identity_representation) {
+        selection_requested_chroma = ChromaMode::yuv444;
+        prepared.settings.chroma_reason =
+            "RGB(A)/GBR(A) Identity 强制使用 4:4:4 chroma";
+      } else if (explicit_svt) {
         if (cfg_.chroma_mode != ChromaMode::auto_keep &&
             cfg_.chroma_mode != ChromaMode::yuv420) {
           prepared.settings.requested_chroma_mode = cfg_.chroma_mode;
@@ -2360,11 +2469,15 @@ class NativeBackend final {
       prepared.avif_bit_depth_reason = prepared.settings.bit_depth_reason;
       native_backend_detail::log_info_noexcept(logger_, [&] {
         return std::format(
-            "AVIF decision: item={:04} user_encoder={} user_chroma={} source_chroma={} source_bit_depth={} alpha_policy={} source_alpha={} non_opaque_alpha={} selected_encoder={} requested_chroma={} applied_chroma={} requested_bit_depth={} applied_bit_depth={} applied_alpha={} fallback={} chroma_reason={} alpha_reason={} bit_depth_reason={} color_source={}",
+            "AVIF decision: item={:04} user_encoder={} user_chroma={} source_chroma={} color_representation_requested={} color_representation_applied={} source_bit_depth={} alpha_policy={} source_alpha={} non_opaque_alpha={} selected_encoder={} requested_chroma={} applied_chroma={} requested_bit_depth={} applied_bit_depth={} applied_alpha={} fallback={} chroma_reason={} alpha_reason={} bit_depth_reason={} color_source={}",
             image.index + 1,
             prepared.settings.user_encoder_id,
             prepared.settings.user_chroma,
             prepared.settings.source_chroma,
+            avif_color_representation_name(
+                prepared.settings.requested_avif_color_representation),
+            avif_color_representation_name(
+                prepared.settings.avif_color_representation),
             prepared.settings.source_bit_depth ? std::format("{}", *prepared.settings.source_bit_depth) : std::string{""},
             prepared.settings.alpha_policy_name,
             prepared.settings.source_alpha_mode,

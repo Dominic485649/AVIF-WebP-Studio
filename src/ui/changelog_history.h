@@ -3,6 +3,7 @@
 #include "awj_changelog_data.h"
 
 #include <cstddef>
+#include <cctype>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -55,6 +56,23 @@ inline std::vector<Section> parse_sections(std::string_view source) {
   return sections;
 }
 
+inline bool starts_prerelease_marker(std::string_view body) {
+  while (!body.empty() &&
+         std::isspace(static_cast<unsigned char>(body.front())) != 0) {
+    body.remove_prefix(1);
+  }
+  constexpr std::string_view marker = "- prerelease";
+  if (body.size() < marker.size()) return false;
+  for (std::size_t i = 0; i < marker.size(); ++i) {
+    const auto left = static_cast<unsigned char>(body[i]);
+    const auto right = static_cast<unsigned char>(marker[i]);
+    if (std::tolower(left) != right) return false;
+  }
+  return body.size() == marker.size() ||
+         body[marker.size()] == ':' || body[marker.size()] == '\xEF' ||
+         std::isspace(static_cast<unsigned char>(body[marker.size()])) != 0;
+}
+
 inline std::vector<ChangelogHistoryEntry> parse(std::string_view chinese,
                                                 std::string_view english) {
   const auto zh_sections = parse_sections(chinese);
@@ -85,6 +103,10 @@ inline std::vector<ChangelogHistoryEntry> parse(std::string_view chinese,
     if (english_body.empty()) english_body = std::string{section.body};
     history.push_back(ChangelogHistoryEntry{
         .version = std::string{version},
+        .channel = (starts_prerelease_marker(section.body) ||
+                    starts_prerelease_marker(english_body))
+                       ? "prerelease"
+                       : "",
         .published_at = std::string{date},
         .changelog_zh_cn = std::string{section.body},
         .changelog_en = std::move(english_body)});

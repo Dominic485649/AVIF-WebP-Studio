@@ -225,6 +225,26 @@ int main() {
     return fail("Studio worker accepted an unexpected output extension.");
   }
 
+  auto avif_png_files = manifest_files;
+  for (std::size_t index = 0; index < avif_png_files.size(); ++index) {
+    avif_png_files[index].resolved_output_path =
+        manifest_cfg.output_dir / std::format("output-{}.avif.png", index);
+  }
+  if (auto written = awj::write_studio_queue_manifest(manifest_path, avif_png_files);
+      !written) {
+    return fail(written.error());
+  }
+  auto avif_png_cfg = manifest_cfg;
+  avif_png_cfg.append_png_suffix = true;
+  if (auto accepted = awj::run_batch(avif_png_cfg);
+      !accepted && accepted.error().find("扩展名无效") != std::string::npos) {
+    return fail("Studio worker rejected a valid AVIF.png manifest output.");
+  }
+  if (auto rejected = awj::run_batch(manifest_cfg);
+      rejected || rejected.error().find("扩展名无效") == std::string::npos) {
+    return fail("Studio worker accepted AVIF.png without the AVIF.png setting.");
+  }
+
   auto input_overwrite_files = manifest_files;
   for (std::size_t index = 0; index < input_overwrite_files.size(); ++index) {
     input_overwrite_files[index].resolved_output_path =
@@ -263,6 +283,40 @@ int main() {
   }
   if (auto ok = write_webp(input_dir / "same-b.webp", std::byte{128}); !ok) {
     return fail(ok.error());
+  }
+
+  const auto drag_input_dir = root / "drag-input";
+  const auto drag_nested_dir = drag_input_dir / "nested";
+  std::filesystem::create_directories(drag_nested_dir, ec);
+  if (ec || !write_webp(drag_input_dir / "b.webp", std::byte{1}) ||
+      !write_webp(drag_input_dir / "a.webp", std::byte{2}) ||
+      !write_webp(drag_nested_dir / "c.webp", std::byte{3})) {
+    return fail("failed to create recursive drag-input fixtures.");
+  }
+  std::ofstream{drag_input_dir / "ignored.txt", std::ios::binary} << "not an image";
+  auto drag_scan_cfg = awj::default_app_config();
+  drag_scan_cfg.input_path = drag_input_dir;
+  drag_scan_cfg.output_dir = root / "drag-output";
+  drag_scan_cfg.output_format = awj::OutputFormat::avif;
+  std::vector<awj::ImageFile> drag_scanned;
+  if (auto scanned = awj::scan_images(drag_scan_cfg, drag_scanned); !scanned ||
+      drag_scanned.size() != 3 ||
+      drag_scanned[0].path.filename() != "a.webp" ||
+      drag_scanned[1].path.filename() != "b.webp" ||
+      drag_scanned[2].path.filename() != "c.webp" ||
+      drag_scanned[2].relative_dir != std::filesystem::path{"nested"}) {
+    return fail(scanned ? "recursive drag scan lost deterministic order or relative paths."
+                        : scanned.error());
+  }
+  const std::array<std::filesystem::path, 3> drag_targets{
+      drag_input_dir, drag_nested_dir, drag_input_dir / "a.webp"};
+  std::vector<awj::ImageFile> drag_multi_scanned;
+  if (auto scanned = awj::scan_images(drag_scan_cfg, drag_targets,
+                                      drag_multi_scanned);
+      !scanned || drag_multi_scanned.size() != 3 ||
+      drag_multi_scanned[2].relative_dir != std::filesystem::path{"nested"}) {
+    return fail(scanned ? "multi-target drag scan did not de-duplicate recursively."
+                        : scanned.error());
   }
 
   const auto invalid_batch_input = root / "invalid-batch-input";

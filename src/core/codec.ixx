@@ -161,6 +161,8 @@ struct EncodeDiagnostics {
   std::string requested_chroma{};
   std::string applied_chroma{};
   std::string chroma_reason{};
+  std::string requested_color_representation{};
+  std::string applied_color_representation{};
   std::optional<int> source_bit_depth{};
   std::optional<int> requested_bit_depth{};
   std::optional<int> applied_bit_depth{};
@@ -224,9 +226,13 @@ struct NativeEncodeSettings {
   std::optional<int> bit_depth{};
   bool bit_depth_explicit{};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
+  AvifColorRepresentation avif_color_representation{
+      AvifColorRepresentation::yuv};
   AvifEncoderMode avif_encoder{AvifEncoderMode::automatic};
   AlphaModePolicy alpha_policy{AlphaModePolicy::automatic};
   ChromaMode requested_chroma_mode{ChromaMode::auto_keep};
+  AvifColorRepresentation requested_avif_color_representation{
+      AvifColorRepresentation::yuv};
   AvifEncoderMode requested_avif_encoder{AvifEncoderMode::automatic};
   AlphaModePolicy requested_alpha_policy{AlphaModePolicy::automatic};
   std::optional<int> requested_bit_depth{};
@@ -293,6 +299,12 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .requested_chroma = chroma_mode_name(settings.requested_chroma_mode),
                            .applied_chroma = chroma_mode_name(settings.chroma_mode),
                            .chroma_reason = settings.chroma_reason,
+                           .requested_color_representation =
+                               avif_color_representation_name(
+                                   settings.requested_avif_color_representation),
+                           .applied_color_representation =
+                               avif_color_representation_name(
+                                   settings.avif_color_representation),
                            .source_bit_depth = settings.source_bit_depth,
                            .requested_bit_depth = settings.requested_bit_depth,
                            .applied_bit_depth = settings.bit_depth,

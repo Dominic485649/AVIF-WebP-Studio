@@ -232,6 +232,35 @@ int main() {
     return fail("native backend HDR tone-map diagnostics invalid.");
   }
 
+  auto hdr_avif_cfg = awj::default_app_config();
+  hdr_avif_cfg.input_path = hdr_input;
+  hdr_avif_cfg.output_dir = output / "hdr-avif";
+  hdr_avif_cfg.output_format = awj::OutputFormat::avif;
+  hdr_avif_cfg.quality = 75;
+  hdr_avif_cfg.max_jobs = 1;
+  awj::NativeBackend hdr_avif_backend{hdr_avif_cfg, logger,
+                                      awj::ResourcePlan{.file_parallelism = 1,
+                                                        .encoder_threads_per_file = 1,
+                                                        .global_thread_budget = 1}};
+  auto hdr_avif_result = hdr_avif_backend.encode(
+      awj::ImageFile{.index = 0, .path = hdr_input, .bytes = hdr_input_bytes});
+  if (!hdr_avif_result.ok ||
+      hdr_avif_result.applied_color_representation != "yuv") {
+    return fail(hdr_avif_result.message.empty()
+                    ? "HDR AVIF did not retain the default YUV representation."
+                    : hdr_avif_result.message);
+  }
+  auto hdr_avif_decoder = awj::make_avif_image_decoder(1);
+  auto hdr_avif_decoded = hdr_avif_decoder->decode(hdr_avif_result.output_path);
+  if (!hdr_avif_decoded || !hdr_avif_decoded->image.source_info ||
+      hdr_avif_decoded->image.source_info->color_primaries.value_or(-1) != 9 ||
+      hdr_avif_decoded->image.source_info->transfer_characteristics.value_or(-1) != 16 ||
+      hdr_avif_decoded->image.source_info->matrix_coefficients.value_or(-1) != 9) {
+    return fail(hdr_avif_decoded
+                    ? "HDR AVIF did not retain BT.2020/PQ CICP with a YUV matrix."
+                    : hdr_avif_decoded.error());
+  }
+
   cfg.output_format = awj::OutputFormat::jxl;
   awj::NativeBackend jxl_backend{cfg, logger, awj::ResourcePlan{
                                                   .file_parallelism = 1,
@@ -372,6 +401,127 @@ int main() {
       avif_result.requested_encoder_id != "auto" || avif_result.encoder_id != "aom") {
     return fail("native backend AVIF auto result metadata invalid.");
   }
+  auto avif_decoder = awj::make_avif_image_decoder(1);
+  auto default_yuv_decoded = avif_decoder->decode(avif_output_file);
+  if (!default_yuv_decoded || !default_yuv_decoded->image.source_info ||
+      avif_result.requested_color_representation != "yuv" ||
+      avif_result.applied_color_representation != "yuv" ||
+      default_yuv_decoded->image.source_info->matrix_coefficients.value_or(-1) == 0 ||
+      default_yuv_decoded->image.source_info->matrix_coefficients.value_or(-1) == 2) {
+    return fail(default_yuv_decoded
+                    ? "default AVIF path unexpectedly used Identity/unknown color representation."
+                    : default_yuv_decoded.error());
+  }
+
+  auto suffix_cfg = cfg;
+  suffix_cfg.output_dir = output / "avif-png";
+  suffix_cfg.append_png_suffix = true;
+  awj::NativeBackend suffix_backend{suffix_cfg, logger,
+                                    awj::ResourcePlan{.file_parallelism = 1,
+                                                      .encoder_threads_per_file = 1,
+                                                      .global_thread_budget = 1}};
+  auto suffix_result = suffix_backend.encode(
+      awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes});
+  const auto suffix_output = suffix_cfg.output_dir / "input.avif.png";
+  auto suffix_decoded = avif_decoder->decode(suffix_output);
+  if (!suffix_result.ok || suffix_result.output_path != suffix_output ||
+      !std::filesystem::exists(suffix_output) || !suffix_decoded) {
+    return fail(suffix_decoded
+                    ? "AVIF.png did not create the expected decodable AVIF file."
+                    : suffix_decoded.error());
+  }
+
+  auto numbered_suffix_cfg = suffix_cfg;
+  numbered_suffix_cfg.collision_mode = awj::CollisionMode::suffix_number;
+  awj::NativeBackend numbered_suffix_backend{
+      numbered_suffix_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto numbered_suffix_result = numbered_suffix_backend.encode(
+      awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes});
+  if (!numbered_suffix_result.ok ||
+      numbered_suffix_result.output_path.filename() != "input(1).avif.png") {
+    return fail("AVIF.png collision numbering split its complete extension.");
+  }
+
+  auto source_representation_cfg = cfg;
+  source_representation_cfg.output_dir = output / "source-representation";
+  source_representation_cfg.chroma_mode = awj::ChromaMode::auto_keep;
+  source_representation_cfg.bit_depth = {};
+  source_representation_cfg.quality = 70;
+  source_representation_cfg.avif_color_representation =
+      awj::AvifColorRepresentation::source;
+  awj::NativeBackend source_representation_backend{
+      source_representation_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto source_representation_result = source_representation_backend.encode(
+      awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes});
+  auto source_representation_decoded =
+      avif_decoder->decode(source_representation_result.output_path);
+  if (!source_representation_result.ok ||
+      source_representation_result.requested_color_representation != "source" ||
+      source_representation_result.applied_color_representation != "rgb" ||
+      source_representation_result.applied_chroma != "444" ||
+      !source_representation_decoded ||
+      !source_representation_decoded->image.source_info ||
+      source_representation_decoded->image.source_info->matrix_coefficients
+              .value_or(-1) != 0) {
+    return fail(source_representation_decoded
+                    ? "follow-source did not select RGB/GBR Identity for an RGB source."
+                    : source_representation_decoded.error());
+  }
+  auto source_svt_cfg = source_representation_cfg;
+  source_svt_cfg.output_dir = output / "source-svt";
+  source_svt_cfg.avif_encoder = awj::AvifEncoderMode::svt;
+  awj::NativeBackend source_svt_backend{
+      source_svt_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto source_svt_result = source_svt_backend.encode(
+      awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes});
+  if (source_svt_result.ok ||
+      source_svt_result.message.find("仅支持 AOM") == std::string::npos) {
+    return fail("follow-source RGB Identity did not reject an explicit SVT encoder.");
+  }
+
+  auto passthrough_seed_cfg = cfg;
+  passthrough_seed_cfg.output_dir = output / "passthrough-seed";
+  passthrough_seed_cfg.quality = 100;
+  passthrough_seed_cfg.chroma_mode = awj::ChromaMode::auto_keep;
+  passthrough_seed_cfg.bit_depth = {};
+  awj::NativeBackend passthrough_seed_backend{
+      passthrough_seed_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto passthrough_seed_result = passthrough_seed_backend.encode(
+      awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes});
+  if (!passthrough_seed_result.ok || !passthrough_seed_result.lossless) {
+    return fail("could not build a lossless YUV AVIF passthrough fixture.");
+  }
+  auto passthrough_cfg = passthrough_seed_cfg;
+  passthrough_cfg.input_path = passthrough_seed_result.output_path;
+  passthrough_cfg.output_dir = output / "passthrough-copy";
+  awj::NativeBackend passthrough_backend{
+      passthrough_cfg, logger,
+      awj::ResourcePlan{.file_parallelism = 1,
+                        .encoder_threads_per_file = 1,
+                        .global_thread_budget = 1}};
+  auto passthrough_result = passthrough_backend.encode(awj::ImageFile{
+      .index = 0,
+      .path = passthrough_seed_result.output_path,
+      .bytes = passthrough_seed_result.output_bytes});
+  if (!passthrough_result.ok ||
+      passthrough_result.integration_mode != "avif-lossless-passthrough" ||
+      passthrough_result.applied_color_representation != "yuv") {
+    return fail(passthrough_result.message.empty()
+                    ? "eligible YUV AVIF did not keep lossless bitstream passthrough."
+                    : passthrough_result.message);
+  }
 
   const auto alpha_source = make_alpha_test_image();
   const auto alpha_input = root / "alpha-input.webp";
@@ -436,8 +586,8 @@ int main() {
       !std::filesystem::exists(alpha_output)) {
     return fail("transparent AVIF auto path did not preserve alpha at the requested lossy quality.");
   }
-  auto avif_decoder = awj::make_avif_image_decoder(1);
-  auto alpha_decoded = avif_decoder->decode(alpha_output);
+  auto alpha_avif_decoder = awj::make_avif_image_decoder(1);
+  auto alpha_decoded = alpha_avif_decoder->decode(alpha_output);
   if (!alpha_decoded || alpha_decoded->image.alpha_mode == awj::AlphaMode::none) {
     return fail(alpha_decoded ? "transparent AVIF did not retain alpha."
                               : alpha_decoded.error());

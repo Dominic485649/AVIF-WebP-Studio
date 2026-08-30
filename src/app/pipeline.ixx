@@ -681,7 +681,7 @@ std::expected<void, std::string> validate_manifest_paths_for_config(
     input_keys.insert(normalized_lower_path_key(input));
   }
   const auto expected_extension =
-      normalized_lower_path_key(fs::path{output_extension_for(cfg.output_format)});
+      normalized_lower_path_key(fs::path{output_extension_for(cfg)});
 
   for (const auto& file : files) {
     if (!file.path.is_absolute() ||
@@ -705,7 +705,8 @@ std::expected<void, std::string> validate_manifest_paths_for_config(
     if (relative.empty() || relative == fs::path{"."} ||
         !safe_manifest_relative_path(relative) ||
         input_keys.contains(normalized_lower_path_key(output)) ||
-        normalized_lower_path_key(output.extension()) != expected_extension) {
+        !normalized_lower_path_key(output.filename())
+             .ends_with(expected_extension)) {
       return std::unexpected{
           "Studio 队列 manifest 输出路径越界、扩展名无效或会覆盖输入。"};
     }

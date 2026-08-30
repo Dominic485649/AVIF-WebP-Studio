@@ -45,6 +45,8 @@ struct PresetFormat {
   std::optional<int> bit_depth{};
   std::optional<int> speed{};
   AvifEncoderMode avif_encoder{AvifEncoderMode::automatic};
+  AvifColorRepresentation avif_color_representation{
+      AvifColorRepresentation::yuv};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
   AlphaModePolicy alpha_policy{AlphaModePolicy::automatic};
   int jpegli_progressive_level{2};
@@ -382,6 +384,23 @@ std::expected<ChromaMode, std::string> parse_chroma_value(
   return std::unexpected{"预设字段 chroma 只支持 auto/444/422/420。"};
 }
 
+std::expected<AvifColorRepresentation, std::string>
+parse_avif_color_representation_value(const Json& object, std::string_view key,
+                                      AvifColorRepresentation fallback) {
+  const auto name = std::string{key};
+  if (!object.contains(name)) return fallback;
+  const auto& value = object.at(name);
+  if (auto valid = require_type(value, value.is_string(), key, "字符串"); !valid) {
+    return std::unexpected{valid.error()};
+  }
+  const auto text = value.get<std::string>();
+  if (text == "yuv") return AvifColorRepresentation::yuv;
+  if (text == "source") return AvifColorRepresentation::source;
+  if (text == "rgb") return AvifColorRepresentation::rgb_identity;
+  return std::unexpected{
+      "预设字段 avif_color_representation 只支持 yuv/source/rgb。"};
+}
+
 std::expected<AlphaModePolicy, std::string> parse_alpha_value(
     const Json& object, std::string_view key, AlphaModePolicy fallback) {
   const auto name = std::string{key};
@@ -446,6 +465,10 @@ std::expected<void, std::string> load_format(const Json& object,
   auto avif = parse_avif_encoder_value(object, "avif_encoder", target.avif_encoder);
   if (!avif) return std::unexpected{avif.error()};
   target.avif_encoder = *avif;
+  auto representation = parse_avif_color_representation_value(
+      object, "avif_color_representation", target.avif_color_representation);
+  if (!representation) return std::unexpected{representation.error()};
+  target.avif_color_representation = *representation;
   auto chroma = parse_chroma_value(object, "chroma", target.chroma_mode);
   if (!chroma) return std::unexpected{chroma.error()};
   target.chroma_mode = *chroma;
@@ -476,6 +499,8 @@ Json format_json(const PresetFormat& value) {
               {"bit_depth", optional_int_json(value.bit_depth)},
               {"speed", optional_int_json(value.speed)},
               {"avif_encoder", avif_encoder_value(value.avif_encoder)},
+              {"avif_color_representation",
+               avif_color_representation_name(value.avif_color_representation)},
               {"chroma", chroma_mode_name(value.chroma_mode)},
               {"alpha", alpha_mode_policy_name(value.alpha_policy)},
               {"jpegli_progressive_level", value.jpegli_progressive_level},
@@ -547,6 +572,7 @@ PresetFormat preset_format_from_config(const AppConfig& config) {
   preset.bit_depth = config.bit_depth;
   preset.speed = config.speed;
   preset.avif_encoder = config.avif_encoder;
+  preset.avif_color_representation = config.avif_color_representation;
   preset.chroma_mode = config.chroma_mode;
   preset.alpha_policy = config.alpha_policy;
   preset.jpegli_progressive_level = config.jpegli_progressive_level;
@@ -568,6 +594,7 @@ AppConfig config_from_user_preset(const UserPreset& preset,
   config.bit_depth = source.bit_depth;
   config.speed = source.speed;
   config.avif_encoder = source.avif_encoder;
+  config.avif_color_representation = source.avif_color_representation;
   config.chroma_mode = source.chroma_mode;
   config.alpha_policy = source.alpha_policy;
   config.jpegli_progressive_level = source.jpegli_progressive_level;

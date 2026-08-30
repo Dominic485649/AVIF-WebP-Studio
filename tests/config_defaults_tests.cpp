@@ -45,6 +45,11 @@ int main() {
   if (defaults.quality != awj::encoding_defaults::default_avif_quality) {
     return fail("default AVIF quality mismatch.");
   }
+  if (defaults.avif_color_representation !=
+          awj::AvifColorRepresentation::yuv ||
+      defaults.append_png_suffix) {
+    return fail("default AVIF color representation or filename suffix mismatch.");
+  }
   if (awj::encoding_defaults::default_avif_quality != 70 ||
       awj::encoding_defaults::default_jxl_quality != 85) {
     return fail("AVIF/JXL default quality literals mismatch.");
@@ -241,12 +246,13 @@ int main() {
   std::filesystem::remove(preset_test_path, preset_test_ec);
   {
     std::ofstream output{preset_test_path, std::ios::binary | std::ios::trunc};
-    output << R"jsonc(// JSONC comments are accepted.
+  output << R"jsonc(// JSONC comments are accepted.
 {
   "schema": 1,
   "name": "测试预设",
   "description": "only WebP overrides the hard-coded defaults",
   "formats": {
+    "avif": { "avif_color_representation": "rgb" },
     "webp": { "quality": 61, "speed": 3 }
   }
 }
@@ -255,6 +261,8 @@ int main() {
   const auto loaded_preset = awj::load_user_preset_file(preset_test_path);
   if (!loaded_preset || loaded_preset->formats[1].quality != 61 ||
       loaded_preset->formats[1].speed.value_or(-1) != 3 ||
+      loaded_preset->formats[0].avif_color_representation !=
+          awj::AvifColorRepresentation::rgb_identity ||
       loaded_preset->formats[0].quality !=
           awj::encoding_defaults::default_avif_quality) {
     std::filesystem::remove(preset_test_path, preset_test_ec);
@@ -271,7 +279,9 @@ int main() {
   }
   const auto legacy_preset = awj::load_user_preset_file(preset_test_path);
   if (!legacy_preset || legacy_preset->formats[0].visual_quality ||
-      legacy_preset->formats[0].speed.value_or(-1) != 5) {
+      legacy_preset->formats[0].speed.value_or(-1) != 5 ||
+      legacy_preset->formats[0].avif_color_representation !=
+          awj::AvifColorRepresentation::yuv) {
     std::filesystem::remove(preset_test_path, preset_test_ec);
     return fail("legacy one-item optional preset arrays were not migrated on load.");
   }
@@ -341,6 +351,33 @@ int main() {
   if (!parsed || parsed->config.avif_encoder != awj::AvifEncoderMode::aom ||
       parsed->config.chroma_mode != awj::ChromaMode::yuv444) {
     return fail("CLI AVIF encoder selection did not parse.");
+  }
+
+  parsed = awj::parse_arguments(
+      {L"--avif-color-representation", L"source", L"--append-png-suffix"});
+  if (!parsed || parsed->config.avif_color_representation !=
+                      awj::AvifColorRepresentation::source ||
+      !parsed->config.append_png_suffix) {
+    return fail("CLI AVIF color representation or AVIF.png suffix did not parse.");
+  }
+  parsed = awj::parse_arguments(
+      {L"--avif-color-representation", L"rgb", L"--chroma", L"420"});
+  if (parsed || parsed.error().find("必须使用 4:4:4") == std::string::npos) {
+    return fail("CLI did not reject RGB Identity with 420 chroma.");
+  }
+  parsed = awj::parse_arguments(
+      {L"--avif-color-representation", L"rgb", L"--avif-encoder", L"svt"});
+  if (parsed || parsed.error().find("仅支持 AOM") == std::string::npos) {
+    return fail("CLI did not reject RGB Identity with SVT.");
+  }
+  parsed = awj::parse_arguments({L"--matrix-coefficients", L"0"});
+  if (parsed || parsed.error().find("YUV 颜色表示") == std::string::npos) {
+    return fail("default YUV unexpectedly accepted an Identity matrix.");
+  }
+  parsed = awj::parse_arguments(
+      {L"--format", L"webp", L"--append-png-suffix"});
+  if (parsed || parsed.error().find("仅可与 AVIF") == std::string::npos) {
+    return fail("non-AVIF output unexpectedly accepted the AVIF.png suffix.");
   }
 
   parsed = awj::parse_arguments(
@@ -438,15 +475,15 @@ int main() {
     return fail("help text does not reflect encoding defaults.");
   }
 
-  // 帮助文本必须描述实际实现，而不是历史行为。这三组断言对应三个曾经出现过的
-  // 契约漂移：auto 色度早已优先保留源表示，无损 444 走 identity 直通，clamped
-  // grid 边缘 cell 早已默认开启并被编码器接受；HDR 源的 CICP 也不会被 BT.709
-  // 覆盖。
+  // 帮助文本必须描述实际实现。默认颜色表示是 YUV，只有显式 source/rgb 设置
+  // 才允许 Identity；HDR 源的 CICP 也不会被 BT.709 覆盖。
   if (help.find("按 auto 色度规则重编码") == std::string::npos ||
-      help.find("保留源 YUV 420/422/444") == std::string::npos ||
-      help.find("identity matrix") == std::string::npos ||
+      help.find("默认 YUV") == std::string::npos ||
+      help.find("--avif-color-representation <yuv|source|rgb>") ==
+          std::string::npos ||
+      help.find("--append-png-suffix") == std::string::npos ||
       help.find("按默认 420 重编码") != std::string::npos) {
-    return fail("help text does not describe source-aware q100 auto chroma.");
+    return fail("help text does not describe the AVIF color representation contract.");
   }
 
   if (help.find("含 PQ/HLG 等 HDR 传输函数") == std::string::npos ||

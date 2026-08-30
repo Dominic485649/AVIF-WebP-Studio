@@ -77,7 +77,7 @@ component SoftComboBox inherits Rectangle {
     property <bool> popup-opening: false;
     property <bool> popup-animate-open: false;
     property <bool> popup-had-focus: false;
-    property <int> hover-index: -1;
+    out property <int> hover-index: -1;
     property <int> highlight-index: root.hover-index >= 0 ? root.hover-index : root.current-index;
     property <int> bounded-highlight-index: max(0, min(root.highlight-index, max(root.model.length - 1, 0)));
     callback selection-accepted(int, length, length);
@@ -762,6 +762,7 @@ export component AwjStudio inherits Window {
     in-out property <string> preset-editor-description: "";
     in-out property <string> preset-editor-error: "";
     in-out property <int> avif-encoder-index: 0;
+    in-out property <int> avif-color-representation-index: 0;
     in property <[ComboOption]> avif-encoder-options: [{ text: @tr("自动"), enabled: true }, { text: "svt-av1-hdr", enabled: true }, { text: "aom", enabled: true }, { text: "zenrav1e", enabled: false }];
     in-out property <bool> experimental-encoders: true;
     in-out property <string> avif-quality-default: "";
@@ -830,6 +831,7 @@ export component AwjStudio inherits Window {
     in-out property <int> queue-format-index: 0;
     in-out property <int> queue-preset-index: 0;
     in property <[ComboOption]> queue-preset-options: [{ text: @tr("内置默认"), enabled: true }];
+    in property <string> queue-preset-description: "";
     in-out property <bool> preserve-creation-time: false;
     in-out property <bool> preserve-modification-time: false;
     in-out property <bool> preserve-access-time: false;
@@ -843,7 +845,9 @@ export component AwjStudio inherits Window {
     in-out property <string> menu-bit-depth-text: "";
     in-out property <string> menu-speed-text: "";
     in-out property <int> menu-avif-encoder-index: 0;
+    in-out property <int> menu-avif-color-representation-index: 0;
     in-out property <int> menu-chroma-index: 0;
+    in-out property <bool> menu-install-avif-png-command: false;
     in-out property <int> menu-alpha-policy-index: 1;
     in-out property <int> menu-jpegli-progressive-index: 2;
     in-out property <bool> menu-jpegli-optimize-huffman: true;
@@ -980,6 +984,7 @@ export component AwjStudio inherits Window {
     callback large-image-action-requested(int, string);
     callback format-defaults-requested(int);
     callback parameter-preset-selected(int);
+    callback queue-preset-selected(int);
     callback open-preset-editor();
     callback save-parameter-preset(string, string);
     callback cancel-preset-editor();
@@ -1183,27 +1188,37 @@ export component AwjStudio inherits Window {
                                 }
                                 version-touch := TouchArea {
                                     clicked => { root.version-clicked(); }
+                                    changed has-hover => {
+                                        if (version-touch.has-hover && root.update-available && root.show-update-changelog) {
+                                            version-update-card.show();
+                                        } else {
+                                            version-update-card.close();
+                                        }
+                                    }
                                 }
-                                if version-touch.has-hover && root.update-available && root.show-update-changelog: Rectangle {
+                                version-update-card := PopupWindow {
                                     x: 0px;
-                                    y: parent.height + 6px;
+                                    y: version-hit.height + 6px;
                                     width: root.nav-width - root.page-gap * 2;
                                     height: 70px;
-                                    z: 100;
-                                    clip: true;
-                                    border-radius: 8px;
-                                    background: root.dark-mode ? #1c2a3c : #ffffff;
-                                    border-width: 1px;
-                                    border-color: root.dark-mode ? #4b6380 : #a9c7e8;
-                                    VerticalLayout {
-                                        padding: 9px;
-                                        spacing: 3px;
-                                        Text { text: @tr("发现新版本 ") + root.update-version; color: root.text-strong; font-size: 12px; font-weight: 800; }
-                                        Text {
-                                            text: @tr("点击版本号安装；完整说明见更新日志。");
-                                            color: root.text-muted;
-                                            font-size: 11px;
-                                            wrap: word-wrap;
+                                    close-policy: close-on-click-outside;
+                                    Rectangle {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        border-radius: 8px;
+                                        background: root.dark-mode ? #1c2a3c : #ffffff;
+                                        border-width: 1px;
+                                        border-color: root.dark-mode ? #4b6380 : #a9c7e8;
+                                        VerticalLayout {
+                                            padding: 9px;
+                                            spacing: 3px;
+                                            Text { text: @tr("发现新版本 ") + root.update-version; color: root.text-strong; font-size: 12px; font-weight: 800; }
+                                            Text {
+                                                text: @tr("点击版本号安装；完整说明见更新日志。");
+                                                color: root.text-muted;
+                                                font-size: 11px;
+                                                wrap: word-wrap;
+                                            }
                                         }
                                     }
                                 }
@@ -1359,6 +1374,30 @@ export component AwjStudio inherits Window {
                                                 selection-accepted(index, click-x, click-y) => {
                                                     root.parameter-preset-selected(index);
                                                 }
+                                                changed has-hover => {
+                                                    if (parameter-preset.has-hover && !root.parameter-preset-description.is-empty) {
+                                                        parameter-preset-card.show();
+                                                    } else {
+                                                        parameter-preset-card.close();
+                                                    }
+                                                }
+                                                parameter-preset-card := PopupWindow {
+                                                    x: 0px;
+                                                    y: parameter-preset.height + 6px;
+                                                    width: parameter-preset.width;
+                                                    height: 68px;
+                                                    close-policy: close-on-click-outside;
+                                                    Rectangle {
+                                                        width: parent.width;
+                                                        height: parent.height;
+                                                        border-radius: 8px;
+                                                        border-width: 1px;
+                                                        border-color: root.dark-mode ? #4b6380 : #a9c7e8;
+                                                        background: root.dark-mode ? #1c2a3c : #ffffff;
+                                                        clip: true;
+                                                        Text { x: 9px; y: 8px; width: parent.width - 18px; height: parent.height - 16px; text: root.parameter-preset-description; color: root.text-body; font-size: 12px; wrap: word-wrap; overflow: elide; }
+                                                    }
+                                                }
                                             }
                                             SoftButton {
                                                 dark-mode: root.dark-mode;
@@ -1370,23 +1409,12 @@ export component AwjStudio inherits Window {
                                                 clicked => { root.open-preset-editor(); }
                                             }
                                         }
-                                        if parameter-preset.has-hover && !root.parameter-preset-description.is-empty: Text {
-                                            text: root.parameter-preset-description;
-                                            color: root.text-muted;
-                                            font-size: 12px;
-                                            wrap: word-wrap;
-                                            min-width: 0px;
-                                            width: 100%;
-                                            horizontal-stretch: 1;
-                                            height: self.preferred-height;
-                                        }
-
                                         HorizontalLayout {
                                             min-height: 72px;
                                             spacing: 10px;
                                             cross-axis-alignment: center;
                                             Text { text: @tr("编辑格式"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("编辑格式"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            SoftComboBox { accessible-name: @tr("编辑格式"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                                             ParamHint {
                                                 horizontal-stretch: 1;
                                                 lead: @tr("首选 AVIF");
@@ -1539,6 +1567,21 @@ export component AwjStudio inherits Window {
                                             }
                                         }
 
+                                        if root.format-index == 0: HorizontalLayout {
+                                            min-height: 64px;
+                                            spacing: 10px;
+                                            cross-axis-alignment: center;
+                                            Text { text: @tr("颜色表示"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                            SoftComboBox { accessible-name: @tr("AVIF 颜色表示"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "YUV", enabled: true }, { text: @tr("跟随源"), enabled: true }, { text: "RGB(A) / GBR(A) Identity", enabled: true }]; current-index <=> root.avif-color-representation-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                                            ParamHint {
+                                                horizontal-stretch: 1;
+                                                lead: @tr("默认 YUV");
+                                                lead-color: root.hint-blue;
+                                                detail: @tr("YUV 始终使用非 Identity 矩阵；跟随源仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；RGB(A)/GBR(A) 强制 4:4:4 并自动选择 AOM。");
+                                                detail-color: root.text-muted;
+                                            }
+                                        }
+
                                         if (root.format-index == 0 && root.avif-encoder-index != 1) || root.format-index == 3: HorizontalLayout {
                                             min-height: 64px;
                                             spacing: 10px;
@@ -1648,6 +1691,10 @@ export component AwjStudio inherits Window {
                                 Text { text: @tr("编码器"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                             SoftComboBox { accessible-name: @tr("右键 AVIF 编码器"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.menu-avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
                             }
+                            if root.menu-format-index == 0: HorizontalLayout { height: 48px; spacing: 10px;
+                                Text { text: @tr("颜色表示"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                            SoftComboBox { accessible-name: @tr("右键 AVIF 颜色表示"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "YUV", enabled: true }, { text: @tr("跟随源"), enabled: true }, { text: "RGB(A) / GBR(A) Identity", enabled: true }]; current-index <=> root.menu-avif-color-representation-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+                            }
                             HorizontalLayout { height: 48px; spacing: 10px;
                                 Text { text: @tr("质量"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                 LineEdit { accessible-label: @tr("右键质量"); text <=> root.menu-quality-text; placeholder-text: "1-100/q90/0.9"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
@@ -1704,6 +1751,11 @@ export component AwjStudio inherits Window {
                                 CheckBox { text: @tr("移除元数据"); checked <=> root.menu-strip-metadata; enabled: !root.running; }
                                 if root.wic-ui-visible: CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.menu-allow-wic-fallback; enabled: !root.running; }
                                 CheckBox { text: @tr("完成后关闭窗口"); checked <=> root.menu-close-on-finish; enabled: !root.running; }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                            }
+                            if root.menu-format-index == 0: HorizontalLayout { height: 40px; spacing: root.page-gap;
+                                Rectangle { width: 88px; background: transparent; }
+                                CheckBox { text: @tr("额外添加 .png 后缀"); checked <=> root.menu-install-avif-png-command; enabled: !root.running; }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
                         }
@@ -1798,7 +1850,7 @@ export component AwjStudio inherits Window {
                                                 model: [{ text: @tr("覆盖"), enabled: true }, { text: @tr("跳过"), enabled: true }, { text: @tr("追加时间"), enabled: true }, { text: @tr("追加随机"), enabled: true }];
                                                 current-index <=> root.collision-index;
                                                 enabled: !root.running;
-                                                width: 178px;
+                                                width: root.control-button-width * 2 + root.page-gap;
                                                 normal-background: root.combo-bg;
                                                 hover-background: root.combo-bg-hover;
                                                 disabled-background: root.combo-bg-disabled;
@@ -1830,10 +1882,65 @@ export component AwjStudio inherits Window {
                                 HorizontalLayout {
                                     spacing: 10px;
                                     Text { text: @tr("输出格式"); width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox { accessible-name: @tr("队列输出格式"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.queue-format-index; enabled: !root.running; width: 142px; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                                    queue-format := SoftComboBox { accessible-name: root.queue-format-index == 5 ? @tr("AVIF.png：实际编码为 AVIF，仅额外添加 .png 文件名后缀") : @tr("队列输出格式"); accessible-description: root.queue-format-index == 5 ? @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀") : ""; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }, { text: "AVIF.png", enabled: true }]; current-index <=> root.queue-format-index; enabled: !root.running; width: 142px; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong;
+                                        changed has-hover => {
+                                            if ((queue-format.has-hover && root.queue-format-index == 5) || queue-format.hover-index == 5) {
+                                                queue-format-card.show();
+                                            } else {
+                                                queue-format-card.close();
+                                            }
+                                        }
+                                        changed current-index => {
+                                            if ((queue-format.has-hover && root.queue-format-index == 5) || queue-format.hover-index == 5) {
+                                                queue-format-card.show();
+                                            } else {
+                                                queue-format-card.close();
+                                            }
+                                        }
+                                        changed hover-index => {
+                                            if ((queue-format.has-hover && root.queue-format-index == 5) || queue-format.hover-index == 5) {
+                                                queue-format-card.show();
+                                            } else {
+                                                queue-format-card.close();
+                                            }
+                                        }
+                                        queue-format-card := PopupWindow {
+                                            x: queue-format.hover-index == 5 ? queue-format.width + 6px : 0px;
+                                            y: queue-format.hover-index == 5 ? 0px : queue-format.height + 6px;
+                                            width: 260px;
+                                            height: 48px;
+                                            close-policy: close-on-click-outside;
+                                            Rectangle { width: parent.width; height: parent.height; border-radius: 8px; border-width: 1px; border-color: root.dark-mode ? #4b6380 : #a9c7e8; background: root.dark-mode ? #1c2a3c : #ffffff; Text { x: 9px; y: 8px; width: parent.width - 18px; height: parent.height - 16px; text: @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀"); color: root.text-body; font-size: 12px; wrap: word-wrap; } }
+                                        }
+                                    }
                                     Text { text: @tr("预设"); width: 42px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox { accessible-name: @tr("队列预设"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.queue-preset-options; current-index <=> root.queue-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                    Text { text: @tr("队列设置在开始转换时统一快照；参数页格式仅用于编辑参数。"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                                    queue-preset := SoftComboBox { accessible-name: @tr("队列预设"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.queue-preset-options; current-index <=> root.queue-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; selection-accepted(index, click-x, click-y) => { root.queue-preset-selected(index); }
+                                        changed has-hover => {
+                                            if (queue-preset.has-hover && !root.queue-preset-description.is-empty) {
+                                                queue-preset-card.show();
+                                            } else {
+                                                queue-preset-card.close();
+                                            }
+                                        }
+                                        queue-preset-card := PopupWindow {
+                                            x: 0px;
+                                            y: queue-preset.height + 6px;
+                                            width: queue-preset.width;
+                                            height: 68px;
+                                            close-policy: close-on-click-outside;
+                                            Rectangle {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                border-radius: 8px;
+                                                border-width: 1px;
+                                                border-color: root.dark-mode ? #4b6380 : #a9c7e8;
+                                                background: root.dark-mode ? #1c2a3c : #ffffff;
+                                                clip: true;
+                                                Text { x: 9px; y: 8px; width: parent.width - 18px; height: parent.height - 16px; text: root.queue-preset-description; color: root.text-body; font-size: 12px; wrap: word-wrap; overflow: elide; }
+                                            }
+                                        }
+                                    }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
 
                                 if root.width >= 1100px: HorizontalLayout {
@@ -1961,12 +2068,27 @@ export component AwjStudio inherits Window {
                                         vertical-stretch: 1;
                                         background: root.dark-mode ? #151b25 : #ffffff;
 
-                                        if root.task-rows.length == 0 || (root.queue-failed-only && root.queue-failed-count == 0): Text {
-                                            text: root.task-rows.length == 0 ? @tr("队列为空") : @tr("没有失败项");
-                                            color: root.text-muted;
-                                            font-size: 13px;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
+                                        // The unused table surface appends external drops; row
+                                        // DropAreas above it keep their internal reorder targets.
+                                        DropArea {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            can-drop(event) => { return root.queue-drag-can-drop(event, root.task-rows.length); }
+                                            dropped(event) => { return root.queue-drag-dropped(event, root.task-rows.length); }
+                                        }
+
+                                        if root.task-rows.length == 0 || (root.queue-failed-only && root.queue-failed-count == 0): DropArea {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            can-drop(event) => { return root.queue-drag-can-drop(event, root.task-rows.length); }
+                                            dropped(event) => { return root.queue-drag-dropped(event, root.task-rows.length); }
+                                            Text {
+                                                text: root.task-rows.length == 0 ? @tr("队列为空") : @tr("没有失败项");
+                                                color: root.text-muted;
+                                                font-size: 13px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
                                         }
 
                                         if root.task-rows.length > 0 && (!root.queue-failed-only || root.queue-failed-count > 0): ListView {
