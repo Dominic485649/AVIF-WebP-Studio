@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "sequence": 3,
+  "sequence": 4,
   "key_id": "release-2026",
-  "issued_at": "2026-08-24T14:55:59Z",
+  "issued_at": "2026-08-30T06:28:26Z",
   "expires_at": "2027-02-18T17:00:00Z",
   "entries": [
     {
@@ -351,6 +351,122 @@
       "changelog": {
         "zh-CN": "- prerelease：功能与 1.0.6 完全一致，仅用于 1.0.6→1.0.7 的归档自动更新测试；普通用户请继续下载 1.0.6。",
         "en": "- Prerelease: Functionally identical to 1.0.6 and provided only for the 1.0.6→1.0.7 archive auto-update test; normal users should continue to download 1.0.6."
+      }
+    },
+    {
+      "version": "1.0.8",
+      "channel": "prerelease",
+      "published_at": "2026-08-30T06:28:26Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.8",
+      "minimum_updater_version": "1.0.4",
+      "revoked": false,
+      "assets": {
+        "windows_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+            "size": 12321156,
+            "sha256": "e8ca7278359da06f50098eb17c65a921f7b7c72fea35ff694b0774b4f75eae93"
+          },
+          "members": [
+            {
+              "path": "AWJ.com",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 451072,
+              "sha256": "b98c44cbb239d95b9985d6b034288982fb9cc202bdac2bc05b189be0d413d686"
+            },
+            {
+              "path": "AWJ.com.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "5e50bd4c685b0684b251c906b5980eda72b419a1bfc929c6024e98ef54c6b856"
+            },
+            {
+              "path": "AWJ.exe",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 44496384,
+              "sha256": "971371cf08e2ee01eac90672718c99354bfdf77101c727b37edd9f2877c632da"
+            },
+            {
+              "path": "AWJ.exe.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 73,
+              "sha256": "e249e4d77ea160af5f3e3d334dd6e2316941899b7a874533529e5be445eb3c25"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 511,
+              "sha256": "777d6a062315aedbbe2dc63934118dbeaf034ed12022230ee961792d694051b6"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 24936,
+              "sha256": "575888be9ac31801886babca6456e1beb346fa4fb3dd76f52111f8048e38d58a"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Win.7z",
+              "size": 64085,
+              "sha256": "e048fde08cd4d372c0484d5856034c09d3a27a05e661b703fd0a99b262313e9c"
+            }
+          ]
+        },
+        "linux_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Linux.7z",
+            "size": 19517598,
+            "sha256": "b74c0c4a4eec5e14ea6cfe4f52bd4614332c9be10425884b36b0eae1ff738390"
+          },
+          "members": [
+            {
+              "path": "AWJ",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Linux.7z",
+              "size": 66974280,
+              "sha256": "e3019fdf0fc36daa1aa9384cf8b2f6257a6aea820659a37f33576e74162af032"
+            },
+            {
+              "path": "AWJ.sha256",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Linux.7z",
+              "size": 70,
+              "sha256": "9bd72211268e345d94c34704637f3123c3ab0cc612255c174d54d66d5c5b5589"
+            },
+            {
+              "path": "BUILD_INFO.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Linux.7z",
+              "size": 498,
+              "sha256": "5bb1c019abe0ed82f2702a36f5e00d05223485a1d5ebbfa12a6fa3767193fc1c"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Linux.7z",
+              "size": 34523,
+              "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+            },
+            {
+              "path": "THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Linux.7z",
+              "size": 24478,
+              "sha256": "b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d"
+            },
+            {
+              "path": "THIRD_PARTY_NOTICES.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.8/AWJ_Linux.7z",
+              "size": 62836,
+              "sha256": "c750b5dc44ce24b70f20b43404b6b662128ff83d7dcae16c50d3c2fd2b14ebc4"
+            }
+          ]
+        }
+      },
+      "changelog": {
+        "zh-CN": "- prerelease：AVIF 新增显式颜色表示模式：默认 `yuv` 始终使用非 Identity matrix；`source` 按源图的 YUV/RGB Identity 表示跟随；`rgb` 强制 RGB(A)/GBR(A) Identity + 4:4:4，并在自动编码器模式下选择 AOM。CLI、预设、Studio 与编码诊断保持一致。\n- AVIF 可选追加 `.png` 形成完整 `.avif.png` 文件名，实际内容仍为 AVIF；碰撞编号、同目录 `-converted` 命名和 Studio worker manifest 都将双后缀作为整体处理。\n- 修正 AVIF 无损颜色语义和码流直通判定：符合条件的 YUV 420/422/444 AVIF 可保持原始码流；YUV 不再因 q100/4:4:4 隐式切换 Identity，BT.2020 源的无效/未知 matrix 回退为 BT.2020 NCL，其余回退为 BT.709。\n- Studio 参数页新增 AVIF 颜色表示与 `.avif.png` 兼容选项；预设保存/加载新增字段，队列拖放和多目标扫描统一为确定性排序，并补强队列右键操作、失败筛选与 prerelease 更新日志标记。",
+        "en": "- Prerelease: AVIF now has explicit color-representation modes. The default `yuv` always uses a non-Identity matrix; `source` follows the source YUV/RGB Identity representation; `rgb` forces RGB(A)/GBR(A) Identity + 4:4:4 and selects AOM when the encoder is automatic. CLI, presets, Studio, and encoding diagnostics use the same contract.\n- AVIF can optionally append `.png` to produce a complete `.avif.png` filename while the payload remains AVIF. Collision numbering, same-directory `-converted` naming, and Studio worker manifests treat the double extension as one unit.\n- Fixed lossless AVIF color semantics and bitstream-passthrough eligibility: eligible YUV 420/422/444 AVIF files can preserve the original bitstream; YUV no longer switches implicitly to Identity at q100/4:4:4, invalid or unknown matrices on BT.2020 sources fall back to BT.2020 NCL, and other sources fall back to BT.709.\n- Studio Parameters adds AVIF color-representation and `.avif.png` compatibility controls; presets persist the new field, queue drag/drop and multi-target scans use deterministic ordering, and queue context actions, failed-only filtering, and prerelease changelog markers are tightened."
       }
     }
   ]
