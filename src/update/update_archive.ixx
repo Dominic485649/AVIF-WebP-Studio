@@ -63,6 +63,14 @@ std::expected<std::size_t, std::string> expected_member_index(
   return std::unexpected{"归档包含未在签名 manifest 中列出的成员。"};
 }
 
+bool expected_directory_is_implied(const ArchiveAssetInfo& expected,
+                                   std::string_view directory) {
+  const auto prefix = ascii_fold(directory) + "/";
+  return std::ranges::any_of(expected.members, [&](const ArchiveMemberInfo& member) {
+    return ascii_fold(member.path).starts_with(prefix);
+  });
+}
+
 }  // namespace archive_detail
 
 bool archive_member_path_is_safe(std::string_view path) noexcept {
@@ -141,6 +149,23 @@ std::expected<void, std::string> extract_verified_7z_archive(
       return std::unexpected{"更新归档成员缺少路径。"};
     }
     const std::string name{raw_name};
+    const auto filetype = archive_entry_filetype(entry);
+    if (archive_entry_symlink(entry) != nullptr || archive_entry_hardlink(entry) != nullptr) {
+      return std::unexpected{"更新归档拒绝链接成员。"};
+    }
+    if (filetype == AE_IFDIR) {
+      std::string directory{name};
+      if (directory.ends_with('/')) directory.pop_back();
+      if (!archive_member_path_is_safe(directory) ||
+          !archive_detail::expected_directory_is_implied(expected, directory)) {
+        return std::unexpected{"更新归档包含未由签名成员路径声明的目录。"};
+      }
+      if (archive_read_data_skip(input.get()) != ARCHIVE_OK) {
+        return std::unexpected{
+            archive_detail::archive_error(input.get(), "跳过 7z 目录成员失败")};
+      }
+      continue;
+    }
     if (!archive_member_path_is_safe(name)) {
       return std::unexpected{"更新归档成员路径不安全。"};
     }
@@ -149,9 +174,8 @@ std::expected<void, std::string> extract_verified_7z_archive(
     if (seen[*member_index]) {
       return std::unexpected{"更新归档含重复或仅大小写不同的成员。"};
     }
-    if (archive_entry_filetype(entry) != AE_IFREG ||
-        archive_entry_symlink(entry) != nullptr || archive_entry_hardlink(entry) != nullptr) {
-      return std::unexpected{"更新归档只允许普通文件，拒绝链接和特殊成员。"};
+    if (filetype != AE_IFREG) {
+      return std::unexpected{"更新归档只允许普通文件和已签名路径隐含的目录。"};
     }
     const auto declared_size = archive_entry_size(entry);
     const auto expected_size = expected.members[*member_index].asset.size_bytes;

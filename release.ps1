@@ -34,7 +34,7 @@ $env:GIT_CONFIG_VALUE_0 = "HTTP/1.1"
 $BuildDir = Join-Path $Repo "build\x64\Release"
 $OutputDir = Join-Path $Repo "bin\x64\Release"
 $OverlayPorts = Join-Path $Repo "vcpkg-overlays"
-$ReleaseFiles = @("AWJ.exe", "AWJ.com", "AWJ.exe.sha256", "AWJ.com.sha256", "AWJ", "AWJ.sha256", "LICENSE", "THIRD_PARTY_NOTICES.txt", "BUILD_INFO.txt")
+$ReleaseFiles = @("AWJ.exe", "AWJ.com", "LICENSE", "NOTICE.txt", "awj_update_manifest_sign.exe")
 $Version = (Get-Content (Join-Path $Repo "VERSION") -Raw).Trim()
 $MinimumUpdaterVersion = if ($MinimumUpdaterVersion) { $MinimumUpdaterVersion } else { $Version }
 $VcpkgConfiguration = Get-Content (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
@@ -436,7 +436,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Release 构建失败，退出码 $LASTEXITCODE。"
 }
 
-# --- Generate BUILD_INFO.txt ---
+# --- Generate NOTICE.txt ---
 $BuildDate = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
 $AomVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "aom"
 $Dav1dVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "dav1d"
@@ -492,28 +492,56 @@ FetchContent Dependencies (actual commits):
   slint:       $SlintCommit
 "@
 
-$BuildInfoPath = Join-Path $OutputDir "BUILD_INFO.txt"
-$BuildInfoWriteError = $null
-for ($BuildInfoAttempt = 1; $BuildInfoAttempt -le 8; ++$BuildInfoAttempt) {
+$ThirdPartyNotices = (Get-Content -LiteralPath (Join-Path $Repo "THIRD_PARTY_NOTICES.txt") -Raw).TrimEnd()
+$LicenseAppendix = @(
+    Get-ChildItem -LiteralPath (Join-Path $Repo "licenses") -File | Sort-Object Name | ForEach-Object {
+        $LicenseText = (Get-Content -LiteralPath $_.FullName -Raw).TrimEnd()
+        @"
+-------------------------------------------------------------------------------
+BEGIN FULL LICENSE: licenses/$($_.Name)
+-------------------------------------------------------------------------------
+$LicenseText
+-------------------------------------------------------------------------------
+END FULL LICENSE: licenses/$($_.Name)
+-------------------------------------------------------------------------------
+"@
+    }
+) -join "`r`n"
+$NoticeContent = @"
+AWJimage Release Notice
+=======================
+
+BUILD INFORMATION
+-----------------
+$BuildInfoContent
+
+THIRD-PARTY SOFTWARE NOTICES
+----------------------------
+$ThirdPartyNotices
+
+FULL THIRD-PARTY LICENSE TEXTS
+------------------------------
+$LicenseAppendix
+"@
+$NoticePath = Join-Path $OutputDir "NOTICE.txt"
+$NoticeWriteError = $null
+for ($NoticeAttempt = 1; $NoticeAttempt -le 8; ++$NoticeAttempt) {
     try {
-        Set-Content -LiteralPath $BuildInfoPath -Value $BuildInfoContent -NoNewline -Encoding UTF8
-        $BuildInfoWriteError = $null
+        Set-Content -LiteralPath $NoticePath -Value $NoticeContent -NoNewline -Encoding UTF8
+        $NoticeWriteError = $null
         break
     } catch {
-        $BuildInfoWriteError = $_
-        if ($BuildInfoAttempt -lt 8) {
+        $NoticeWriteError = $_
+        if ($NoticeAttempt -lt 8) {
             Start-Sleep -Milliseconds 250
         }
     }
 }
-if ($BuildInfoWriteError) {
-    throw $BuildInfoWriteError
+if ($NoticeWriteError) {
+    throw $NoticeWriteError
 }
-Write-Host "  $BuildInfoPath"
-
-# Copy license and notice files to output directory
+Write-Host "  $NoticePath"
 Copy-Item -LiteralPath (Join-Path $Repo "LICENSE") -Destination (Join-Path $OutputDir "LICENSE") -Force
-Copy-Item -LiteralPath (Join-Path $Repo "THIRD_PARTY_NOTICES.txt") -Destination (Join-Path $OutputDir "THIRD_PARTY_NOTICES.txt") -Force
 
 if (-not $SkipUpdateManifest) {
     $WindowsExe = Join-Path $OutputDir "AWJ.exe"

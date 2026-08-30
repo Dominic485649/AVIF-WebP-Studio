@@ -1,5 +1,11 @@
 # 更新日志
 
+## 1.0.9 - 2026-08-30
+
+- prerelease：修复 7z 自动更新对合法目录 entry 的误判。更新器现在只跳过由签名 manifest 文件路径必然隐含的安全目录，同时继续拒绝额外目录、路径穿越、链接、特殊成员、重复成员和未签名文件；补充真实目录 entry 的通过/拒绝回归测试，恢复旧归档（包括 1.0.8）的兼容提取。
+- 固定 Windows 发行归档为严格扁平的 4 文件结构：`AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；包内不再携带 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或 `THIRD_PARTY_LICENSES/`。归档及成员的大小/SHA-256 继续由签名 v2 manifest 绑定。
+- `NOTICE.txt` 统一收纳构建信息、第三方 notices 和发行所需的第三方完整许可证文本；Linux 归档同步改为严格扁平的 `AWJ`、`LICENSE`、`NOTICE.txt` 三文件结构，并在打包脚本中加入精确成员校验。
+
 ## 1.0.8 - 2026-08-30
 
 - prerelease：AVIF 新增显式颜色表示模式：默认 `yuv` 始终使用非 Identity matrix；`source` 按源图的 YUV/RGB Identity 表示跟随；`rgb` 强制 RGB(A)/GBR(A) Identity + 4:4:4，并在自动编码器模式下选择 AOM。CLI、预设、Studio 与编码诊断保持一致。

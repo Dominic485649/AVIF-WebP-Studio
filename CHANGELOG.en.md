@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.9 - 2026-08-30
+
+- Prerelease: fixed the 7z updater rejecting legitimate directory entries. The extractor now skips only safe directories that are necessarily implied by signed manifest member paths, while continuing to reject extra directories, traversal, links, special entries, duplicates, and unsigned files. Regression coverage includes accepted and rejected real directory entries, restoring compatibility with older archives including 1.0.8.
+- The Windows release archive is now a strict flat four-file package: `AWJ.exe`, `AWJ.com`, `LICENSE`, and `NOTICE.txt`. In-archive `.sha256` files, `BUILD_INFO.txt`, `THIRD_PARTY_NOTICES.txt`, and `THIRD_PARTY_LICENSES/` are removed; the signed v2 manifest continues to bind archive/member size and SHA-256.
+- `NOTICE.txt` consolidates build information, third-party notices, and required full third-party license texts. The Linux archive is likewise flattened to exactly `AWJ`, `LICENSE`, and `NOTICE.txt`, with exact-member validation in the packagers.
+
 ## 1.0.8 - 2026-08-30
 
 - Prerelease: AVIF now has explicit color-representation modes. The default `yuv` always uses a non-Identity matrix; `source` follows the source YUV/RGB Identity representation; `rgb` forces RGB(A)/GBR(A) Identity + 4:4:4 and selects AOM when the encoder is automatic. CLI, presets, Studio, and encoding diagnostics use the same contract.

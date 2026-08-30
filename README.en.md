@@ -74,6 +74,8 @@ Windows release script:
 
 > Since 1.0.4, `release.ps1` is Windows-build-only and rejects manifest writes. The cross-platform archive, v2/v1 signing, and GitHub publication procedure is [docs/release.en.md](docs/release.en.md).
 
+From 1.0.9, the public `AWJ_Win.7z` package is an exact flat four-file archive containing only `AWJ.exe`, `AWJ.com`, `LICENSE`, and `NOTICE.txt`. `.sha256` sidecars, `BUILD_INFO.txt`, `THIRD_PARTY_NOTICES.txt`, and license subdirectories are not packaged. `NOTICE.txt` consolidates build information, third-party notices, and required full license texts, while the signed v2 manifest continues to bind the archive and every member by size and SHA-256. The local maintainer output may additionally retain `awj_update_manifest_sign.exe`; that tool is never part of the public archive.
+
 Versioning is controlled by the root `VERSION` file. A real release must use an Ed25519 seed stored outside the repository and compile the matching public key into the client. Never commit the seed, copy it into the output directory, or print it in logs. The actual 1.0.4+ archive, signing, and GitHub publication steps are maintained in [docs/release.en.md](docs/release.en.md).
 
 ## Automatic updates

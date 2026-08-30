@@ -80,17 +80,7 @@ Windows 也可使用脚本：
 
 > 1.0.4 起 `release.ps1` 只负责 Windows 构建，拒绝写 manifest。跨平台归档、v2/v1 签名与 GitHub 发布流程见 [docs/release.md](docs/release.md)。
 
-Windows 脚本会配置 native 依赖并清理 Release 输出目录，只保留发行文件；若目录中已有 Linux 构建，也会保留 `AWJ` 与 `AWJ.sha256`：
-
-- `bin\x64\Release\AWJ.exe`
-- `bin\x64\Release\AWJ.com`
-- `bin\x64\Release\AWJ.exe.sha256`
-- `bin\x64\Release\AWJ.com.sha256`
-- `bin\x64\Release\AWJ`（已有 Linux 构建时）
-- `bin\x64\Release\AWJ.sha256`（已有 Linux 构建时）
-- `bin\x64\Release\LICENSE`
-- `bin\x64\Release\THIRD_PARTY_NOTICES.txt`
-- `bin\x64\Release\BUILD_INFO.txt`
+Windows 脚本会配置 native 依赖并清理 Release 输出目录。1.0.9 起公开 `AWJ_Win.7z` 的成员固定且必须严格只有：`AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；不再把 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或许可证子目录放进归档。`NOTICE.txt` 汇总构建信息、第三方 notices 与所需完整许可证文本。签名 v2 manifest 继续绑定归档及逐成员 SHA-256。维护者本地 `bin\x64\Release` 还可保留 `awj_update_manifest_sign.exe` 作为签名工具，但它绝不进入公开发行包。
 
 版本号由仓库根目录的 `VERSION` 文件控制，`CMakeLists.txt` 构建时自动读取，`scripts/Update-VcpkgVersion.ps1` 可同步到 `vcpkg.json`。正式发布必须使用仓库外保存的 Ed25519 seed，并将匹配的公钥编入客户端；私钥/seed 不得提交、复制到产物目录或写入日志。1.0.4+ 的实际归档、签名和 GitHub 发布步骤以 [docs/release.md](docs/release.md) 为准。
 

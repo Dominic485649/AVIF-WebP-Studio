@@ -49,25 +49,52 @@ slint_commit=$(cmake_value AWJ_SLINT_GIT_TAG)
 
 package="$output_dir/package/AWJ_Linux"
 archive="$output_dir/AWJ_Linux.7z"
-mkdir -p "$package/THIRD_PARTY_LICENSES"
+mkdir -p "$package"
 install -m 0755 "$binary" "$package/AWJ"
-printf '%s  AWJ\n' "$(sha256sum "$package/AWJ" | awk '{print $1}')" > "$package/AWJ.sha256"
-cp -- "$repo/LICENSE" "$repo/THIRD_PARTY_NOTICES.txt" "$package/"
-cp -- "$repo/licenses/libplacebo-LGPL-2.1-or-later.txt" "$package/THIRD_PARTY_LICENSES/"
-printf '%s\n' \
-  "AWJimage $version" \
-  'Build Type: Release' \
-  "Git Commit: $(git -C "$repo" rev-parse HEAD)" \
-  'Architecture: x64' \
-  'Platform: Linux' \
-  "Vcpkg baseline: $baseline" \
-  "SVT-AV1-HDR commit: $svt_commit" \
-  "libavif commit: $libavif_commit" \
-  "Jpegli commit: $jpegli_commit" \
-  "Slint commit: $slint_commit" \
-  'libplacebo: v7.360.1' \
-  'libarchive: v3.8.9' \
-  'Source: https://github.com/Dominic485649/AWJimage' > "$package/BUILD_INFO.txt"
+cp -- "$repo/LICENSE" "$package/LICENSE"
+{
+  printf '%s\n' \
+    'AWJimage Release Notice' \
+    '=======================' \
+    '' \
+    'BUILD INFORMATION' \
+    '-----------------' \
+    "AWJimage $version" \
+    'Build Type: Release' \
+    "Git Commit: $(git -C "$repo" rev-parse HEAD)" \
+    'Architecture: x64' \
+    'Platform: Linux' \
+    "Vcpkg baseline: $baseline" \
+    "SVT-AV1-HDR commit: $svt_commit" \
+    "libavif commit: $libavif_commit" \
+    "Jpegli commit: $jpegli_commit" \
+    "Slint commit: $slint_commit" \
+    'libplacebo: v7.360.1' \
+    'libarchive: v3.8.9' \
+    'Source: https://github.com/Dominic485649/AWJimage' \
+    '' \
+    'THIRD-PARTY SOFTWARE NOTICES' \
+    '----------------------------'
+  cat -- "$repo/THIRD_PARTY_NOTICES.txt"
+  printf '\n%s\n' 'FULL THIRD-PARTY LICENSE TEXTS' '------------------------------'
+  while IFS= read -r -d '' license; do
+    name=${license#"$repo/"}
+    printf '%s\n' \
+      '-------------------------------------------------------------------------------' \
+      "BEGIN FULL LICENSE: $name" \
+      '-------------------------------------------------------------------------------'
+    cat -- "$license"
+    printf '\n%s\n' \
+      '-------------------------------------------------------------------------------' \
+      "END FULL LICENSE: $name" \
+      '-------------------------------------------------------------------------------'
+  done < <(find "$repo/licenses" -maxdepth 1 -type f -name '*.txt' -print0 | sort -z)
+} > "$package/NOTICE.txt"
+
+[[ ! -d "$package/THIRD_PARTY_LICENSES" ]] || die 'release package must not contain subdirectories'
+mapfile -t package_members < <(find "$package" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+expected_members=(AWJ LICENSE NOTICE.txt)
+[[ "${package_members[*]}" == "${expected_members[*]}" ]] || die "unexpected Linux package members: ${package_members[*]}"
 
 pushd "$package" >/dev/null
 7z a -t7z "$archive" ./* -m0=lzma2 -mx=9 -mmt=1 -mf=off -mtc=off -mta=off -mtm=off >/dev/null

@@ -1195,12 +1195,11 @@ Copyright (C) 2017-2026 the libplacebo developers
 AWJ links only the documented CPU colorspace, tone-mapping, and gamut-mapping
 source subset from libplacebo v7.360.1.  The corresponding source, exact
 overlay recipe, version and SHA-512 source archive checksum are available in
-this project's `vcpkg-overlays/libplacebo` directory.  The complete
-LGPL-2.1-or-later license text is shipped as
-`THIRD_PARTY_LICENSES/libplacebo-LGPL-2.1-or-later.txt`; libplacebo source
-notices are available from the upstream source URL above. AWJ's complete
-corresponding source is published under AGPL-3.0 at the URL at the top of
-this file.
+this project's `vcpkg-overlays/libplacebo` directory.  The complete LGPL-2.1-or-later license text is appended to the release
+archive's `NOTICE.txt` and remains available in the source tree as
+`licenses/libplacebo-LGPL-2.1-or-later.txt`; libplacebo source notices are
+available from the upstream source URL above. AWJ's complete corresponding
+source is published under AGPL-3.0 at the URL at the top of this file.
 
 -------------------------------------------------------------------------------
 27. libarchive (7z archive reader)

@@ -74,11 +74,6 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
     Move-Item -LiteralPath $Temporary -Destination $Path -Force
 }
 
-function Write-Checksum([string]$Path) {
-    $Hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-    Set-Content -LiteralPath "$Path.sha256" -Value "$Hash  $([IO.Path]::GetFileName($Path))" -NoNewline -Encoding utf8
-}
-
 function Get-Asset([string]$Path, [string]$Url) {
     return [ordered]@{
         url = $Url
@@ -214,6 +209,20 @@ function Add-Archive([string]$PackageDirectory, [string]$ArchivePath) {
     if ($LASTEXITCODE -ne 0) { throw "7z 完整性检查失败: $ArchivePath" }
 }
 
+function Assert-ExactPackage([string]$Directory, [string[]]$ExpectedFiles) {
+    $Directories = @(Get-ChildItem -LiteralPath $Directory -Directory -Recurse)
+    if ($Directories.Count -ne 0) {
+        throw "发行包必须是扁平结构，不允许子目录: $Directory"
+    }
+    $Actual = @(Get-ChildItem -LiteralPath $Directory -File -Recurse | ForEach-Object {
+        $_.FullName.Substring($Directory.Length).TrimStart('\', '/').Replace('\', '/')
+    } | Sort-Object)
+    $Expected = @($ExpectedFiles | Sort-Object)
+    if ((Compare-Object $Expected $Actual).Count) {
+        throw "发行包成员不符合固定结构: $Directory; expected=$($Expected -join ','); actual=$($Actual -join ',')"
+    }
+}
+
 function Assert-ArchiveRoundTrip([string]$ArchivePath, [string]$PackageDirectory, [string]$VerifyDirectory) {
     Remove-OnlyInsideRepo $VerifyDirectory
     New-Item -ItemType Directory -Path $VerifyDirectory -Force | Out-Null
@@ -274,47 +283,12 @@ $WinPackage = Join-Path $Stage "package\AWJ_Win"
 $LinuxPackage = $LinuxPackagePath
 New-Item -ItemType Directory -Path $Assets, $WinPackage -Force | Out-Null
 
-$Commit = (git -C $Repo rev-parse HEAD).Trim()
-$VcpkgConfiguration = Get-Content -LiteralPath (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
-$Baseline = $VcpkgConfiguration.'default-registry'.baseline
-$CmakeSource = Get-Content -LiteralPath (Join-Path $Repo "CMakeLists.txt") -Raw
-function Get-CmakePinnedSource([string]$Name) {
-    $Pattern = '(?m)^set\(' + [regex]::Escape($Name) + '\s+"(?<value>[^"]+)"'
-    $Match = [regex]::Match($CmakeSource, $Pattern)
-    if (-not $Match.Success) { throw "无法从 CMakeLists.txt 读取 $Name。" }
-    return $Match.Groups['value'].Value
-}
-$SvtAv1HdrCommit = Get-CmakePinnedSource "AWJ_SVTAV1HDR_GIT_TAG"
-$LibavifCommit = Get-CmakePinnedSource "AWJ_LIBAVIF_GIT_TAG"
-$JpegliCommit = Get-CmakePinnedSource "AWJ_JPEGLI_GIT_TAG"
-$SlintCommit = Get-CmakePinnedSource "AWJ_SLINT_GIT_TAG"
-function Stage-Package([string]$PackageDirectory, [string]$Binary, [string]$Platform) {
-    Copy-Item -LiteralPath $Binary -Destination (Join-Path $PackageDirectory ([IO.Path]::GetFileName($Binary))) -Force
-    Write-Checksum (Join-Path $PackageDirectory ([IO.Path]::GetFileName($Binary)))
-    Copy-Item -LiteralPath (Join-Path $Repo "LICENSE"), (Join-Path $Repo "THIRD_PARTY_NOTICES.txt") -Destination $PackageDirectory -Force
-    $LicenseDirectory = Join-Path $PackageDirectory "THIRD_PARTY_LICENSES"
-    New-Item -ItemType Directory -Path $LicenseDirectory -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $Repo "licenses\libplacebo-LGPL-2.1-or-later.txt") -Destination $LicenseDirectory -Force
-    $Info = @"
-AWJimage $Version
-Build Type: Release
-Git Commit: $Commit
-Architecture: x64
-Platform: $Platform
-Vcpkg baseline: $Baseline
-SVT-AV1-HDR commit: $SvtAv1HdrCommit
-libavif commit: $LibavifCommit
-Jpegli commit: $JpegliCommit
-Slint commit: $SlintCommit
-libplacebo: v7.360.1
-libarchive: v3.8.9
-Source: https://github.com/Dominic485649/AWJimage
-"@
-    Write-Utf8NoBom (Join-Path $PackageDirectory "BUILD_INFO.txt") $Info
-}
-Stage-Package $WinPackage $WindowsExePath "Windows"
-Copy-Item -LiteralPath $WindowsComPath -Destination (Join-Path $WinPackage "AWJ.com") -Force
-Write-Checksum (Join-Path $WinPackage "AWJ.com")
+$WindowsSourceDirectory = Split-Path -Parent $WindowsExePath
+$WindowsLicensePath = Assert-File (Join-Path $WindowsSourceDirectory "LICENSE") "Windows LICENSE"
+$WindowsNoticePath = Assert-File (Join-Path $WindowsSourceDirectory "NOTICE.txt") "Windows NOTICE.txt"
+Copy-Item -LiteralPath $WindowsExePath, $WindowsComPath, $WindowsLicensePath, $WindowsNoticePath -Destination $WinPackage -Force
+Assert-ExactPackage $WinPackage @("AWJ.exe", "AWJ.com", "LICENSE", "NOTICE.txt")
+Assert-ExactPackage $LinuxPackage @("AWJ", "LICENSE", "NOTICE.txt")
 
 $WindowsArchive = Join-Path $Assets "AWJ_Win.7z"
 $LinuxArchive = Join-Path $Assets "AWJ_Linux.7z"

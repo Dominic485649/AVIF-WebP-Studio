@@ -70,7 +70,8 @@ std::string replace_once(std::string text, std::string_view from,
 
 std::expected<void, std::string> write_7z(
     const fs::path& path,
-    const std::vector<std::pair<std::string, std::string>>& entries) {
+    const std::vector<std::pair<std::string, std::string>>& entries,
+    const std::vector<std::string>& directories = {}) {
   archive* raw = archive_write_new();
   if (raw == nullptr) return std::unexpected{"cannot create libarchive writer"};
   const auto close = [&] {
@@ -82,6 +83,19 @@ std::expected<void, std::string> write_7z(
       archive_write_open_filename(raw, path.string().c_str()) != ARCHIVE_OK) {
     close();
     return std::unexpected{"cannot create 7z fixture"};
+  }
+  for (const auto& name : directories) {
+    archive_entry* entry = archive_entry_new();
+    archive_entry_set_pathname(entry, name.c_str());
+    archive_entry_set_filetype(entry, AE_IFDIR);
+    archive_entry_set_perm(entry, 0755);
+    archive_entry_set_size(entry, 0);
+    const bool ok = archive_write_header(raw, entry) == ARCHIVE_OK;
+    archive_entry_free(entry);
+    if (!ok) {
+      close();
+      return std::unexpected{"cannot write 7z directory fixture"};
+    }
   }
   for (const auto& [name, contents] : entries) {
     archive_entry* entry = archive_entry_new();
@@ -203,6 +217,50 @@ int main() {
       !fs::is_regular_file(root / "unpacked" / "AWJ.exe")) {
     clean();
     return fail(extracted ? "valid 7z was not extracted" : extracted.error());
+  }
+
+  const auto directory_path = root / "directory.7z";
+  constexpr std::string_view license_bytes = "license";
+  if (auto written = write_7z(
+          directory_path,
+          {{"THIRD_PARTY_LICENSES/license.txt", std::string{license_bytes}}},
+          {"THIRD_PARTY_LICENSES/"});
+      !written) {
+    clean();
+    return fail(written.error());
+  }
+  auto directory_assets = assets;
+  directory_assets.members.front().path = "THIRD_PARTY_LICENSES/license.txt";
+  directory_assets.members.front().asset.size_bytes = license_bytes.size();
+  directory_assets.members.front().asset.sha256 = sha256_bytes(license_bytes);
+  if (auto set = set_asset(directory_assets.archive, directory_path); !set) {
+    clean();
+    return fail(set.error());
+  }
+  if (auto extracted = awj::update::extract_verified_7z_archive(
+          directory_path, directory_assets, root / "directory-unpacked");
+      !extracted || !fs::is_regular_file(root / "directory-unpacked" /
+                                         "THIRD_PARTY_LICENSES" / "license.txt")) {
+    clean();
+    return fail(extracted ? "signed structural directory was not accepted"
+                          : extracted.error());
+  }
+
+  const auto unexpected_directory_path = root / "unexpected-directory.7z";
+  if (auto written = write_7z(unexpected_directory_path, {{"AWJ.exe", "binary"}},
+                              {"unexpected/"});
+      !written) {
+    clean();
+    return fail(written.error());
+  }
+  auto unexpected_directory_assets = assets;
+  if (auto set = set_asset(unexpected_directory_assets.archive,
+                           unexpected_directory_path);
+      !set || awj::update::extract_verified_7z_archive(
+                  unexpected_directory_path, unexpected_directory_assets,
+                  root / "unexpected-directory-unpacked")) {
+    clean();
+    return fail(set ? "archive with an unsigned directory was accepted" : set.error());
   }
 
   const auto extra_path = root / "extra.7z";

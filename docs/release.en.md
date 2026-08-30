@@ -1,4 +1,4 @@
-# AWJ 1.0.4–1.0.7 release
+# AWJ 1.0.4–1.0.9 release
 
 Keep every build, staging directory, archive, and old-version sample under repository `build/` or `bin/`; never create release files at the `D:/` root. Keep the Windows 1.0.3 and 1.0.6 samples only in `bin/old-versions/1.0.3/` and `bin/old-versions/1.0.6/`; retain no other later old version unless explicitly requested.
 
@@ -40,3 +40,20 @@ Before creating the immutable 1.0.5 Release, run the packager once with `-Bridge
 2. Build Windows assets on Windows and build/package Linux assets in a native Linux worktree from a clean 1.0.7 tag. Never compile or package across systems under `/mnt/...`.
 3. Publish a strictly higher v2 sequence with exactly `AWJ_Win.7z` and `AWJ_Linux.7z`; after public-download, hash, and signature validation, commit only the generated v2 manifest. Do not upload raw `AWJ.exe` or `AWJ.com`.
 4. The release notes must say that it is functionally identical to 1.0.6 and exists only for the 1.0.6→1.0.7 update test; normal users should continue to download 1.0.6. If a local test is run, use only an isolated copy from `bin/old-versions/1.0.6/`, never a VM or WSL updater E2E.
+
+## 1.0.9 updater/package-fix prerelease
+
+1. Starting with 1.0.9, the public Windows archive `AWJ_Win.7z` has a fixed, exact, flat four-file contract with no subdirectories or extra members:
+
+   ```text
+   AWJ.exe
+   AWJ.com
+   LICENSE
+   NOTICE.txt
+   ```
+
+   `NOTICE.txt` consolidates build information, the third-party notices from `THIRD_PARTY_NOTICES.txt`, and the full third-party license texts required for distribution from `licenses/`. Do not place `.sha256` sidecars, `BUILD_INFO.txt`, `THIRD_PARTY_NOTICES.txt`, or `THIRD_PARTY_LICENSES/` inside the archive. The signed v2 manifest still binds the archive and each member by size and SHA-256, so in-package checksum sidecars are unnecessary.
+2. `AWJ_Linux.7z` is likewise fixed to the flat three-file set `AWJ`, `LICENSE`, and `NOTICE.txt`. Both `scripts/package-linux-release.sh` and `scripts/package-release.ps1` must verify the exact member set before 7z integrity, fresh extraction, per-file hashing, and smoke tests.
+3. For backward compatibility with 1.0.4–1.0.8 archives, the updater may skip only safe directory entries necessarily implied by signed file-member paths; directories themselves are not manifest members. Extra directories, traversal, links, special entries, duplicate/case-colliding members, and unsigned files remain fail-closed.
+4. Build 1.0.9 Windows and native-Linux assets from a clean `1.0.9` tag, sign a strictly increasing v2 sequence with the external release seed, and upload only `AWJ_Win.7z` and `AWJ_Linux.7z` to a prerelease. Commit the already-generated `update-manifest-v2.json` and signature only after public-download verification; never rerun packaging merely to re-sign.
+5. On native Windows, use an isolated copy of `bin/old-versions/1.0.6/` for the 1.0.6→1.0.9 updater E2E test, and retain the directory-entry regression test so the old 1.0.8 archive layout cannot regress again.
