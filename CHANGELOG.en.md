@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.8 - 2026-08-30
+
+- Prerelease: AVIF now has explicit color-representation modes. The default `yuv` always uses a non-Identity matrix; `source` follows the source YUV/RGB Identity representation; `rgb` forces RGB(A)/GBR(A) Identity + 4:4:4 and selects AOM when the encoder is automatic. CLI, presets, Studio, and encoding diagnostics use the same contract.
+- AVIF can optionally append `.png` to produce a complete `.avif.png` filename while the payload remains AVIF. Collision numbering, same-directory `-converted` naming, and Studio worker manifests treat the double extension as one unit.
+- Fixed lossless AVIF color semantics and bitstream-passthrough eligibility: eligible YUV 420/422/444 AVIF files can preserve the original bitstream; YUV no longer switches implicitly to Identity at q100/4:4:4, invalid or unknown matrices on BT.2020 sources fall back to BT.2020 NCL, and other sources fall back to BT.709.
+- Studio Parameters adds AVIF color-representation and `.avif.png` compatibility controls; presets persist the new field, queue drag/drop and multi-target scans use deterministic ordering, and queue context actions, failed-only filtering, and prerelease changelog markers are tightened.
+
 ## 1.0.7 - 2026-08-24
 
 - Prerelease: Functionally identical to 1.0.6 and provided only for the 1.0.6→1.0.7 archive auto-update test; normal users should continue to download 1.0.6.

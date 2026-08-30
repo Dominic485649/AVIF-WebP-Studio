@@ -1,5 +1,12 @@
 # 更新日志
 
+## 1.0.8 - 2026-08-30
+
+- prerelease：AVIF 新增显式颜色表示模式：默认 `yuv` 始终使用非 Identity matrix；`source` 按源图的 YUV/RGB Identity 表示跟随；`rgb` 强制 RGB(A)/GBR(A) Identity + 4:4:4，并在自动编码器模式下选择 AOM。CLI、预设、Studio 与编码诊断保持一致。
+- AVIF 可选追加 `.png` 形成完整 `.avif.png` 文件名，实际内容仍为 AVIF；碰撞编号、同目录 `-converted` 命名和 Studio worker manifest 都将双后缀作为整体处理。
+- 修正 AVIF 无损颜色语义和码流直通判定：符合条件的 YUV 420/422/444 AVIF 可保持原始码流；YUV 不再因 q100/4:4:4 隐式切换 Identity，BT.2020 源的无效/未知 matrix 回退为 BT.2020 NCL，其余回退为 BT.709。
+- Studio 参数页新增 AVIF 颜色表示与 `.avif.png` 兼容选项；预设保存/加载新增字段，队列拖放和多目标扫描统一为确定性排序，并补强队列右键操作、失败筛选与 prerelease 更新日志标记。
+
 ## 1.0.7 - 2026-08-24
 
 - prerelease：功能与 1.0.6 完全一致，仅用于 1.0.6→1.0.7 的归档自动更新测试；普通用户请继续下载 1.0.6。
