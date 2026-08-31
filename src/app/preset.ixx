@@ -567,8 +567,13 @@ UserPreset default_user_preset() {
 
 PresetFormat preset_format_from_config(const AppConfig& config) {
   PresetFormat preset = default_user_preset_format(config.output_format);
-  preset.quality = config.quality;
-  preset.visual_quality = config.visual_quality;
+  if (config.output_format == OutputFormat::png) {
+    preset.quality = default_quality_for(OutputFormat::png);
+    preset.visual_quality.reset();
+  } else {
+    preset.quality = config.quality;
+    preset.visual_quality = config.visual_quality;
+  }
   preset.bit_depth = config.bit_depth;
   preset.speed = config.speed;
   preset.avif_encoder = config.avif_encoder;
@@ -589,8 +594,13 @@ AppConfig config_from_user_preset(const UserPreset& preset,
   AppConfig config = default_app_config();
   config.output_format = format;
   const auto& source = preset.formats[preset_detail::format_slot(format)];
-  config.quality = source.quality;
-  config.visual_quality = source.visual_quality;
+  if (format == OutputFormat::png) {
+    config.quality = default_quality_for(OutputFormat::png);
+    config.visual_quality.reset();
+  } else {
+    config.quality = source.quality;
+    config.visual_quality = source.visual_quality;
+  }
   config.bit_depth = source.bit_depth;
   config.speed = source.speed;
   config.avif_encoder = source.avif_encoder;

@@ -314,6 +314,24 @@ int main() {
     std::filesystem::remove(preset_test_path, preset_test_ec);
     return fail("preset selection depended on CLI argument order.");
   }
+  awj::UserPreset png_preset = awj::default_user_preset();
+  png_preset.formats.back().quality = 37;
+  png_preset.formats.back().visual_quality = 42;
+  const auto png_preset_config =
+      awj::config_from_user_preset(png_preset, awj::OutputFormat::png);
+  if (png_preset_config.quality != 100 || png_preset_config.visual_quality) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("PNG user preset did not normalize to fixed lossless quality.");
+  }
+  awj::AppConfig png_config = awj::default_app_config();
+  png_config.output_format = awj::OutputFormat::png;
+  png_config.quality = 23;
+  png_config.visual_quality = 55;
+  const auto png_preset_format = awj::preset_format_from_config(png_config);
+  if (png_preset_format.quality != 100 || png_preset_format.visual_quality) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("PNG preset serialization did not normalize lossless quality.");
+  }
   awj::UserPreset reserved_name = awj::default_user_preset();
   reserved_name.name = "CON";
   if (awj::validate_user_preset(reserved_name)) {

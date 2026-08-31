@@ -51,8 +51,8 @@ msgstr "Choose AVIF"
 msgid "极高压缩率 · 支持 HDR · 最高 12-bit"
 msgstr "top compression · HDR · up to 12-bit"
 
-msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPGLI 是新的 JPEG 编码器，在保持 JPEG 兼容的前提下明显提升压缩率。PNG 仅在右键菜单提供。"
-msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPGLI is a new JPEG encoder that clearly improves compression while staying JPEG-compatible. PNG is offered in the context menu only."
+msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPGLI 是新的 JPEG 编码器，在保持 JPEG 兼容的前提下明显提升压缩率。PNG 为无损输出，也可在参数设置中独立编辑。"
+msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPGLI is a new JPEG encoder that clearly improves compression while staying JPEG-compatible. PNG is lossless output and can also be edited independently in Parameters."
 
 msgid "编码器"
 msgstr "Encoder"
@@ -78,8 +78,8 @@ msgstr "Driven by visual quality"
 msgid "1-100，越大越好；填 100 及以上为无损"
 msgstr "1-100, higher is better; 100 or above is lossless"
 
-msgid "一个刻度覆盖全部格式，AWJ 自动映射到各编码器的 crf / quality。默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPGLI 90。这一项主要影响文件体积。JPEG 转 JXL 默认走无损转封装。"
-msgstr "One scale covers every format; AWJ maps it to each encoder's crf / quality automatically. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPGLI 90. This setting mainly affects file size. JPEG to JXL defaults to lossless transcoding."
+msgid "AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPGLI 90。PNG 固定为无损，质量值为 100。JPEG 转 JXL 默认走无损转封装。"
+msgstr "AWJ maps this scale to the lossy encoders' crf / quality. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPGLI 90. PNG is always lossless with quality fixed at 100. JPEG to JXL defaults to lossless transcoding."
 
 msgid "视觉质量"
 msgstr "Visual quality"
@@ -552,8 +552,8 @@ msgstr "When enabled and the build supports it, zenrav1e can be used in the auto
 msgid "关于后端"
 msgstr "About the backend"
 
-msgid "Studio 输出：libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI；PNG 仅 CLI 和右键菜单。"
-msgstr "Studio output: libavif / AOM, svt-av1-hdr, experimental zenrav1e, WebP, JXL, JPGLI; PNG is CLI and context menu only."
+msgid "Studio 输出支持 libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI 与无损 PNG。"
+msgstr "Studio output supports libavif / AOM, svt-av1-hdr, experimental zenrav1e, WebP, JXL, JPGLI, and lossless PNG."
 
 msgid "队列操作"
 msgstr "Queue actions"

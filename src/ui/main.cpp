@@ -3916,6 +3916,28 @@ awj::OutputFormat output_format_from_index(int index) {
   }
 }
 
+struct QueueFormatChoice {
+  int format_index{};
+  bool append_png_suffix{};
+};
+
+constexpr QueueFormatChoice queue_format_choice_from_index(int index) noexcept {
+  const int choice = std::clamp(index, 0, 5);
+  if (choice == 1) {
+    return {.format_index = 0, .append_png_suffix = true};
+  }
+  return {.format_index = choice == 0 ? 0 : choice - 1,
+          .append_png_suffix = false};
+}
+
+static_assert(queue_format_choice_from_index(0).format_index == 0);
+static_assert(queue_format_choice_from_index(1).format_index == 0 &&
+              queue_format_choice_from_index(1).append_png_suffix);
+static_assert(queue_format_choice_from_index(2).format_index == 1);
+static_assert(queue_format_choice_from_index(3).format_index == 2);
+static_assert(queue_format_choice_from_index(4).format_index == 3);
+static_assert(queue_format_choice_from_index(5).format_index == 4);
+
 awj::ChromaMode chroma_from_index(int index) {
   switch (index) {
     case 1:
@@ -3961,7 +3983,7 @@ int parameter_index_from_output_format(awj::OutputFormat format) noexcept {
 }
 
 int parameter_editor_format_index(int index) noexcept {
-  return index >= 0 && index < 4 ? index : 0;
+  return index >= 0 && index < 5 ? index : 0;
 }
 
 awj::AlphaModePolicy alpha_policy_from_index(int index) {
@@ -4116,8 +4138,13 @@ ParameterFormatParams capture_parameter_params_from_ui(const AwjStudio& app) {
 void apply_parameter_params_to_ui(AwjStudio& app,
                                   const ParameterFormatParams& params,
                                   int format_index) {
-  app.set_quality_text(to_shared(params.quality_text));
-  app.set_visual_quality_text(to_shared(params.visual_quality_text));
+  const auto format = output_format_from_index(format_index);
+  const bool png_lossless = format == awj::OutputFormat::png;
+  app.set_quality_text(to_shared(
+      png_lossless ? text_from_int(awj::default_quality_for(format))
+                   : params.quality_text));
+  app.set_visual_quality_text(
+      to_shared(png_lossless ? std::string{} : params.visual_quality_text));
   app.set_bit_depth_text(to_shared(params.bit_depth_text));
   app.set_speed_text(to_shared(params.speed_text));
   refresh_avif_encoder_options(app);
@@ -4136,8 +4163,8 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_max_height_text(to_shared(params.max_height_text));
   app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
-  const auto format = output_format_from_index(format_index);
   app.set_quality_follows_format(
+      png_lossless ||
       params.quality_text == text_from_int(awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(
       (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli)
@@ -4161,6 +4188,10 @@ void store_current_parameter_params(AwjStudio& app, UiState& state) {
   const auto index = parameter_editor_format_index(state.last_format_index);
   auto params = capture_parameter_params_from_ui(app);
   const auto format = output_format_from_index(index);
+  if (format == awj::OutputFormat::png) {
+    params.quality_text = text_from_int(awj::default_quality_for(format));
+    params.visual_quality_text.clear();
+  }
   if ((format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
        format == awj::OutputFormat::jxl) &&
       trim_copy(params.speed_text).empty()) {
@@ -4196,6 +4227,8 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
       text_from_int(awj::default_quality_for(awj::OutputFormat::jxl))));
   app.set_jpegli_quality_default(to_shared(
       text_from_int(awj::default_quality_for(awj::OutputFormat::jpgli))));
+  app.set_png_quality_default(to_shared(
+      text_from_int(awj::default_quality_for(awj::OutputFormat::png))));
   app.set_webp_bit_depth_default(
       to_shared(text_from_int(awj::encoding_defaults::default_webp_bit_depth)));
   for (int i = 0; i < static_cast<int>(state.builtin_params.size()); ++i) {
@@ -4299,8 +4332,11 @@ void reload_user_preset_options(AwjStudio& app, UiState& state) {
 
 std::expected<awj::AppConfig, std::string> config_from_parameter_params(
     awj::OutputFormat format, const ParameterFormatParams& params) {
+  const bool png_lossless = format == awj::OutputFormat::png;
   MenuFormatParams menu{
-      .quality_text = params.quality_text,
+      .quality_text = png_lossless
+                          ? text_from_int(awj::default_quality_for(format))
+                          : params.quality_text,
       .bit_depth_text = params.bit_depth_text,
       .speed_text = params.speed_text,
       .avif_encoder_index = params.avif_encoder_index,
@@ -4318,9 +4354,14 @@ std::expected<awj::AppConfig, std::string> config_from_parameter_params(
       .max_short_edge_text = params.max_short_edge_text};
   auto config = config_from_menu_params(format, menu);
   if (!config) return std::unexpected{config.error()};
-  const auto visual_quality = parse_visual_quality_field(params.visual_quality_text);
-  if (!visual_quality) return std::unexpected{visual_quality.error()};
-  config->visual_quality = *visual_quality;
+  if (png_lossless) {
+    config->visual_quality.reset();
+  } else {
+    const auto visual_quality =
+        parse_visual_quality_field(params.visual_quality_text);
+    if (!visual_quality) return std::unexpected{visual_quality.error()};
+    config->visual_quality = *visual_quality;
+  }
   const auto jobs = parse_jobs_field(params.threads_text);
   if (!jobs) return std::unexpected{jobs.error()};
   config->max_jobs = *jobs;
@@ -4501,8 +4542,9 @@ void select_queue_preset(AwjStudio& app, UiState& state, int index) {
 std::expected<awj::AppConfig, std::string> config_from_ui(
     AwjStudio& app, UiState& state) try {
   store_current_parameter_params(app, state);
-  const int queue_choice_index = std::clamp(app.get_queue_format_index(), 0, 5);
-  const int queue_format_index = queue_choice_index == 5 ? 0 : queue_choice_index;
+  const auto queue_choice =
+      queue_format_choice_from_index(app.get_queue_format_index());
+  const int queue_format_index = queue_choice.format_index;
   const auto format = output_format_from_index(queue_format_index);
   const int preset_index = app.get_queue_preset_index();
   awj::AppConfig cfg;
@@ -4538,7 +4580,7 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   }
   cfg.allow_wic_fallback = app.get_allow_wic_fallback();
   cfg.output_format = format;
-  cfg.append_png_suffix = queue_choice_index == 5;
+  cfg.append_png_suffix = queue_choice.append_png_suffix;
   cfg.enable_experimental_encoders = app.get_experimental_encoders();
   if (cfg.avif_encoder == awj::AvifEncoderMode::zenrav1e) {
     const auto capabilities = awj::avif_encoder_capabilities_for_current_build(
@@ -9199,8 +9241,31 @@ awj::OutputFormat linux_output_format_from_index(int index) noexcept {
   }
 }
 
+struct LinuxQueueFormatChoice {
+  int format_index{};
+  bool append_png_suffix{};
+};
+
+constexpr LinuxQueueFormatChoice linux_queue_format_choice_from_index(
+    int index) noexcept {
+  const int choice = std::clamp(index, 0, 5);
+  if (choice == 1) {
+    return {.format_index = 0, .append_png_suffix = true};
+  }
+  return {.format_index = choice == 0 ? 0 : choice - 1,
+          .append_png_suffix = false};
+}
+
+static_assert(linux_queue_format_choice_from_index(0).format_index == 0);
+static_assert(linux_queue_format_choice_from_index(1).format_index == 0 &&
+              linux_queue_format_choice_from_index(1).append_png_suffix);
+static_assert(linux_queue_format_choice_from_index(2).format_index == 1);
+static_assert(linux_queue_format_choice_from_index(3).format_index == 2);
+static_assert(linux_queue_format_choice_from_index(4).format_index == 3);
+static_assert(linux_queue_format_choice_from_index(5).format_index == 4);
+
 int linux_parameter_editor_format_index(int index) noexcept {
-  return index >= 0 && index < 4 ? index : 0;
+  return index >= 0 && index < 5 ? index : 0;
 }
 
 int linux_avif_color_representation_index(
@@ -9256,8 +9321,13 @@ LinuxParameterParams capture_linux_parameter_params(const AwjStudio& app) {
 void apply_linux_parameter_params(AwjStudio& app,
                                   const LinuxParameterParams& params,
                                   int format_index) {
-  app.set_quality_text(to_shared(params.quality_text));
-  app.set_visual_quality_text(to_shared(params.visual_quality_text));
+  const auto format = linux_output_format_from_index(format_index);
+  const bool png_lossless = format == awj::OutputFormat::png;
+  app.set_quality_text(to_shared(
+      png_lossless ? std::format("{}", awj::default_quality_for(format))
+                   : params.quality_text));
+  app.set_visual_quality_text(
+      to_shared(png_lossless ? std::string{} : params.visual_quality_text));
   app.set_bit_depth_text(to_shared(params.bit_depth_text));
   app.set_speed_text(to_shared(params.speed_text));
   app.set_avif_encoder_index(params.avif_encoder_index);
@@ -9275,8 +9345,8 @@ void apply_linux_parameter_params(AwjStudio& app,
   app.set_max_height_text(to_shared(params.max_height_text));
   app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
-  const auto format = linux_output_format_from_index(format_index);
   app.set_quality_follows_format(
+      png_lossless ||
       params.quality_text == std::format("{}", awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(
       (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli)
@@ -9301,6 +9371,10 @@ void store_current_linux_parameter_params(AwjStudio& app, LinuxUiState& state) {
   const int index = linux_parameter_editor_format_index(state.last_format_index);
   auto params = capture_linux_parameter_params(app);
   const auto format = linux_output_format_from_index(index);
+  if (format == awj::OutputFormat::png) {
+    params.quality_text = std::format("{}", awj::default_quality_for(format));
+    params.visual_quality_text.clear();
+  }
   if ((format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
        format == awj::OutputFormat::jxl) && trim_copy(params.speed_text).empty()) {
     params.speed_text = std::format("{}", awj::default_speed_for(format));
@@ -9340,11 +9414,18 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
   std::vector<std::wstring> args;
   push_option(args, L"--format", format_arg(format_index));
   args.push_back(L"--no-wic-fallback");
-  const auto visual_quality = awj::wide_from_utf8(params.visual_quality_text);
+  const auto format = linux_output_format_from_index(format_index);
+  const bool png_lossless = format == awj::OutputFormat::png;
+  const auto visual_quality = png_lossless
+                                  ? std::wstring{}
+                                  : awj::wide_from_utf8(params.visual_quality_text);
   if (!trim_copy(visual_quality).empty()) {
     push_option(args, L"--visual-quality", visual_quality);
   } else {
-    push_option(args, L"--quality", awj::wide_from_utf8(params.quality_text));
+    push_option(args, L"--quality",
+                png_lossless
+                    ? std::to_wstring(awj::default_quality_for(format))
+                    : awj::wide_from_utf8(params.quality_text));
   }
   push_option(args, L"--threads", awj::wide_from_utf8(params.threads_text));
   push_option(args, L"--memory-limit",
@@ -9569,9 +9650,9 @@ void select_linux_queue_preset(AwjStudio& app, LinuxUiState& state, int index) {
 std::expected<awj::AppConfig, std::string> config_from_ui(
     AwjStudio& app, LinuxUiState& state) {
   store_current_linux_parameter_params(app, state);
-  const int queue_choice_index =
-      std::clamp(app.get_queue_format_index(), 0, 5);
-  const int format_index = queue_choice_index == 5 ? 0 : queue_choice_index;
+  const auto queue_choice =
+      linux_queue_format_choice_from_index(app.get_queue_format_index());
+  const int format_index = queue_choice.format_index;
   const int preset_index = app.get_queue_preset_index();
   LinuxParameterParams params{};
   if (preset_index == 0) {
@@ -9588,7 +9669,7 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   }
   auto config = linux_config_from_parameter_params(&app, format_index, params);
   if (config) {
-    config->append_png_suffix = queue_choice_index == 5;
+    config->append_png_suffix = queue_choice.append_png_suffix;
   }
   return config;
 }
@@ -10046,6 +10127,7 @@ void initialize_ui(AwjStudio& app) {
   app.set_webp_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::webp))));
   app.set_jxl_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::jxl))));
   app.set_jpegli_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::jpgli))));
+  app.set_png_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::png))));
   app.set_webp_bit_depth_default(to_shared(std::format("{}", awj::encoding_defaults::default_webp_bit_depth)));
   app.set_quality_text(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
   app.set_template_text(to_shared(std::string{awj::encoding_defaults::default_output_template_text}));

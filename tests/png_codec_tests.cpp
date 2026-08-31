@@ -48,10 +48,16 @@ int main() {
   image.planes.push_back(std::move(plane));
 
   awj::PngImageEncoder encoder;
+  const auto capabilities = encoder.capabilities();
+  if (capabilities.min_quality != 100 || capabilities.max_quality != 100) {
+    return fail("PNG encoder quality contract must remain fixed at 100.");
+  }
+
+  // PNG 编码路径本身必须保持无损；即使通用质量字段传入较低值，也不能静默变成有损编码。
   auto encoded = encoder.encode(
       image,
       awj::NativeEncodeSettings{.output_format = awj::OutputFormat::png,
-                                 .quality = 100,
+                                 .quality = 1,
                                  .speed = 10,
                                  .resources = awj::ResourcePlan{
                                      .file_parallelism = 1,
