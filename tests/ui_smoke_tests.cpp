@@ -2,6 +2,7 @@
 #include <slint.h>
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <format>
 #include <memory>
@@ -51,6 +52,58 @@ std::optional<slint::testing::ElementHandle> find_one(
     match = element;
   }
   return match;
+}
+
+int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
+                                 float window_width, bool expect_two_rows) {
+  app->window().set_size(slint::LogicalSize({window_width, 560.0f}));
+  const std::array<std::string_view, 6> labels{"参数", "日期", "时间",
+                                                "随机", "哈希", "SHA"};
+  std::vector<slint::testing::ElementHandle> buttons;
+  buttons.reserve(labels.size());
+  for (const auto label : labels) {
+    auto button = find_one(app, label, slint::language::AccessibleRole::Button);
+    if (!button) {
+      return fail(std::format("template token button '{}' is missing", label));
+    }
+    buttons.push_back(*button);
+  }
+
+  const float expected_width = buttons.front().size().width;
+  if (expected_width < 67.5f) {
+    return fail(std::format("template token button width is too small: {:.1f}px",
+                            expected_width));
+  }
+  for (const auto& button : buttons) {
+    if (std::fabs(button.size().width - expected_width) > 0.5f) {
+      return fail("template token buttons are not equal width");
+    }
+  }
+
+  const auto y = [&buttons](std::size_t index) {
+    return buttons[index].absolute_position().y;
+  };
+  const auto x = [&buttons](std::size_t index) {
+    return buttons[index].absolute_position().x;
+  };
+  if (expect_two_rows) {
+    if (std::fabs(y(0) - y(1)) > 0.5f || std::fabs(y(1) - y(2)) > 0.5f ||
+        std::fabs(y(3) - y(4)) > 0.5f || std::fabs(y(4) - y(5)) > 0.5f ||
+        y(3) <= y(0) + 1.0f) {
+      return fail("template token buttons did not form two aligned rows");
+    }
+    if (std::fabs(x(0) - x(3)) > 0.5f || std::fabs(x(1) - x(4)) > 0.5f ||
+        std::fabs(x(2) - x(5)) > 0.5f) {
+      return fail("template token two-row columns are not aligned");
+    }
+  } else {
+    for (std::size_t index = 1; index < buttons.size(); ++index) {
+      if (std::fabs(y(index) - y(0)) > 0.5f || x(index) <= x(index - 1)) {
+        return fail("template token buttons did not form one aligned row");
+      }
+    }
+  }
+  return 0;
 }
 
 std::shared_ptr<slint::VectorModel<ComboOption>> font_options() {
@@ -325,6 +378,15 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
 
   app->set_selected_page(1);
+  if (const int result = verify_template_token_layout(app, 820.0f, true);
+      result != 0) {
+    return result;
+  }
+  if (const int result = verify_template_token_layout(app, 1220.0f, false);
+      result != 0) {
+    return result;
+  }
+  app->window().set_size(slint::LogicalSize({820.0f, 560.0f}));
   if (!find_one(app, "输入路径",
                 slint::language::AccessibleRole::TextInput) ||
       !find_one(app, "输出目录",

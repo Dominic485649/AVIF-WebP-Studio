@@ -896,6 +896,9 @@ export component AwjStudio inherits Window {
     property <length> parameter-control-height: 38px;
     property <length> control-button-width: 86px;
     property <length> control-button-height: 38px;
+    // 命名 token 中英语 "Params" 最宽；68px 包含 SoftButton 左右各 8px 的文本内边距，
+    // 六个 token 共用该宽度，保证中英文在单行/双行布局中都不会因标签长度产生宽度差异。
+    property <length> template-token-button-width: 68px;
     property <length> page-gap: 10px;
     property <length> nav-width: 196px;
     property <length> queue-filename-width: 170px;
@@ -1427,7 +1430,7 @@ export component AwjStudio inherits Window {
                                             LineEdit { accessible-label: @tr("视觉质量"); text <=> root.visual-quality-text; placeholder-text: @tr("空由质量决定，1-100"); input-type: number; enabled: !root.running && root.format-index != 4; opacity: root.format-index == 4 ? 0.56 : 1.0; width: root.parameter-control-width; height: root.parameter-control-height; }
                                             ParamHint {
                                                 horizontal-stretch: 1;
-                                                lead: @tr("建议留空");
+                                                lead: @tr("推荐值为50");
                                                 lead-color: root.hint-red;
                                                 detail: @tr("填写后会对同一张图反复编码，用 GMSD / MS-SSIM 搜索目标画质，效果类似质量驱动的 VBR，但耗时会翻数倍。");
                                                 detail-color: root.text-muted;
@@ -1715,7 +1718,6 @@ export component AwjStudio inherits Window {
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
                             if root.menu-format-index == 0: HorizontalLayout { height: 40px; spacing: root.page-gap;
-                                Rectangle { width: 88px; background: transparent; }
                                 CheckBox { text: @tr("额外添加 .png 后缀"); checked <=> root.menu-install-avif-png-command; enabled: !root.running; }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
@@ -1827,16 +1829,35 @@ export component AwjStudio inherits Window {
                                     }
                                 }
 
-                                HorizontalLayout {
+                                if root.width >= 1000px: HorizontalLayout {
                                     spacing: 8px;
                                     Rectangle { width: 88px; background: transparent; }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: 58px; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
+                                    SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
+                                }
+                                if root.width < 1000px: VerticalLayout {
+                                    spacing: 6px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Rectangle { width: 88px; background: transparent; }
+                                        SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
+                                        SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
+                                        SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Rectangle { width: 88px; background: transparent; }
+                                        SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
+                                        SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
+                                        SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
+                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    }
                                 }
                             }
 

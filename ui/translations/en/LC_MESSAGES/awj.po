@@ -87,8 +87,8 @@ msgstr "Visual quality"
 msgid "空由质量决定，1-100"
 msgstr "Empty follows quality, 1-100"
 
-msgid "建议留空"
-msgstr "Best left empty"
+msgid "推荐值为50"
+msgstr "Recommended value: 50"
 
 msgid "填写后会对同一张图反复编码，用 GMSD / MS-SSIM 搜索目标画质，效果类似质量驱动的 VBR，但耗时会翻数倍。"
 msgstr "Once set, the same image is encoded over and over, searching for the target quality with GMSD / MS-SSIM. It behaves like quality-driven VBR, but takes several times as long."
