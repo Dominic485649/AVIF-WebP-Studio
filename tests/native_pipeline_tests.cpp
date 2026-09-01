@@ -245,14 +245,19 @@ int main() {
   auto hdr_avif_result = hdr_avif_backend.encode(
       awj::ImageFile{.index = 0, .path = hdr_input, .bytes = hdr_input_bytes});
   if (!hdr_avif_result.ok ||
-      hdr_avif_result.applied_color_representation != "yuv") {
+      hdr_avif_result.applied_color_representation != "yuv" ||
+      hdr_avif_result.source_bit_depth.value_or(0) != 16 ||
+      hdr_avif_result.requested_bit_depth.value_or(0) != 16 ||
+      hdr_avif_result.applied_bit_depth.value_or(0) != 12 ||
+      hdr_avif_result.bit_depth_reason.find("12-bit") == std::string::npos) {
     return fail(hdr_avif_result.message.empty()
-                    ? "HDR AVIF did not retain the default YUV representation."
+                    ? "HDR AVIF bit-depth selection diagnostics are inconsistent."
                     : hdr_avif_result.message);
   }
   auto hdr_avif_decoder = awj::make_avif_image_decoder(1);
   auto hdr_avif_decoded = hdr_avif_decoder->decode(hdr_avif_result.output_path);
   if (!hdr_avif_decoded || !hdr_avif_decoded->image.source_info ||
+      hdr_avif_decoded->image.source_info->bit_depth != 12 ||
       hdr_avif_decoded->image.source_info->color_primaries.value_or(-1) != 9 ||
       hdr_avif_decoded->image.source_info->transfer_characteristics.value_or(-1) != 16 ||
       hdr_avif_decoded->image.source_info->matrix_coefficients.value_or(-1) != 9) {

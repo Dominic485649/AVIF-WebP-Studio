@@ -2625,7 +2625,15 @@ class NativeBackend final {
       }
       materialized_scrgb_hdr = std::move(*materialized);
       effective_image = &*materialized_scrgb_hdr;
-      effective_settings.bit_depth = 16;
+      // materialize_scrgb_as_hdr10() produces a 16-bit UNORM RGB container for
+      // libavif/JXL input conversion. For AVIF, the target bitstream depth was
+      // already selected during prepare_encode() (for example 16-bit source ->
+      // AOM 12-bit). Do not overwrite that encoder decision with the container
+      // storage depth. Other HDR-capable formats still inherit the materialized
+      // buffer depth as before.
+      if (cfg_.output_format != OutputFormat::avif) {
+        effective_settings.bit_depth = materialized_scrgb_hdr->bit_depth;
+      }
       effective_settings.applied_color_primaries = 9;
       effective_settings.applied_transfer_characteristics = 16;
       effective_settings.applied_matrix_coefficients = 9;

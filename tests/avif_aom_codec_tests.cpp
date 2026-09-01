@@ -13,6 +13,7 @@ import awj.avif_aom_codec;
 import awj.codec;
 import awj.config;
 import awj.image;
+import awj.hdr_tonemap;
 import awj.large_image_plan;
 import awj.resource_planner;
 
@@ -37,6 +38,36 @@ awj::ImageBuffer make_test_image() {
                           .pixel_format = awj::PixelFormat::rgba,
                           .alpha_mode = awj::AlphaMode::straight,
                           .bit_depth = 8};
+  image.planes.push_back(std::move(plane));
+  return image;
+}
+
+void append_binary16(std::vector<std::byte>& bytes, std::uint16_t value) {
+  bytes.push_back(std::byte{static_cast<unsigned char>(value & 0xffu)});
+  bytes.push_back(std::byte{static_cast<unsigned char>(value >> 8u)});
+}
+
+awj::ImageBuffer make_scrgb_image() {
+  awj::ImagePlane plane{.stride = 8};
+  append_binary16(plane.bytes, 0x3800u);  // 0.5
+  append_binary16(plane.bytes, 0xb400u);  // -0.25
+  append_binary16(plane.bytes, 0x4000u);  // 2.0
+  append_binary16(plane.bytes, 0x3c00u);  // 1.0
+  awj::ImageBuffer image{.width = 1,
+                         .height = 1,
+                         .pixel_format = awj::PixelFormat::rgba,
+                         .alpha_mode = awj::AlphaMode::straight,
+                         .bit_depth = 16,
+                         .sample_representation = awj::SampleRepresentation::ieee_half_float,
+                         .source_info = awj::ImageSourceInfo{
+                             .pixel_format = awj::PixelFormat::rgba,
+                             .bit_depth = 16,
+                             .color_primaries = 1,
+                             .transfer_characteristics = 8,
+                             .matrix_coefficients = 0,
+                             .color_range = 1,
+                             .has_hdr_metadata = true,
+                             .color_metadata_source = "wic-scrgb-half-linear"}};
   image.planes.push_back(std::move(plane));
   return image;
 }
@@ -267,6 +298,41 @@ int verify_avif_matrix(const awj::EncodedImage& encoded, int expected_matrix) {
 
 int main() {
   auto aom = awj::make_avif_image_encoder(awj::AvifEncoderMode::aom);
+
+  auto scrgb_materialized = awj::hdr::materialize_scrgb_as_hdr10(make_scrgb_image());
+  if (!scrgb_materialized || scrgb_materialized->bit_depth != 16 ||
+      scrgb_materialized->sample_representation != awj::SampleRepresentation::unorm) {
+    return fail(scrgb_materialized
+                    ? "scRGB materialization no longer uses a 16-bit UNORM input container."
+                    : scrgb_materialized.error());
+  }
+  auto scrgb_12_settings = settings(12, awj::ChromaMode::yuv444,
+                                    awj::AvifEncoderMode::aom);
+  scrgb_12_settings.source_bit_depth = 16;
+  scrgb_12_settings.requested_bit_depth = 16;
+  scrgb_12_settings.bit_depth_reason =
+      "源图 16-bit 超过 aom 支持上限，限制为 12-bit 输出";
+  scrgb_12_settings.applied_color_primaries = 9;
+  scrgb_12_settings.applied_transfer_characteristics = 16;
+  scrgb_12_settings.applied_matrix_coefficients = 9;
+  scrgb_12_settings.applied_color_range = 1;
+  auto scrgb_12_encoded = aom->encode(*scrgb_materialized, scrgb_12_settings);
+  if (!scrgb_12_encoded ||
+      scrgb_12_encoded->diagnostics.applied_bit_depth != 12) {
+    return fail(scrgb_12_encoded
+                    ? "16-bit scRGB container was not encoded as 12-bit AVIF."
+                    : scrgb_12_encoded.error());
+  }
+  auto scrgb_decoder = awj::make_avif_image_decoder(1);
+  auto scrgb_12_decoded = scrgb_decoder->decode_memory(
+      scrgb_12_encoded->encoded.bytes, "scRGB 16-bit container -> AVIF 12-bit regression");
+  if (!scrgb_12_decoded || !scrgb_12_decoded->image.source_info ||
+      scrgb_12_decoded->image.source_info->bit_depth != 12) {
+    return fail(scrgb_12_decoded
+                    ? "encoded scRGB regression fixture is not a real 12-bit AVIF."
+                    : scrgb_12_decoded.error());
+  }
+
   auto encoded = aom->encode(make_test_image(), settings(8, awj::ChromaMode::yuv444,
                                                          awj::AvifEncoderMode::aom));
   if (!encoded) {
