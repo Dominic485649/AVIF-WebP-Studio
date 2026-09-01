@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "sequence": 5,
+  "sequence": 6,
   "key_id": "release-2026",
-  "issued_at": "2026-08-30T08:42:29Z",
+  "issued_at": "2026-09-01T10:06:56Z",
   "expires_at": "2027-02-18T17:00:00Z",
   "entries": [
     {
@@ -541,6 +541,80 @@
       "changelog": {
         "zh-CN": "- prerelease：修复 7z 自动更新对合法目录 entry 的误判。更新器现在只跳过由签名 manifest 文件路径必然隐含的安全目录，同时继续拒绝额外目录、路径穿越、链接、特殊成员、重复成员和未签名文件；补充真实目录 entry 的通过/拒绝回归测试，恢复旧归档（包括 1.0.8）的兼容提取。\n- 固定 Windows 发行归档为严格扁平的 4 文件结构：`AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；包内不再携带 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或 `THIRD_PARTY_LICENSES/`。归档及成员的大小/SHA-256 继续由签名 v2 manifest 绑定。\n- `NOTICE.txt` 统一收纳构建信息、第三方 notices 和发行所需的第三方完整许可证文本；Linux 归档同步改为严格扁平的 `AWJ`、`LICENSE`、`NOTICE.txt` 三文件结构，并在打包脚本中加入精确成员校验。",
         "en": "- Prerelease: fixed the 7z updater rejecting legitimate directory entries. The extractor now skips only safe directories that are necessarily implied by signed manifest member paths, while continuing to reject extra directories, traversal, links, special entries, duplicates, and unsigned files. Regression coverage includes accepted and rejected real directory entries, restoring compatibility with older archives including 1.0.8.\n- The Windows release archive is now a strict flat four-file package: `AWJ.exe`, `AWJ.com`, `LICENSE`, and `NOTICE.txt`. In-archive `.sha256` files, `BUILD_INFO.txt`, `THIRD_PARTY_NOTICES.txt`, and `THIRD_PARTY_LICENSES/` are removed; the signed v2 manifest continues to bind archive/member size and SHA-256.\n- `NOTICE.txt` consolidates build information, third-party notices, and required full third-party license texts. The Linux archive is likewise flattened to exactly `AWJ`, `LICENSE`, and `NOTICE.txt`, with exact-member validation in the packagers."
+      }
+    },
+    {
+      "version": "1.0.10",
+      "channel": "prerelease",
+      "published_at": "2026-09-01T10:06:56Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.10",
+      "minimum_updater_version": "1.0.4",
+      "revoked": false,
+      "assets": {
+        "windows_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Win.7z",
+            "size": 12454170,
+            "sha256": "83f5e4a1eba6cca37b5cf5cddfe194c7aff11da9ebbc6be7418e423cb43db996"
+          },
+          "members": [
+            {
+              "path": "AWJ.com",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Win.7z",
+              "size": 451072,
+              "sha256": "0c59fabd61bf6d789f9d3e24ebff23182ac5dc4b2b5383c5c482792571737fe7"
+            },
+            {
+              "path": "AWJ.exe",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Win.7z",
+              "size": 45080064,
+              "sha256": "8fea726c59bb3b9c925c45ea69a200b9901f2429c021e86b64bdfcb45069764b"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Win.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "NOTICE.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Win.7z",
+              "size": 90379,
+              "sha256": "fdb624ed27eee69a5d32d1d154764d31010fb272975938a4018932a40d9b1a0e"
+            }
+          ]
+        },
+        "linux_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Linux.7z",
+            "size": 19219037,
+            "sha256": "717cae452f3a17fdca022f56b3b71a27d693cc9d9811eb8dc5426e2ea3166983"
+          },
+          "members": [
+            {
+              "path": "AWJ",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Linux.7z",
+              "size": 67904272,
+              "sha256": "eb8a8bcfa157adca47b28433491c25857b23ad9c4f7a77c51e04cf8f0e064a97"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Linux.7z",
+              "size": 34523,
+              "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+            },
+            {
+              "path": "NOTICE.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.10/AWJ_Linux.7z",
+              "size": 88534,
+              "sha256": "f445b3eb55a944a7457d12fae58d469aa2a2eefb34d770c21d581a58fe751b81"
+            }
+          ]
+        }
+      },
+      "changelog": {
+        "zh-CN": "- prerelease：重做 Studio 悬浮提示与输出格式选择交互，避免 tooltip 生命周期反复触发重绘；队列输出顺序统一为 AVIF、AVIF.png、WebP、JXL、JPGLI、PNG，并通过显式 UI→后端格式映射保持既有格式索引兼容。参数设置加入 PNG，PNG 保持固定无损语义；队列操作按钮在单行/双行布局下保持等宽，并补充视觉质量推荐值 50 等界面文案调整。\n- 回移 Slint/Winit AccessKit 组件生命周期保护：窗口组件已经销毁时，accessibility tree rebuild 不再强制解包已不存在的 component，而返回空 TreeUpdate，修复已定位的 Windows FAST_FAIL_FATAL_APP_EXIT 崩溃路径。受任务安全约束，本版本未执行 F6 或任何截屏功能测试。\n- 修复 FP16/scRGB 16-bit 输入经 AOM 编码 AVIF 时 applied bit depth 的回归，确保该路径按预期使用 12-bit，并增加对应回归测试。",
+        "en": "- Prerelease: reworked Studio tooltip and output-format interactions so tooltip lifetime no longer repeatedly drives repainting. Queue output order is now AVIF, AVIF.png, WebP, JXL, JPGLI, PNG, with an explicit UI-to-backend format mapping that preserves existing backend format indices. PNG is editable in parameter settings while retaining fixed lossless semantics; queue action buttons remain equal-width in one- or two-row layouts, and the visual-quality UI now documents 50 as the recommended value.\n- Backported the Slint/Winit AccessKit component-lifetime guard. If a window component has already been destroyed, an accessibility-tree rebuild now returns an empty TreeUpdate instead of unwrapping a missing component, fixing the identified Windows FAST_FAIL_FATAL_APP_EXIT crash path. Per the task safety constraint, F6 and all screenshot/capture-function tests were not executed for this release.\n- Fixed the applied-bit-depth regression for FP16/scRGB 16-bit sources encoded to AVIF through AOM, keeping that path at the intended 12-bit depth and adding regression coverage."
       }
     }
   ]
