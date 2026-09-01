@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.10 - 2026-09-01
+
+- Prerelease: reworked Studio tooltip and output-format interactions so tooltip lifetime no longer repeatedly drives repainting. Queue output order is now AVIF, AVIF.png, WebP, JXL, JPGLI, PNG, with an explicit UI-to-backend format mapping that preserves existing backend format indices. PNG is editable in parameter settings while retaining fixed lossless semantics; queue action buttons remain equal-width in one- or two-row layouts, and the visual-quality UI now documents 50 as the recommended value.
+- Backported the Slint/Winit AccessKit component-lifetime guard. If a window component has already been destroyed, an accessibility-tree rebuild now returns an empty TreeUpdate instead of unwrapping a missing component, fixing the identified Windows FAST_FAIL_FATAL_APP_EXIT crash path. Per the task safety constraint, F6 and all screenshot/capture-function tests were not executed for this release.
+- Fixed the applied-bit-depth regression for FP16/scRGB 16-bit sources encoded to AVIF through AOM, keeping that path at the intended 12-bit depth and adding regression coverage.
+
 ## 1.0.9 - 2026-08-30
 
 - Prerelease: fixed the 7z updater rejecting legitimate directory entries. The extractor now skips only safe directories that are necessarily implied by signed manifest member paths, while continuing to reject extra directories, traversal, links, special entries, duplicates, and unsigned files. Regression coverage includes accepted and rejected real directory entries, restoring compatibility with older archives including 1.0.8.

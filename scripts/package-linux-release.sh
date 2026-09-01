@@ -5,12 +5,14 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 
 binary=""
 output_dir=""
+candidate_head=""
 while (($#)); do
   case "$1" in
     --binary) binary=${2-}; shift 2 ;;
     --output-dir) output_dir=${2-}; shift 2 ;;
+    --candidate-head) candidate_head=${2-}; shift 2 ;;
     -h|--help)
-      printf 'usage: %s --binary /native/path/AWJ [--output-dir /native/path/build/release-linux/VERSION]\n' "$0"
+      printf 'usage: %s --binary /native/path/AWJ [--output-dir /native/path/build/release-linux/VERSION] [--candidate-head 40-hex-sha]\n' "$0"
       exit 0
       ;;
     *) die "unknown option: $1" ;;
@@ -27,7 +29,13 @@ binary=$(realpath -e -- "$binary")
 version=$(tr -d '\r\n' < "$repo/VERSION")
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'VERSION is invalid'
 [[ -z $(git -C "$repo" status --porcelain --untracked-files=no) ]] || die 'tracked source changes are not allowed'
-[[ $(git -C "$repo" describe --exact-match --tags HEAD 2>/dev/null || true) == "$version" ]] || die 'HEAD must be the matching release tag'
+head=$(git -C "$repo" rev-parse HEAD)
+if [[ -n "$candidate_head" ]]; then
+  [[ "$candidate_head" =~ ^[0-9a-f]{40}$ ]] || die '--candidate-head must be an exact 40-character lowercase commit SHA'
+  [[ "$head" == "$candidate_head" ]] || die "HEAD does not match --candidate-head: expected $candidate_head, actual $head"
+else
+  [[ $(git -C "$repo" describe --exact-match --tags HEAD 2>/dev/null || true) == "$version" ]] || die 'HEAD must be the matching release tag'
+fi
 command -v 7z >/dev/null || die '7z is required'
 
 if [[ -z "$output_dir" ]]; then output_dir="$repo/build/release-linux/$version"; fi

@@ -1,5 +1,11 @@
 # 更新日志
 
+## 1.0.10 - 2026-09-01
+
+- prerelease：重做 Studio 悬浮提示与输出格式选择交互，避免 tooltip 生命周期反复触发重绘；队列输出顺序统一为 AVIF、AVIF.png、WebP、JXL、JPGLI、PNG，并通过显式 UI→后端格式映射保持既有格式索引兼容。参数设置加入 PNG，PNG 保持固定无损语义；队列操作按钮在单行/双行布局下保持等宽，并补充视觉质量推荐值 50 等界面文案调整。
+- 回移 Slint/Winit AccessKit 组件生命周期保护：窗口组件已经销毁时，accessibility tree rebuild 不再强制解包已不存在的 component，而返回空 TreeUpdate，修复已定位的 Windows FAST_FAIL_FATAL_APP_EXIT 崩溃路径。受任务安全约束，本版本未执行 F6 或任何截屏功能测试。
+- 修复 FP16/scRGB 16-bit 输入经 AOM 编码 AVIF 时 applied bit depth 的回归，确保该路径按预期使用 12-bit，并增加对应回归测试。
+
 ## 1.0.9 - 2026-08-30
 
 - prerelease：修复 7z 自动更新对合法目录 entry 的误判。更新器现在只跳过由签名 manifest 文件路径必然隐含的安全目录，同时继续拒绝额外目录、路径穿越、链接、特殊成员、重复成员和未签名文件；补充真实目录 entry 的通过/拒绝回归测试，恢复旧归档（包括 1.0.8）的兼容提取。

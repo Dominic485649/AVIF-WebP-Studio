@@ -337,8 +337,14 @@ $PinnedFetchContentCommits = @{
     "slint"   = "cf62c975c311e7036d599ed8ed0b7e6a8386a934"
 }
 $PinnedFetchContentPatchedFiles = @{
-    "libavif" = " M src/write.c"
-    "slint"   = " M api/cpp/include/private/slint_config.h"
+    "libavif" = @(
+        " M src/write.c"
+    )
+    "slint"   = @(
+        " M api/cpp/include/private/slint_config.h",
+        " M internal/backends/winit/accesskit.rs",
+        " M internal/backends/winit/event_loop.rs"
+    )
 }
 $FetchContentSourceOverrides = @()
 foreach ($FetchContentName in @("svtav1hdr", "libavif", "jpegli", "slint")) {
@@ -356,10 +362,18 @@ foreach ($FetchContentName in @("svtav1hdr", "libavif", "jpegli", "slint")) {
     if ($KeepSource -and $FetchContentName -ne "svtav1hdr") {
         $ResolvedCommit = (& git -C $SourceDir rev-parse HEAD).Trim()
         $SourceStatus = @(git -C $SourceDir status --porcelain --untracked-files=all)
-        $ExpectedPatchedFile = $PinnedFetchContentPatchedFiles[$FetchContentName]
-        $StatusMatches = $SourceStatus.Count -eq 0 -or
-            ($ExpectedPatchedFile -and $SourceStatus.Count -eq 1 -and
-             $SourceStatus[0] -eq $ExpectedPatchedFile)
+        $ExpectedPatchedFiles = @($PinnedFetchContentPatchedFiles[$FetchContentName])
+        $StatusMatches = if ($SourceStatus.Count -eq 0) {
+            $true
+        }
+        elseif ($ExpectedPatchedFiles.Count -gt 0 -and
+                $SourceStatus.Count -eq $ExpectedPatchedFiles.Count) {
+            @(Compare-Object -ReferenceObject ($ExpectedPatchedFiles | Sort-Object) `
+                             -DifferenceObject ($SourceStatus | Sort-Object)).Count -eq 0
+        }
+        else {
+            $false
+        }
         $KeepSource = $LASTEXITCODE -eq 0 -and $ResolvedCommit -eq $ExpectedCommit -and
             $StatusMatches
     }
