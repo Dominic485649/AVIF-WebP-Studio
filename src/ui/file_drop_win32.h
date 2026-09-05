@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace awj::ui_drop {
@@ -61,6 +62,27 @@ std::expected<Registration, std::string> install(HWND hwnd, Callbacks callbacks)
 InstallRetryAction install_retry_action(bool hwnd_ready,
                                         std::size_t attempts_so_far,
                                         std::size_t max_attempts) noexcept;
+
+// AWJ external drag/drop is COPY-only. These helpers are the single effect
+// contract used by DragEnter/DragOver/Drop: never select MOVE/LINK, and never
+// invoke the drop consumer unless the source explicitly permits COPY.
+DWORD select_copy_effect(DWORD allowed_effects, bool acceptable) noexcept;
+
+template <class Consume>
+DWORD dispatch_copy_drop(DWORD allowed_effects, bool acceptable,
+                         Consume&& consume) noexcept {
+  if (select_copy_effect(allowed_effects, acceptable) != DROPEFFECT_COPY) {
+    return DROPEFFECT_NONE;
+  }
+  try {
+    return std::invoke(std::forward<Consume>(consume)) ? DROPEFFECT_COPY
+                                                       : DROPEFFECT_NONE;
+  } catch (...) {
+    // IDropTarget methods are COM ABI boundaries: consumer failures always
+    // collapse to no-effect and never unwind into OLE.
+    return DROPEFFECT_NONE;
+  }
+}
 
 // Exposed for focused CF_HDROP tests; does no file-system scanning.
 std::expected<std::vector<std::filesystem::path>, std::string> extract_hdrop_paths(IDataObject* data_object);

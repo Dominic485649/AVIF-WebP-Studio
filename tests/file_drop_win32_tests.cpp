@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -159,6 +160,58 @@ int main() {
   }
   if (install_signals != 1 || !install_finished) {
     return fail("native drop retry orchestration did not install exactly once");
+  }
+
+  struct EffectCase {
+    DWORD allowed{};
+    DWORD expected_effect{};
+    std::size_t expected_callbacks{};
+  };
+  constexpr EffectCase effect_cases[] = {
+      {DROPEFFECT_COPY, DROPEFFECT_COPY, 1},
+      {DROPEFFECT_MOVE, DROPEFFECT_NONE, 0},
+      {DROPEFFECT_LINK, DROPEFFECT_NONE, 0},
+      {DROPEFFECT_NONE, DROPEFFECT_NONE, 0},
+      {DROPEFFECT_COPY | DROPEFFECT_MOVE, DROPEFFECT_COPY, 1},
+      {DROPEFFECT_COPY | DROPEFFECT_LINK, DROPEFFECT_COPY, 1},
+  };
+  for (const auto& test : effect_cases) {
+    std::size_t callback_count = 0;
+    const DWORD result = awj::ui_drop::dispatch_copy_drop(
+        test.allowed, true, [&] {
+          ++callback_count;
+          return true;
+        });
+    if (result != test.expected_effect || callback_count != test.expected_callbacks) {
+      return fail("COPY-only effect contract mismatch");
+    }
+  }
+
+  std::size_t callback_count = 0;
+  if (awj::ui_drop::dispatch_copy_drop(DROPEFFECT_COPY, false, [&] {
+        ++callback_count;
+        return true;
+      }) != DROPEFFECT_NONE ||
+      callback_count != 0) {
+    return fail("can_accept=false invoked drop callback");
+  }
+  if (awj::ui_drop::dispatch_copy_drop(DROPEFFECT_COPY, true, [&] {
+        ++callback_count;
+        return false;
+      }) != DROPEFFECT_NONE ||
+      callback_count != 1) {
+    return fail("failed consumer did not return no-effect");
+  }
+  if (awj::ui_drop::dispatch_copy_drop(DROPEFFECT_COPY, true, [&]() -> bool {
+        ++callback_count;
+        throw std::runtime_error("consumer failure");
+      }) != DROPEFFECT_NONE ||
+      callback_count != 2) {
+    return fail("throwing consumer escaped fail-closed effect contract");
+  }
+  if (awj::ui_drop::dispatch_copy_drop(
+          DROPEFFECT_COPY, true, std::function<bool()>{}) != DROPEFFECT_NONE) {
+    return fail("missing consumer was accepted");
   }
 
   const std::wstring long_path = L"C:\\" + std::wstring(280, L'x') + L".png";

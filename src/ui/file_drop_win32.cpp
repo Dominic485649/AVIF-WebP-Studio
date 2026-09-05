@@ -79,8 +79,7 @@ class DropTarget final : public IDropTarget {
     if (auto value = hdrop_item_count(data_object)) item_count_ = *value;
     valid_ = item_count_ > 0 && can_accept_now();
     if (effect != nullptr) {
-      *effect = valid_ && ((*effect & DROPEFFECT_COPY) != 0) ? DROPEFFECT_COPY
-                                                             : DROPEFFECT_NONE;
+      *effect = select_copy_effect(*effect, valid_);
     }
     notify(HoverState{.active = true, .valid = valid_, .item_count = item_count_});
     return S_OK;
@@ -89,41 +88,30 @@ class DropTarget final : public IDropTarget {
   HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override {
     valid_ = item_count_ > 0 && can_accept_now();
     if (effect != nullptr) {
-      *effect = valid_ && ((*effect & DROPEFFECT_COPY) != 0) ? DROPEFFECT_COPY
-                                                             : DROPEFFECT_NONE;
+      *effect = select_copy_effect(*effect, valid_);
     }
     notify(HoverState{.active = true, .valid = valid_, .item_count = item_count_});
     return S_OK;
   }
 
   HRESULT STDMETHODCALLTYPE DragLeave() override {
-    valid_ = false;
-    item_count_ = 0;
-    notify({});
+    clear_hover();
     return S_OK;
   }
 
   HRESULT STDMETHODCALLTYPE Drop(IDataObject* data_object, DWORD, POINTL,
                                  DWORD* effect) override {
-    auto paths = extract_hdrop_paths(data_object);
-    bool accepted = item_count_ > 0 && can_accept_now() && paths && !paths->empty() &&
-                    static_cast<bool>(callbacks_.paths_dropped);
-    if (accepted) {
-      try {
-        callbacks_.paths_dropped(std::move(*paths));
-      } catch (...) {
-        // IDropTarget methods are COM ABI boundaries. Never unwind C++ exceptions
-        // through OLE; report no-effect if the consumer could not accept the drop.
-        accepted = false;
-      }
-    }
-    if (effect != nullptr) {
-      *effect = accepted && ((*effect & DROPEFFECT_COPY) != 0) ? DROPEFFECT_COPY
-                                                               : DROPEFFECT_NONE;
-    }
-    valid_ = false;
-    item_count_ = 0;
-    notify({});
+    const DWORD allowed_effects = effect != nullptr ? *effect : DROPEFFECT_NONE;
+    const bool acceptable = effect != nullptr && item_count_ > 0 && can_accept_now() &&
+                            static_cast<bool>(callbacks_.paths_dropped);
+    const DWORD result = dispatch_copy_drop(allowed_effects, acceptable, [&] {
+      auto paths = extract_hdrop_paths(data_object);
+      if (!paths || paths->empty()) return false;
+      callbacks_.paths_dropped(std::move(*paths));
+      return true;
+    });
+    if (effect != nullptr) *effect = result;
+    clear_hover();
     return S_OK;
   }
 
@@ -144,6 +132,12 @@ class DropTarget final : public IDropTarget {
     }
   }
 
+  void clear_hover() noexcept {
+    valid_ = false;
+    item_count_ = 0;
+    notify({});
+  }
+
   std::atomic<ULONG> ref_count_{1};
   Callbacks callbacks_;
   std::size_t item_count_{};
@@ -160,6 +154,11 @@ InstallRetryAction install_retry_action(bool hwnd_ready,
     return InstallRetryAction::exhausted;
   }
   return InstallRetryAction::retry;
+}
+
+DWORD select_copy_effect(DWORD allowed_effects, bool acceptable) noexcept {
+  return acceptable && (allowed_effects & DROPEFFECT_COPY) != 0 ? DROPEFFECT_COPY
+                                                                : DROPEFFECT_NONE;
 }
 
 std::expected<std::size_t, std::string> hdrop_item_count(IDataObject* data_object) {
