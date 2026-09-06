@@ -77,20 +77,22 @@ class DropTarget final : public IDropTarget {
                                       POINTL, DWORD* effect) override {
     item_count_ = 0;
     if (auto value = hdrop_item_count(data_object)) item_count_ = *value;
-    valid_ = item_count_ > 0 && can_accept_now();
-    if (effect != nullptr) {
-      *effect = select_copy_effect(*effect, valid_);
-    }
-    notify(HoverState{.active = true, .valid = valid_, .item_count = item_count_});
+    const DWORD allowed_effects = effect != nullptr ? *effect : DROPEFFECT_NONE;
+    const auto feedback = copy_drag_feedback(
+        allowed_effects, effect != nullptr && can_accept_now(), item_count_);
+    valid_ = feedback.hover.valid;
+    if (effect != nullptr) *effect = feedback.effect;
+    notify(feedback.hover);
     return S_OK;
   }
 
   HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override {
-    valid_ = item_count_ > 0 && can_accept_now();
-    if (effect != nullptr) {
-      *effect = select_copy_effect(*effect, valid_);
-    }
-    notify(HoverState{.active = true, .valid = valid_, .item_count = item_count_});
+    const DWORD allowed_effects = effect != nullptr ? *effect : DROPEFFECT_NONE;
+    const auto feedback = copy_drag_feedback(
+        allowed_effects, effect != nullptr && can_accept_now(), item_count_);
+    valid_ = feedback.hover.valid;
+    if (effect != nullptr) *effect = feedback.effect;
+    notify(feedback.hover);
     return S_OK;
   }
 
@@ -159,6 +161,17 @@ InstallRetryAction install_retry_action(bool hwnd_ready,
 DWORD select_copy_effect(DWORD allowed_effects, bool acceptable) noexcept {
   return acceptable && (allowed_effects & DROPEFFECT_COPY) != 0 ? DROPEFFECT_COPY
                                                                 : DROPEFFECT_NONE;
+}
+
+DragFeedback copy_drag_feedback(DWORD allowed_effects, bool can_accept,
+                                std::size_t item_count) noexcept {
+  const DWORD effect =
+      select_copy_effect(allowed_effects, item_count > 0 && can_accept);
+  return DragFeedback{
+      .effect = effect,
+      .hover = HoverState{.active = true,
+                          .valid = effect == DROPEFFECT_COPY,
+                          .item_count = item_count}};
 }
 
 std::expected<std::size_t, std::string> hdrop_item_count(IDataObject* data_object) {

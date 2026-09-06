@@ -176,6 +176,15 @@ int main() {
       {DROPEFFECT_COPY | DROPEFFECT_LINK, DROPEFFECT_COPY, 1},
   };
   for (const auto& test : effect_cases) {
+    // DragEnter and DragOver both consume this exact shared decision. Keep the
+    // OLE effect and visible hover validity locked together for every mask.
+    const auto feedback = awj::ui_drop::copy_drag_feedback(test.allowed, true, 1);
+    const bool expected_valid = test.expected_effect == DROPEFFECT_COPY;
+    if (feedback.effect != test.expected_effect || !feedback.hover.active ||
+        feedback.hover.valid != expected_valid || feedback.hover.item_count != 1) {
+      return fail("DragEnter/DragOver hover/effect contract mismatch");
+    }
+
     std::size_t callback_count = 0;
     const DWORD result = awj::ui_drop::dispatch_copy_drop(
         test.allowed, true, [&] {
@@ -185,6 +194,20 @@ int main() {
     if (result != test.expected_effect || callback_count != test.expected_callbacks) {
       return fail("COPY-only effect contract mismatch");
     }
+  }
+
+  const auto cannot_accept_feedback =
+      awj::ui_drop::copy_drag_feedback(DROPEFFECT_COPY, false, 1);
+  if (cannot_accept_feedback.effect != DROPEFFECT_NONE ||
+      cannot_accept_feedback.hover.valid || !cannot_accept_feedback.hover.active ||
+      cannot_accept_feedback.hover.item_count != 1) {
+    return fail("can_accept=false advertised a valid drag hover");
+  }
+  const auto empty_feedback =
+      awj::ui_drop::copy_drag_feedback(DROPEFFECT_COPY, true, 0);
+  if (empty_feedback.effect != DROPEFFECT_NONE || empty_feedback.hover.valid ||
+      !empty_feedback.hover.active || empty_feedback.hover.item_count != 0) {
+    return fail("empty CF_HDROP advertised a valid drag hover");
   }
 
   std::size_t callback_count = 0;

@@ -26,6 +26,11 @@ struct HoverState {
   std::size_t item_count{};
 };
 
+struct DragFeedback {
+  DWORD effect{DROPEFFECT_NONE};
+  HoverState hover{};
+};
+
 struct Callbacks {
   std::function<bool()> can_accept;
   std::function<void(HoverState)> hover_changed;
@@ -67,6 +72,11 @@ InstallRetryAction install_retry_action(bool hwnd_ready,
 // contract used by DragEnter/DragOver/Drop: never select MOVE/LINK, and never
 // invoke the drop consumer unless the source explicitly permits COPY.
 DWORD select_copy_effect(DWORD allowed_effects, bool acceptable) noexcept;
+
+// DragEnter and DragOver must expose the same decision through both OLE and UI:
+// hover.valid is true exactly when the COPY-only OLE effect is COPY.
+DragFeedback copy_drag_feedback(DWORD allowed_effects, bool can_accept,
+                                std::size_t item_count) noexcept;
 
 template <class Consume>
 DWORD dispatch_copy_drop(DWORD allowed_effects, bool acceptable,
